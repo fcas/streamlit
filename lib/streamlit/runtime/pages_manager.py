@@ -63,6 +63,10 @@ class PagesStrategyV1:
         if setup_watcher:
             PagesStrategyV1.watch_pages_dir(pages_manager)
 
+    @property
+    def should_notify_pages_change(self) -> bool:
+        return True
+
     # In MPA v1, there's no difference between the active hash
     # and the page script hash.
     def get_active_script_hash(self) -> PageHash:
@@ -124,6 +128,10 @@ class PagesStrategyV2:
         self._pages: dict[PageHash, PageInfo] | None = None
         self._initial_page_script_hash: PageHash | None = None
         self._initial_page_name: PageName | None = None
+
+    @property
+    def should_notify_pages_change(self) -> bool:
+        return False
 
     def get_active_script_hash(self) -> PageHash:
         return self._active_script_hash
@@ -276,6 +284,8 @@ class PagesManager:
 
             pages = self.pages_strategy.get_pages()
             self._cached_pages = pages
+            if self.pages_strategy.should_notify_pages_change:
+                self._on_pages_changed.send()
 
             return pages
 
@@ -291,7 +301,9 @@ class PagesManager:
 
         self.pages_strategy.set_pages(pages)
         self._cached_pages = pages
-        self._on_pages_changed.send()
+
+        if self.pages_strategy.should_notify_pages_change:
+            self._on_pages_changed.send()
 
     def get_page_script(self, fallback_page_hash: PageHash = "") -> Optional[PageInfo]:
         # We assume the pages strategy is V2 cause this is used
@@ -306,7 +318,8 @@ class PagesManager:
         with self._pages_cache_lock:
             self._cached_pages = None
 
-        self._on_pages_changed.send()
+        if self.pages_strategy.should_notify_pages_change:
+            self._on_pages_changed.send()
 
     def register_pages_changed_callback(
         self,

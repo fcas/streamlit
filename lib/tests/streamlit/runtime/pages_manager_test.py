@@ -25,6 +25,8 @@ from streamlit.util import calc_md5
 class PagesManagerTest(unittest.TestCase):
     def test_pages_cache(self):
         """Test that the pages cache is correctly set and invalidated"""
+        # Ensure Default Strategy is V1 to start
+        PagesManager.DefaultStrategy = PagesStrategyV1
         pages_manager = PagesManager("main_script_path")
         with patch.object(pages_manager, "_on_pages_changed", MagicMock()):
             assert pages_manager._cached_pages is None
@@ -38,6 +40,9 @@ class PagesManagerTest(unittest.TestCase):
             # get_pages is called.
             assert new_pages is pages
 
+            pages_manager._on_pages_changed.send.assert_called_once()
+
+            pages_manager._on_pages_changed.reset_mock()
             pages_manager.invalidate_pages_cache()
             assert pages_manager._cached_pages is None
 
@@ -174,6 +179,31 @@ class PagesManagerV2Test(unittest.TestCase):
             page_info,
             {"script_path": "main_script_path", "page_script_hash": "page_hash"},
         )
+
+    def test_does_not_call_pages_change(self):
+        """Test that the V2 Strategy does not call the pages changed callback"""
+        pages_manager = PagesManager("main_script_path")
+        with patch.object(pages_manager, "_on_pages_changed", MagicMock()):
+            assert pages_manager._cached_pages is None
+
+            pages = pages_manager.get_pages()
+
+            assert pages_manager._cached_pages is not None
+
+            new_pages = pages_manager.get_pages()
+            # Assert address-equality to verify the cache is used the second time
+            # get_pages is called.
+            assert new_pages is pages
+
+            assert not pages_manager._on_pages_changed.send.called
+
+            pages_manager._on_pages_changed.reset_mock()
+            pages_manager.invalidate_pages_cache()
+            assert pages_manager._cached_pages is None
+
+            assert not pages_manager._on_pages_changed.send.called
+            another_new_set_of_pages = pages_manager.get_pages()
+            assert another_new_set_of_pages is not pages
 
 
 # NOTE: We write this test function using pytest conventions (as opposed to
