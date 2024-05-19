@@ -1,32 +1,11 @@
 version: 2
 updates:
-  # Keep package.json (& lockfiles) up to date as soon as
-  # new versions are published to the npm registry
-  - package-ecosystem: "npm"
-    directory: "/frontend"
-    schedule:
-      interval: "daily"
-    # Pause Dependabot updates. Security updates are unaffected
-    open-pull-requests-limit: 0
-
-    labels:
-      - "change:chore"
-      - "impact:internal"
-
-  # Keep Pipfile up to date
   - package-ecosystem: "pip"
-    directory: "/lib"
+    directory: "/"
+    insecure-external-code-execution: allow
+    pull-request-branch-name:
+      # Separate sections of the branch name with a hyphen
+      # for example, `dependabot-npm_and_yarn-next_js-acorn-6.4.1`
+      separator: "-"
     schedule:
       interval: "daily"
-    # Pause Dependabot updates. Security updates are unaffected
-    open-pull-requests-limit: 0
-
-    labels:
-      - "change:chore"
-      - "impact:internal"
-
-  # Maintain dependencies in GitHub Actions workflows
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "weekly"
