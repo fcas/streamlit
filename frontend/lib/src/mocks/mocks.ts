@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,10 @@
  * limitations under the License.
  */
 
-import {
-  Props as SessionInfoProps,
-  SessionInfo,
-} from "@streamlit/lib/src/SessionInfo"
-import { StreamlitEndpoints } from "@streamlit/lib/src/StreamlitEndpoints"
-import { IAppPage } from "@streamlit/lib/src/proto"
+import { IAppPage } from "@streamlit/protobuf"
+
+import { SessionInfo, Props as SessionInfoProps } from "~lib/SessionInfo"
+import { StreamlitEndpoints } from "~lib/StreamlitEndpoints"
 
 /** Create mock SessionInfo.props */
 export function mockSessionInfoProps(
@@ -30,10 +28,14 @@ export function mockSessionInfoProps(
     sessionId: "mockSessionId",
     streamlitVersion: "mockStreamlitVersion",
     pythonVersion: "mockPythonVersion",
+    serverOS: "mockServerOS",
+    hasDisplay: true,
     installationId: "mockInstallationId",
     installationIdV3: "mockInstallationIdV3",
+    installationIdV4: "mockInstallationIdV4",
     maxCachedMessageAge: 123,
     isHello: false,
+    isConnected: true,
     ...overrides,
   }
 }
@@ -52,25 +54,31 @@ export function mockEndpoints(
   overrides: Partial<StreamlitEndpoints> = {}
 ): StreamlitEndpoints {
   return {
-    buildComponentURL: jest.fn(),
-    buildMediaURL: jest.fn(),
-    buildFileUploadURL: jest.fn(),
-    buildAppPageURL: jest
+    setStaticConfigUrl: vi.fn(),
+    sendClientErrorToHost: vi.fn(),
+    checkSourceUrlResponse: vi.fn(),
+    buildComponentURL: vi.fn(),
+    buildBidiComponentURL: vi.fn(),
+    buildMediaURL: vi.fn(),
+    buildDownloadUrl: vi.fn(),
+    buildFileUploadURL: vi.fn(),
+    buildAppPageURL: vi
       .fn()
       .mockImplementation(
-        (pageLinkBaseURL: string, page: IAppPage, pageIndex: number) => {
+        (_pageLinkBaseURL: string, page: IAppPage, pageIndex: number) => {
           return `http://mock/app/page/${page.pageName}.${pageIndex}`
         }
       ),
-    uploadFileUploaderFile: jest
+    uploadFileUploaderFile: vi
       .fn()
       .mockRejectedValue(new Error("unimplemented mock endpoint")),
-    deleteFileAtURL: jest
-      .fn()
-      .mockRejectedValue(new Error("unimplemented mock endpoint")),
-    fetchCachedForwardMsg: jest
+    deleteFileAtURL: vi
       .fn()
       .mockRejectedValue(new Error("unimplemented mock endpoint")),
     ...overrides,
   }
+}
+
+export function mockConvertRemToPx(cssValue: string): number {
+  return Number(cssValue.replace("rem", "")) * 16
 }

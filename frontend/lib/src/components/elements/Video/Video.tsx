@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,37 +14,37 @@
  * limitations under the License.
  */
 
-import React, { ReactElement, useEffect, useRef, useMemo } from "react"
-import { Video as VideoProto } from "@streamlit/lib/src/proto"
-import { StreamlitEndpoints } from "@streamlit/lib/src/StreamlitEndpoints"
-import { IS_DEV_ENV } from "@streamlit/lib/src/baseconsts"
-import { WidgetStateManager as ElementStateManager } from "@streamlit/lib/src/WidgetStateManager"
+import { memo, ReactElement, useEffect, useMemo, useRef } from "react"
 
-const DEFAULT_HEIGHT = 528
+import { getLogger } from "loglevel"
 
+import { ISubtitleTrack, Video as VideoProto } from "@streamlit/protobuf"
+
+import { useCrossOriginAttribute } from "~lib/hooks/useCrossOriginAttribute"
+import { StreamlitEndpoints } from "~lib/StreamlitEndpoints"
+import { WidgetStateManager as ElementStateManager } from "~lib/WidgetStateManager"
+
+import { StyledVideo, StyledVideoIframe } from "./styled-components"
+
+const LOG = getLogger("Video")
 export interface VideoProps {
   endpoints: StreamlitEndpoints
-  width: number
   element: VideoProto
   elementMgr: ElementStateManager
 }
 
-export interface Subtitle {
-  label: string
-  url: string
-}
-
-export default function Video({
+function Video({
   element,
-  width,
   endpoints,
   elementMgr,
-}: VideoProps): ReactElement {
+}: Readonly<VideoProps>): ReactElement {
   const videoRef = useRef<HTMLVideoElement>(null)
 
   /* Element may contain "url" or "data" property. */
   const { type, url, startTime, subtitles, endTime, loop, autoplay, muted } =
     element
+
+  let crossOrigin = useCrossOriginAttribute(url)
 
   const preventAutoplay = useMemo<boolean>(() => {
     if (!element.id) {
@@ -54,18 +54,42 @@ export default function Video({
 
     // Recover the state in case this component got unmounted
     // and mounted again for the same element.
-    const preventAutoplay = elementMgr.getElementState(
+    const preventAutoplayState = elementMgr.getElementState<boolean>(
       element.id,
       "preventAutoplay"
     )
 
-    if (!preventAutoplay) {
+    if (!preventAutoplayState) {
       // Set the state to prevent autoplay in case there is an unmount + mount
       // for the same element.
       elementMgr.setElementState(element.id, "preventAutoplay", true)
     }
-    return preventAutoplay ?? false
+    return preventAutoplayState ?? false
   }, [element.id, elementMgr])
+
+  // Create a stable dependency for checking subtitle source urls
+  const subtitleSrcArrString = useMemo(() => {
+    if (!subtitles) {
+      return JSON.stringify([])
+    }
+
+    return JSON.stringify(
+      subtitles.map(subtitle => endpoints.buildMediaURL(`${subtitle.url}`))
+    )
+  }, [subtitles, endpoints])
+
+  // Check the video's subtitles for load errors
+  useEffect(() => {
+    const subtitleSrcArr: string[] = JSON.parse(subtitleSrcArrString)
+    if (subtitleSrcArr.length === 0) return
+
+    // Since there is no onerror event for track elements, we can't use the onerror event
+    // to catch src url load errors. Catch with direct check instead.
+    subtitleSrcArr.forEach(subtitleSrc => {
+      // eslint-disable-next-line @typescript-eslint/no-floating-promises -- TODO: Fix this
+      endpoints.checkSourceUrlResponse(subtitleSrc, "Video Subtitle")
+    })
+  }, [subtitleSrcArrString, endpoints])
 
   // Handle startTime changes
   useEffect(() => {
@@ -97,7 +121,9 @@ export default function Video({
   // Stop the video at 'endTime' and handle loop
   useEffect(() => {
     const videoNode = videoRef.current
-    if (!videoNode) return
+    if (!videoNode) {
+      return
+    }
 
     // Flag to avoid calling 'videoNode.pause()' multiple times
     let stoppedByEndTime = false
@@ -107,6 +133,7 @@ export default function Video({
         if (loop) {
           // If loop is true and we reached 'endTime', reset to 'startTime'
           videoNode.currentTime = startTime || 0
+          // eslint-disable-next-line @typescript-eslint/no-floating-promises -- TODO: Fix this
           videoNode.play()
         } else if (!stoppedByEndTime) {
           stoppedByEndTime = true
@@ -129,12 +156,15 @@ export default function Video({
   // Handle looping the video
   useEffect(() => {
     const videoNode = videoRef.current
-    if (!videoNode) return
+    if (!videoNode) {
+      return
+    }
 
     // Loop the video when it has ended
     const handleVideoEnd = (): void => {
       if (loop) {
         videoNode.currentTime = startTime || 0 // Reset to startTime or to the start if not specified
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises -- TODO: Fix this
         videoNode.play()
       }
     }
@@ -148,9 +178,8 @@ export default function Video({
     }
   }, [loop, startTime])
 
-  const getYoutubeSrc = (url: string): string => {
-    const { startTime, endTime, loop, autoplay, muted } = element
-    const youtubeUrl = new URL(url)
+  const getYoutubeSrc = (urlArg: string): string => {
+    const youtubeUrl = new URL(urlArg)
 
     if (startTime && !isNaN(startTime)) {
       youtubeUrl.searchParams.append("start", startTime.toString())
@@ -181,59 +210,66 @@ export default function Video({
     return youtubeUrl.toString()
   }
 
-  /* Is this a YouTube link? If so we need a fancier tag.
-       NOTE: This part assumes the URL is already an "embed" link.
-    */
+  // Is this a YouTube link? If so we need a fancier tag.
+  // NOTE: This part assumes the URL is already an "embed" link.
   if (type === VideoProto.Type.YOUTUBE_IFRAME) {
-    // At some point the width 0 will be passed to this component
-    // which is caused by the AutoSizer of the VerticalLayout
-    // Width 0 will result in height being 0, which results in issue
-    // https://github.com/streamlit/streamlit/issues/5069
-    // To avoid this, when we detect width is 0, we set height to 528,
-    // which is default height based on the default streamlit width
-    const height = width !== 0 ? width * 0.75 : DEFAULT_HEIGHT
-
     return (
-      <iframe
+      <StyledVideoIframe
+        className="stVideo"
         data-testid="stVideo"
         title={url}
         src={getYoutubeSrc(url)}
-        width={width}
-        height={height}
-        style={{ colorScheme: "normal" }}
-        frameBorder="0"
         allow="autoplay; encrypted-media"
         allowFullScreen
       />
     )
   }
 
-  // Only in dev mode we set crossOrigin to "anonymous" to avoid CORS issues
+  const handleVideoError = (
+    e: React.SyntheticEvent<HTMLVideoElement>
+  ): void => {
+    const videoUrl = e.currentTarget.src
+    LOG.error(`Client Error: Video source error - ${videoUrl}`)
+    endpoints.sendClientErrorToHost(
+      "Video",
+      "Video source failed to load",
+      "onerror triggered",
+      videoUrl
+    )
+  }
+
+  // When in dev mode we set crossOrigin to "anonymous" to avoid CORS issues
   // when streamlit frontend and backend are running on different ports
+  if (process.env.NODE_ENV === "development" && subtitles.length > 0) {
+    crossOrigin = "anonymous"
+  }
+
   return (
-    <video
+    <StyledVideo
+      className="stVideo"
       data-testid="stVideo"
       ref={videoRef}
       controls
       muted={muted}
       autoPlay={autoplay && !preventAutoplay}
       src={endpoints.buildMediaURL(url)}
-      className="stVideo"
-      style={{ width, height: width === 0 ? DEFAULT_HEIGHT : undefined }}
-      crossOrigin={
-        IS_DEV_ENV && subtitles.length > 0 ? "anonymous" : undefined
-      }
+      crossOrigin={crossOrigin}
+      onError={handleVideoError}
     >
-      {subtitles &&
-        subtitles.map((subtitle: Subtitle, idx: number) => (
-          <track
-            key={idx}
-            kind="captions"
-            src={endpoints.buildMediaURL(subtitle.url)}
-            label={subtitle.label}
-            default={idx === 0}
-          />
-        ))}
-    </video>
+      {subtitles?.map((subtitle: ISubtitleTrack, idx: number) => (
+        <track
+          // TODO: Update to match React best practices
+          // eslint-disable-next-line @eslint-react/no-array-index-key
+          key={idx}
+          kind="captions"
+          src={endpoints.buildMediaURL(`${subtitle.url}`)}
+          label={`${subtitle.label}`}
+          default={idx === 0}
+          data-testid="stVideoSubtitle"
+        />
+      ))}
+    </StyledVideo>
   )
 }
+
+export default memo(Video)

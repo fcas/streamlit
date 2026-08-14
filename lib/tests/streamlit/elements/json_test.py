@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,10 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+from unittest.mock import patch
+
 import numpy as np
+import pytest
+from parameterized import parameterized
 
 import streamlit as st
+from streamlit.errors import StreamlitInvalidWidthError
+from streamlit.user_info import UserInfoProxy
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.elements.layout_test_utils import WidthConfigFields
 
 
 class StJsonAPITest(DeltaGeneratorTestCase):
@@ -26,7 +34,14 @@ class StJsonAPITest(DeltaGeneratorTestCase):
         st.json('{"some": "json"}')
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.json.body, '{"some": "json"}')
+        assert el.json.body == '{"some": "json"}'
+        assert el.json.expanded is True
+        assert el.json.HasField("max_expand_depth") is False
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert el.width_config.use_stretch is True
 
         # Test that an object containing non-json-friendly keys can still
         # be displayed.  Resultant json body will be missing those keys.
@@ -36,4 +51,149 @@ class StJsonAPITest(DeltaGeneratorTestCase):
         st.json(data)
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.json.body, '{"array": "array([1, 2, 3, 4, 5])"}')
+        assert el.json.body == '{"array": "array([1, 2, 3, 4, 5])"}'
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert el.width_config.use_stretch is True
+
+    def test_expanded_param(self):
+        """Test expanded parameter for `st.json`"""
+        st.json(
+            {
+                "level1": {"level2": {"level3": {"a": "b"}}, "c": "d"},
+            },
+            expanded=2,
+        )
+
+        el = self.get_delta_from_queue().new_element
+        assert el.json.expanded is True
+        assert el.json.max_expand_depth == 2
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert el.width_config.use_stretch is True
+
+        with pytest.raises(TypeError):
+            st.json(
+                {
+                    "level1": {"level2": {"level3": {"a": "b"}}, "c": "d"},
+                },
+                expanded=["foo"],  # type: ignore
+            )
+
+    def test_st_json_with_width_pixels(self):
+        """Test st.json with width in pixels."""
+        st.json('{"some": "json"}', width=500)
+
+        el = self.get_delta_from_queue().new_element
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.PIXEL_WIDTH.value
+        )
+        assert el.width_config.pixel_width == 500
+
+    def test_st_json_with_width_stretch(self):
+        """Test st.json with stretch width."""
+        st.json('{"some": "json"}', width="stretch")
+
+        el = self.get_delta_from_queue().new_element
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert el.width_config.use_stretch is True
+
+    @parameterized.expand(
+        [
+            "invalid",
+            -100,
+            0,
+            100.5,
+            None,
+        ]
+    )
+    def test_st_json_with_invalid_width(self, width):
+        """Test st.json with invalid width values."""
+        with pytest.raises(StreamlitInvalidWidthError) as e:
+            st.json('{"some": "json"}', width=width)
+        assert "Invalid width" in str(e.value)
+
+    def test_st_json_masks_user_info_tokens(self):
+        """Test that st.json masks token values when displaying UserInfoProxy."""
+        with patch(
+            "streamlit.user_info._get_user_info",
+            return_value={
+                "email": "test@example.com",
+                "name": "Test User",
+                "tokens": {
+                    "id": "secret_id_token_value",
+                    "access": "secret_access_token_value",
+                },
+            },
+        ):
+            user = UserInfoProxy()
+
+            st.json(user)
+
+            el = self.get_delta_from_queue().new_element
+            body = json.loads(el.json.body)
+            assert body["email"] == "test@example.com"
+            assert body["name"] == "Test User"
+            assert body["tokens"]["id"] == "***"
+            assert body["tokens"]["access"] == "***"
+
+    def test_st_json_with_namedtuple(self):
+        """Test st.json converts namedtuple to dict via _asdict."""
+        from typing import NamedTuple
+
+        class Point(NamedTuple):
+            x: int
+            y: int
+
+        p = Point(1, 2)
+        st.json(p)
+
+        el = self.get_delta_from_queue().new_element
+        body = json.loads(el.json.body)
+        assert body == {"x": 1, "y": 2}
+
+    def test_st_json_with_mapping_proxy(self):
+        """Test st.json converts MappingProxyType to dict."""
+        import types
+
+        d = types.MappingProxyType({"a": 1, "b": 2})
+        st.json(d)
+
+        el = self.get_delta_from_queue().new_element
+        body = json.loads(el.json.body)
+        assert body == {"a": 1, "b": 2}
+
+    def test_st_json_with_list_like(self):
+        """Test st.json converts list-like (tuple, set) to list."""
+        st.json((1, 2, 3))
+
+        el = self.get_delta_from_queue().new_element
+        body = json.loads(el.json.body)
+        assert body == [1, 2, 3]
+
+    def test_st_json_user_info_without_tokens(self):
+        """Test that st.json handles UserInfoProxy without tokens correctly."""
+        with patch(
+            "streamlit.user_info._get_user_info",
+            return_value={
+                "email": "test@example.com",
+                "name": "Test User",
+            },
+        ):
+            user = UserInfoProxy()
+
+            st.json(user)
+
+            el = self.get_delta_from_queue().new_element
+            body = json.loads(el.json.body)
+            assert body["email"] == "test@example.com"
+            assert body["name"] == "Test User"
+            assert "tokens" not in body

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import pytest
-from playwright.sync_api import Locator, Page, expect
+from playwright.sync_api import Page, expect
 
-from e2e_playwright.conftest import ImageCompareFunction, wait_for_app_run
+from e2e_playwright.conftest import (
+    ImageCompareFunction,
+    wait_for_app_run,
+)
+from e2e_playwright.shared.vega_utils import assert_vega_chart_height
 
 
 def navigate_to_page(app: Page, index: int):
@@ -27,25 +30,38 @@ def navigate_to_page(app: Page, index: int):
 
 
 def check_page_title(app: Page, title: str) -> None:
-    expect(app.get_by_test_id("stMarkdown").locator("h1").nth(0)).to_contain_text(title)
+    expect(
+        app.get_by_test_id("stMarkdownContainer").locator("h1").nth(0)
+    ).to_contain_text(title)
+
+
+def check_page_icon(app: Page, icon: str, index: int = 0) -> None:
+    expect(
+        app.get_by_test_id("stSidebarNavLink")
+        .get_by_test_id("stIconMaterial")
+        .nth(index)
+    ).to_have_text(icon)
 
 
 def test_home_page(app: Page, assert_snapshot: ImageCompareFunction) -> None:
     """Test that the home page of the hello app is displayed correctly."""
     check_page_title(app, "Welcome to Streamlit!")
+    check_page_icon(app, "waving_hand")
     expect(app.get_by_test_id("stSidebar")).to_be_visible()
+    expect(app.get_by_test_id("stSidebarNav")).to_be_visible()
 
     assert_snapshot(app, name="hello_app-home_page")
 
 
 def test_animation_demo_page(app: Page, assert_snapshot: ImageCompareFunction) -> None:
     """Test that the animation demo page of the hello app is displayed correctly."""
-    navigate_to_page(app, 1)
+    navigate_to_page(app, 4)
 
-    check_page_title(app, "Animation Demo")
+    check_page_title(app, "Animation demo")
+    check_page_icon(app, "animation", 4)
     # Wait for the animation to end. The animation takes 5-10 seconds to finish
     # which is a lot more than the default timeout, so we set it to a higher value
-    expect(app.get_by_test_id("stButton")).to_contain_text("Re-run", timeout=25000)
+    expect(app.get_by_test_id("stButton")).to_contain_text("Rerun", timeout=25000)
 
     assert_snapshot(app, name="hello_app-animation_demo_page")
 
@@ -54,14 +70,13 @@ def test_plotting_demo_page(app: Page, assert_snapshot: ImageCompareFunction) ->
     """Test that the plotting demo page of the hello app is displayed correctly."""
     navigate_to_page(app, 2)
 
-    check_page_title(app, "Plotting Demo")
+    check_page_title(app, "Plotting demo")
+    check_page_icon(app, "show_chart", 2)
     # The animation takes 5-10 seconds to finish, so we add
     # and additional timeout
-    expect(app.get_by_test_id("stText")).to_contain_text("100% Complete", timeout=15000)
+    expect(app.get_by_test_id("stText")).to_contain_text("100% complete", timeout=15000)
     expect(app.get_by_test_id("stProgress")).not_to_be_visible()
-    expect(
-        app.get_by_test_id("stArrowVegaLiteChart").locator("canvas")
-    ).to_have_attribute("height", "350")
+    assert_vega_chart_height(app.get_by_test_id("stVegaLiteChart"), 350)
 
     assert_snapshot(app, name="hello_app-plotting_demo_page")
 
@@ -70,27 +85,29 @@ def test_mapping_demo_page(app: Page) -> None:
     """Test that the mapping demo page of the hello app is displayed correctly."""
     navigate_to_page(app, 3)
 
-    check_page_title(app, "Mapping Demo")
+    check_page_title(app, "Mapping demo")
+    check_page_icon(app, "public", 3)
     # We add an additional timeout here since sometimes the loading of
     # the map takes a bit longer (probably because of the map token request).
-    expect(app.get_by_test_id("stDeckGlJsonChart")).to_have_attribute(
-        "height", "500", timeout=10000
-    )
+    expect(
+        app.get_by_test_id("stElementContainer").filter(
+            has=app.get_by_test_id("stDeckGlJsonChart")
+        )
+    ).to_have_css("height", "500px", timeout=10000)
 
     # The snapshot test here is flaky, the map doesn't seem to always result
     # in the same image.
-    # assert_snapshot(app, name="hello_app-mapping_demo_page")
+    # assert_snapshot(app, name="hello_app-mapping_demo_page")  # noqa: ERA001
 
 
 def _load_dataframe_demo_page(app: Page):
     """Load the dataframe demo page and wait until all elements are visible."""
-    navigate_to_page(app, 4)
-    check_page_title(app, "DataFrame Demo")
+    navigate_to_page(app, 1)
+    check_page_title(app, "DataFrame demo")
+    check_page_icon(app, "table", 1)
     expect(app.get_by_test_id("stMultiSelect")).to_be_visible()
     expect(app.get_by_test_id("stDataFrame")).to_be_visible()
-    expect(
-        app.get_by_test_id("stArrowVegaLiteChart").locator("canvas")
-    ).to_have_attribute("height", "350")
+    assert_vega_chart_height(app.get_by_test_id("stVegaLiteChart"), 350)
 
 
 def test_dataframe_demo_page(app: Page, assert_snapshot: ImageCompareFunction) -> None:
@@ -100,9 +117,11 @@ def test_dataframe_demo_page(app: Page, assert_snapshot: ImageCompareFunction) -
 
 
 # TEST PRINTING:
-# The print tests are in this suite to avoid having full-app screenshots being spread around in different suites.
-# Even the smallest design change in one part of the app can make these full-screenshots fail and require renewal, which is why we want them to be
-# bundled in one place. The "Dataframe Demo" page was arbitrarily chosen as a good printing candidate.
+# The print tests are in this suite to avoid having full-app screenshots being spread
+# around in different suites. Even the smallest design change in one part of the app can
+# make these full-screenshots fail and require renewal, which is why we want them to be
+# bundled in one place. The "Dataframe Demo" page was arbitrarily chosen as a good
+# printing candidate.
 
 
 def _evaluate_match_media_print(app: Page):
@@ -126,14 +145,18 @@ def _set_landscape_dimensions(app: Page):
 def test_app_print_mode_portrait_with_sidebar_open(
     themed_app: Page, assert_snapshot: ImageCompareFunction
 ):
-    """Test that the dataframe demo page looks correctly in print-mode with sidebar open."""
+    """Test that the dataframe demo page looks correctly in print-mode with
+    sidebar open.
+    """
     app = themed_app
+
     _load_dataframe_demo_page(app)
     app.emulate_media(media="print", forced_colors="active")
     _set_portrait_dimensions(app)
     _evaluate_match_media_print(app)
 
     # ensure that the sidebar is visible
+    expect(app.get_by_test_id("stSidebar")).to_be_visible()
     expect(app.get_by_test_id("stSidebarContent")).to_be_visible()
 
     assert_snapshot(app, name="hello_app-print_media-portrait-sidebar_open")
@@ -142,16 +165,24 @@ def test_app_print_mode_portrait_with_sidebar_open(
 def test_app_print_mode_portrait_with_sidebar_closed(
     themed_app: Page, assert_snapshot: ImageCompareFunction
 ):
-    """Test that the dataframe demo page looks correctly in print-mode with sidebar closed."""
+    """Test that the dataframe demo page looks correctly in print-mode with
+    sidebar closed.
+    """
     app = themed_app
+
+    # Note: this was moved up to the top because the sidebar has logic that when
+    # resizing the window could cause the sidebar to be open or closed
+    _set_portrait_dimensions(app)
+
     _load_dataframe_demo_page(app)
-    # close sidebar. Must be done before print-mode, because we hide the close button when printing
-    sidebar_element = app.get_by_test_id("stSidebarContent")
-    sidebar_element.get_by_test_id("baseButton-header").click()
+    # close sidebar. Must be done before print-mode, because we hide the close button
+    # when printing
+    sidebar_element = app.get_by_test_id("stSidebar")
+    sidebar_element.hover()
+    app.get_by_test_id("stSidebarCollapseButton").click()
     expect(sidebar_element).not_to_be_visible()
 
     app.emulate_media(media="print", forced_colors="active")
-    _set_portrait_dimensions(app)
     _evaluate_match_media_print(app)
 
     assert_snapshot(app, name="hello_app-print_media-portrait-sidebar_closed")
@@ -160,14 +191,17 @@ def test_app_print_mode_portrait_with_sidebar_closed(
 def test_app_print_mode_landscape_with_sidebar_open(
     themed_app: Page, assert_snapshot: ImageCompareFunction
 ):
-    """Test that the dataframe demo page looks correctly in print-mode (orientation: landscape) with sidebar open."""
+    """Test that the dataframe demo page looks correctly in print-mode
+    (orientation: landscape) with sidebar open.
+    """
     app = themed_app
+
     _load_dataframe_demo_page(app)
     app.emulate_media(media="print", forced_colors="active")
     _set_landscape_dimensions(app)
     _evaluate_match_media_print(app)
-
     # ensure that the sidebar is visible
+    expect(app.get_by_test_id("stSidebar")).to_be_visible()
     expect(app.get_by_test_id("stSidebarContent")).to_be_visible()
 
     assert_snapshot(app, name="hello_app-print_media-landscape-sidebar_open")
@@ -176,16 +210,35 @@ def test_app_print_mode_landscape_with_sidebar_open(
 def test_app_print_mode_landscape_with_sidebar_closed(
     themed_app: Page, assert_snapshot: ImageCompareFunction
 ):
-    """Test that the dataframe demo page looks correctly in print-mode (orientation: landscape) with sidebar closed."""
+    """Test that the dataframe demo page looks correctly in print-mode
+    (orientation: landscape) with sidebar closed.
+    """
     app = themed_app
+
+    # Note: this was moved up to the top because the sidebar has logic that when
+    # resizing the window could cause the sidebar to be open or closed
+    _set_landscape_dimensions(app)
+
     _load_dataframe_demo_page(app)
-    # close sidebar. Must be done before print-mode, because we hide the close button when printing
-    sidebar_element = app.get_by_test_id("stSidebarContent")
-    sidebar_element.get_by_test_id("baseButton-header").click()
+    # close sidebar. Must be done before print-mode, because we hide the close button
+    # when printing
+    sidebar_element = app.get_by_test_id("stSidebar")
+    sidebar_element.hover()
+    app.get_by_test_id("stSidebarCollapseButton").click()
     expect(sidebar_element).not_to_be_visible()
 
     app.emulate_media(media="print", forced_colors="active")
-    _set_landscape_dimensions(app)
     _evaluate_match_media_print(app)
 
     assert_snapshot(app, name="hello_app-print_media-landscape-sidebar_closed")
+
+
+def test_max_content_width_uses_px(app: Page):
+    """Test that the max content width uses px and not rem.
+
+    We don't want to adjust the content max width based on the root font size,
+    therefore, we are changing this setting to px instead of rem. This allows
+    us to fill the same screen estate regardless of the root font size
+    -> which allows more compact apps by using a small font size.
+    """
+    expect(app.get_by_test_id("stMainBlockContainer")).to_have_css("max-width", "736px")

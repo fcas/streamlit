@@ -1,0 +1,342 @@
+/**
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { RefObject, useCallback, useEffect, useRef, useState } from "react"
+
+import { getLogger } from "loglevel"
+import { truthy, View as VegaView } from "vega"
+import embed, { VisualizationSpec } from "vega-embed"
+import { expressionInterpreter } from "vega-interpreter"
+
+import { useFormClearHelper } from "~lib/components/widgets/Form/FormClearHelper"
+import { Quiver } from "~lib/dataframes/Quiver"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import {
+  getDataArray,
+  getDataArrays,
+  getDataSets,
+  getInlineData,
+  VegaLiteChartElement,
+  WrappedNamedDataset,
+} from "./arrowUtils"
+import { useVegaLiteSelections } from "./useVegaLiteSelections"
+
+const DEFAULT_DATA_NAME = "source"
+const LOG = getLogger("useVegaEmbed")
+
+interface UseVegaEmbedOutput {
+  createView: (
+    containerRef: RefObject<HTMLDivElement>,
+    spec: VisualizationSpec | string
+  ) => Promise<VegaView | null>
+  updateView: (
+    data: Quiver | null,
+    datasets: WrappedNamedDataset[]
+  ) => Promise<VegaView | null>
+  finalizeView: () => void
+  resizeView: (width: number, height: number) => Promise<boolean>
+  exportToPng: () => Promise<string | null>
+  isViewReady: boolean
+}
+
+/**
+ * Hook that returns a set of lifecycle functions that can be used to create,
+ * update, and remove a vega-lite chart into the DOM.
+ *
+ * @param inputElement The vega-lite chart element
+ * @param widgetMgr The widget manager
+ * @param fragmentId The fragment id of the element
+ */
+export function useVegaEmbed(
+  inputElement: VegaLiteChartElement,
+  widgetMgr: WidgetStateManager,
+  fragmentId?: string
+): UseVegaEmbedOutput {
+  const vegaViewRef = useRef<VegaView | null>(null)
+  const vegaFinalizerRef = useRef<(() => void) | null>(null)
+  const defaultDataNameRef = useRef<string>(DEFAULT_DATA_NAME)
+  const prevDataRef = useRef<Quiver | null>(null)
+  const prevDatasetsRef = useRef<WrappedNamedDataset[]>([])
+  // Always-up-to-date props for safe access inside stable callbacks to avoid stale closure issues
+  const latestDataRef = useRef<Quiver | null>(null)
+  const latestDatasetsRef = useRef<WrappedNamedDataset[]>([])
+  // This is used to prevent the view from being updated while it is being created
+  const [isCreatingView, setIsCreatingView] = useState(false)
+
+  // Setup interactivity for the chart if it supports selections
+  const { maybeConfigureSelections, onFormCleared } = useVegaLiteSelections(
+    inputElement,
+    widgetMgr,
+    fragmentId
+  )
+
+  useFormClearHelper({ widgetMgr, element: inputElement, onFormCleared })
+
+  const { data, datasets } = inputElement
+
+  // Keep latest refs in sync and initialize previous refs before first view
+  useEffect(() => {
+    latestDataRef.current = data
+    latestDatasetsRef.current = datasets
+
+    // Initialize the data and datasets refs with the current data and datasets
+    // This is predominantly used to handle the case where we want to reference
+    // these in createView before the first render.
+    if (vegaViewRef.current === null) {
+      prevDataRef.current = data
+      prevDatasetsRef.current = datasets
+    }
+  }, [data, datasets])
+
+  const finalizeView = useCallback(() => {
+    if (vegaFinalizerRef.current) {
+      vegaFinalizerRef.current()
+    }
+
+    vegaFinalizerRef.current = null
+    vegaViewRef.current = null
+  }, [])
+
+  const createView = useCallback(
+    async (
+      containerRef: RefObject<HTMLDivElement>,
+      spec: VisualizationSpec | string
+    ): Promise<VegaView | null> => {
+      if (containerRef.current === null) {
+        throw new Error("Element missing.")
+      }
+      setIsCreatingView(true)
+      try {
+        // Finalize the previous view so it can be garbage collected.
+        finalizeView()
+
+        const options = {
+          // Adds interpreter support for Vega expressions that is compliant with CSP
+          ast: true,
+          expr: expressionInterpreter,
+
+          // Disable default styles so that vega doesn't inject <style> tags in the
+          // DOM. We set these styles manually for finer control over them and to
+          // avoid inlining styles.
+          tooltip: { disableDefaultStyle: true },
+          defaultStyle: false,
+          // Disable all built-in vega-embed action links ("View Source", "Open
+          // in Vega Editor", "Save as PNG/SVG"). Combined with sanitizing
+          // usermeta.embedOptions (see useVegaElementPreprocessor), this prevents
+          // a chart spec from using these actions to open same-origin pages with
+          // serialized spec contents. We expose our own toolbar actions instead.
+          // Note: `actions: false` also changes vega-embed's DOM output: it no
+          // longer wraps the chart in a `.chart-wrapper`/`.vega-actions`
+          // structure and instead applies `role="graphics-document"` and the
+          // `fit-x`/`fit-y` sizing classes directly to this container element
+          // (which our styles and e2e locators rely on).
+          actions: false,
+        }
+
+        const { vgSpec, view, finalize } = await embed(
+          containerRef.current,
+          spec,
+          options
+        )
+
+        vegaViewRef.current = maybeConfigureSelections(view)
+
+        vegaFinalizerRef.current = finalize
+
+        // Load the initial set of data into the chart.
+        const dataArrays = getDataArrays(latestDatasetsRef.current)
+
+        // Heuristic to determine the default dataset name.
+        const datasetNames = dataArrays ? Object.keys(dataArrays) : []
+        if (datasetNames.length === 1) {
+          const [datasetName] = datasetNames
+          defaultDataNameRef.current = datasetName
+        } else if (datasetNames.length === 0 && vgSpec.data) {
+          defaultDataNameRef.current = DEFAULT_DATA_NAME
+        }
+
+        const dataObj = getInlineData(latestDataRef.current)
+        if (dataObj) {
+          vegaViewRef.current.insert(defaultDataNameRef.current, dataObj)
+        }
+        if (dataArrays) {
+          for (const [name, dataArg] of Object.entries(dataArrays)) {
+            vegaViewRef.current.insert(name, dataArg)
+          }
+        }
+
+        await vegaViewRef.current.runAsync()
+
+        // Fix bug where the "..." menu button overlaps with charts where width is
+        // set to -1 on first load.
+        await vegaViewRef.current.resize().runAsync()
+
+        // Record the data used to initialize this view so subsequent updates
+        // have an accurate previous state to diff against.
+        prevDataRef.current = latestDataRef.current
+        prevDatasetsRef.current = latestDatasetsRef.current
+
+        return vegaViewRef.current
+      } finally {
+        setIsCreatingView(false)
+      }
+    },
+    [finalizeView, maybeConfigureSelections]
+  )
+
+  const updateData = useCallback(
+    (
+      view: VegaView,
+      name: string,
+      prevData: Quiver | null,
+      dataArg: Quiver | null
+    ): void => {
+      if (!dataArg || dataArg.dimensions.numDataRows === 0) {
+        // The new data is empty, so we remove the dataset from the
+        // chart view if the named dataset exists.
+        try {
+          view.remove(name, truthy)
+        } catch {
+          // The dataset was already removed, so we do nothing
+        }
+        return
+      }
+
+      if (!prevData || prevData.dimensions.numDataRows === 0) {
+        // The previous data was empty, so we just insert the new data.
+        view.insert(name, getDataArray(dataArg))
+        return
+      }
+
+      if (dataArg.hash !== prevData.hash) {
+        // Data has changed, replace the dataset.
+        view.data(name, getDataArray(dataArg))
+        LOG.info(`Replaced the ${name} dataset in Vega view.`)
+      }
+    },
+    []
+  )
+
+  const updateView = useCallback(
+    async (
+      inputData: Quiver | null,
+      inputDatasets: WrappedNamedDataset[]
+    ): Promise<VegaView | null> => {
+      if (vegaViewRef.current === null || isCreatingView) {
+        return null
+      }
+
+      // At this point the previous data should be updated
+      const prevData = prevDataRef.current
+      const prevDatasets = prevDatasetsRef.current
+
+      if (prevData || inputData) {
+        updateData(
+          vegaViewRef.current,
+          defaultDataNameRef.current,
+          prevData,
+          inputData
+        )
+      }
+
+      const prevDataSets = getDataSets(prevDatasets) ?? {}
+      const dataSets = getDataSets(inputDatasets) ?? {}
+
+      for (const [name, dataset] of Object.entries(dataSets)) {
+        const datasetName = name || defaultDataNameRef.current
+        const prevDataset = prevDataSets[datasetName]
+
+        updateData(vegaViewRef.current, datasetName, prevDataset, dataset)
+      }
+
+      // Remove all datasets that are in the previous but not the current datasets.
+      for (const name of Object.keys(prevDataSets)) {
+        if (
+          !Object.hasOwn(dataSets, name) &&
+          name !== defaultDataNameRef.current
+        ) {
+          updateData(vegaViewRef.current, name, null, null)
+        }
+      }
+
+      await vegaViewRef.current?.resize().runAsync()
+
+      prevDataRef.current = inputData
+      prevDatasetsRef.current = inputDatasets
+
+      return vegaViewRef.current
+    },
+    [updateData, isCreatingView]
+  )
+
+  const resizeView = useCallback(
+    async (width: number, height: number): Promise<boolean> => {
+      if (vegaViewRef.current === null || isCreatingView) {
+        return false
+      }
+      try {
+        if (width > 0) {
+          vegaViewRef.current.width(width)
+        }
+        if (height > 0) {
+          vegaViewRef.current.height(height)
+        }
+        await vegaViewRef.current.resize().runAsync()
+        return true
+      } catch (error) {
+        LOG.warn("Failed to resize Vega view:", error)
+        return false
+      }
+    },
+    [isCreatingView]
+  )
+
+  const exportToPng = useCallback(async (): Promise<string | null> => {
+    if (vegaViewRef.current === null || isCreatingView) {
+      return null
+    }
+
+    try {
+      // Vega's default PNG export is at 1x, which produces a blurry image on
+      // HiDPI/retina displays where the on-screen canvas is rendered at
+      // `window.devicePixelRatio`. We upscale the PNG to at least 2x so the
+      // exported file matches (or exceeds) the perceived on-screen fidelity.
+      // See https://github.com/streamlit/streamlit/issues/8177.
+      const scaleFactor = Math.max(2, window.devicePixelRatio || 1)
+      return await vegaViewRef.current.toImageURL("png", scaleFactor)
+    } catch (error) {
+      LOG.warn("Failed to export Vega view as PNG:", error)
+      return null
+    }
+  }, [isCreatingView])
+
+  // Whether the view exists and is not mid-creation, so it's safe to resize.
+  // This is derived from a ref (`vegaViewRef`) rather than state, so it only
+  // reflects the latest value on re-render. That's sufficient here because
+  // `setIsCreatingView` toggles around view creation and forces the re-render
+  // that recomputes this flag once the view becomes ready.
+  const isViewReady = vegaViewRef.current !== null && !isCreatingView
+
+  return {
+    createView,
+    updateView,
+    finalizeView,
+    resizeView,
+    exportToPng,
+    isViewReady,
+  }
+}

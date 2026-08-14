@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-import React from "react"
-import { render } from "@streamlit/lib/src/test_util"
 import { screen } from "@testing-library/react"
-import "@testing-library/jest-dom"
+import { MockInstance } from "vitest"
 
-import { Exception as ExceptionProto } from "@streamlit/lib/src/proto"
+import { Config, Exception as ExceptionProto } from "@streamlit/protobuf"
+
+import { render, renderWithContexts } from "~lib/test_util"
 
 import ExceptionElement, { ExceptionElementProps } from "./ExceptionElement"
 
@@ -33,7 +33,6 @@ const getProps = (
     messageIsMarkdown: false,
     ...elementProps,
   }),
-  width: 0,
 })
 
 describe("ExceptionElement Element", () => {
@@ -42,6 +41,7 @@ describe("ExceptionElement Element", () => {
 
     const exceptionContainer = screen.getByTestId("stException")
     expect(exceptionContainer).toBeInTheDocument()
+    expect(exceptionContainer).toHaveClass("stException")
   })
 
   it("should render the complete stack", () => {
@@ -55,6 +55,17 @@ describe("ExceptionElement Element", () => {
     })
   })
 
+  it("should render only the message when type and stack are empty", () => {
+    render(<ExceptionElement {...getProps({ type: "", stackTrace: [] })} />)
+
+    expect(screen.queryByText("RuntimeError")).not.toBeInTheDocument()
+    expect(screen.queryByText("Traceback:")).not.toBeInTheDocument()
+
+    expect(
+      screen.getByText("This is an exception of type RuntimeError")
+    ).toBeInTheDocument()
+  })
+
   it("should render markdown when it has messageIsMarkdown", () => {
     render(<ExceptionElement {...getProps({ messageIsMarkdown: true })} />)
 
@@ -65,5 +76,57 @@ describe("ExceptionElement Element", () => {
     render(<ExceptionElement {...getProps({ message: "" })} />)
 
     expect(screen.getByText("RuntimeError")).toBeInTheDocument()
+  })
+
+  describe("Exception links visibility", () => {
+    let originalLocation: Location
+    let windowSpy: MockInstance
+
+    beforeEach(() => {
+      originalLocation = window.location
+      windowSpy = vi.spyOn(window, "location", "get")
+    })
+
+    afterEach(() => {
+      windowSpy.mockRestore()
+    })
+
+    it.each([
+      ["localhost", undefined],
+      ["localhost", Config.ShowErrorLinks.SHOW_ERROR_LINKS_AUTO],
+      ["localhost", Config.ShowErrorLinks.SHOW_ERROR_LINKS_TRUE],
+      ["foo.com", Config.ShowErrorLinks.SHOW_ERROR_LINKS_TRUE],
+    ])("shows links: hostname=%s, config=%s", (hostname, showErrorLinks) => {
+      windowSpy.mockReturnValue({ ...originalLocation, hostname })
+      if (showErrorLinks === undefined) {
+        render(<ExceptionElement {...getProps()} />)
+      } else {
+        renderWithContexts(<ExceptionElement {...getProps()} />, {
+          libConfigContext: { showErrorLinks },
+        })
+      }
+      expect(screen.getByText("Copy")).toBeInTheDocument()
+      expect(screen.getByText("Ask Google")).toBeInTheDocument()
+      expect(screen.getByText("Ask ChatGPT")).toBeInTheDocument()
+    })
+
+    it.each([
+      ["foo.com", undefined],
+      ["foo.com", Config.ShowErrorLinks.SHOW_ERROR_LINKS_AUTO],
+      ["localhost", Config.ShowErrorLinks.SHOW_ERROR_LINKS_FALSE],
+      ["foo.com", Config.ShowErrorLinks.SHOW_ERROR_LINKS_FALSE],
+    ])("hides links: hostname=%s, config=%s", (hostname, showErrorLinks) => {
+      windowSpy.mockReturnValue({ ...originalLocation, hostname })
+      if (showErrorLinks === undefined) {
+        render(<ExceptionElement {...getProps()} />)
+      } else {
+        renderWithContexts(<ExceptionElement {...getProps()} />, {
+          libConfigContext: { showErrorLinks },
+        })
+      }
+      expect(screen.queryByText("Copy")).not.toBeInTheDocument()
+      expect(screen.queryByText("Ask Google")).not.toBeInTheDocument()
+      expect(screen.queryByText("Ask ChatGPT")).not.toBeInTheDocument()
+    })
   })
 })

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,16 +12,23 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
 import random
 import unittest
-from typing import Dict, List, Set
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-import numpy as np
 import pytest
-from parameterized import parameterized
 
 from streamlit import util
+from streamlit.util import AttributeDictionary, ReadOnlyAttributeDictionary
+
+if TYPE_CHECKING:
+    from hashlib import _Hash
 
 
 class UtilTest(unittest.TestCase):
@@ -29,157 +36,260 @@ class UtilTest(unittest.TestCase):
 
     def test_memoization(self):
         """Test that util.memoize works."""
-        non_memoized_func = lambda: random.randint(0, 1000000)
+
+        def non_memoized_func():
+            return random.randint(0, 1000000)
+
         yes_memoized_func = util.memoize(non_memoized_func)
         assert non_memoized_func() != non_memoized_func()
         assert yes_memoized_func() == yes_memoized_func()
-
-    @parameterized.expand(
-        [("Linux", False, True), ("Windows", True, False), ("Darwin", False, True)]
-    )
-    def test_open_browser(self, os_type, webbrowser_expect, popen_expect):
-        """Test web browser opening scenarios."""
-        from streamlit import env_util
-
-        env_util.IS_WINDOWS = os_type == "Windows"
-        env_util.IS_DARWIN = os_type == "Darwin"
-        env_util.IS_LINUX_OR_BSD = os_type == "Linux"
-
-        with patch("streamlit.env_util.is_executable_in_path", return_value=True):
-            with patch("webbrowser.open") as webbrowser_open:
-                with patch("subprocess.Popen") as subprocess_popen:
-                    util.open_browser("http://some-url")
-                    assert webbrowser_expect == webbrowser_open.called
-                    assert popen_expect == subprocess_popen.called
-
-    def test_open_browser_linux_no_xdg(self):
-        """Test opening the browser on Linux with no xdg installed"""
-        from streamlit import env_util
-
-        env_util.IS_LINUX_OR_BSD = True
-
-        with patch("streamlit.env_util.is_executable_in_path", return_value=False):
-            with patch("webbrowser.open") as webbrowser_open:
-                with patch("subprocess.Popen") as subprocess_popen:
-                    util.open_browser("http://some-url")
-                    assert webbrowser_open.called
-                    assert not subprocess_popen.called
 
     def test_functools_wraps(self):
         """Test wrap for functools.wraps"""
 
         import streamlit as st
 
-        @st.cache
+        @st.cache_data
         def f():
             return True
 
         assert hasattr(f, "__wrapped__")
 
-    @parameterized.expand(
-        [
-            ({}, {}),
-            (
-                {
-                    "HELLO": 4,
-                    "Hello": "world",
-                    "hElLo": 5.5,
-                    "": "",
-                },
-                {"hello": 4, "hello": "world", "hello": 5.5, "": ""},
-            ),
-        ]
-    )
-    def test_lower_clean_dict_keys(self, input_dict, answer_dict):
-        return_dict = util.lower_clean_dict_keys(input_dict)
-        assert return_dict == answer_dict
+    def test_calc_hash_can_handle_bytes_and_strings(self):
+        assert util.calc_hash("eventually bytes") == util.calc_hash(b"eventually bytes")
 
-    @parameterized.expand(
-        [
-            (np.array([1, 2, 3, 4, 5]), 5, 4),
-            # This one will have 0.15000000000000002 because of floating point precision
-            (np.arange(0.0, 0.25, 0.05), 0.15, 3),
-            ([0, 1, 2, 3], 3, 3),
-            ([0.1, 0.2, 0.3], 0.2, 1),
-            ([0.1, 0.2, None], None, 2),
-            ([0.1, 0.2, float("inf")], float("inf"), 2),
-            (["He", "ello w", "orld"], "He", 0),
-            (list(np.arange(0.0, 0.25, 0.05)), 0.15, 3),
-        ]
-    )
-    def test_successful_index_(self, input, find_value, expected_index):
-        actual_index = util.index_(input, find_value)
-        assert actual_index == expected_index
+    def test_calc_hash_returns_consistent_hex_string(self):
+        """Test that calc_hash returns a consistent hexadecimal string."""
+        result = util.calc_hash("test input")
+        assert isinstance(result, str)
+        assert all(c in "0123456789abcdef" for c in result)
+        assert util.calc_hash("test input") == result
 
-    @parameterized.expand(
-        [
-            (np.array([1, 2, 3, 4, 5]), 6),
-            (np.arange(0.0, 0.25, 0.05), 0.1500002),
-            ([0, 1, 2, 3], 3.00001),
-            ([0.1, 0.2, 0.3], 0.3000004),
-            ([0.1, 0.2, 0.3], None),
-            (["He", "ello w", "orld"], "world"),
-            (list(np.arange(0.0, 0.25, 0.05)), 0.150002),
-        ]
-    )
-    def test_unsuccessful_index_(self, input, find_value):
-        with pytest.raises(ValueError):
-            util.index_(input, find_value)
+    def test_create_fast_hasher_returns_hasher_protocol(self):
+        """Test that create_fast_hasher returns an object matching Hasher protocol."""
+        hasher = util.create_fast_hasher()
+        assert hasattr(hasher, "update")
+        assert hasattr(hasher, "hexdigest")
+        assert hasattr(hasher, "digest")
 
-    @parameterized.expand(
-        [
-            ({"x": ["a"]}, ["x"], {}),
-            ({"a": ["a1", "a2"], "b": ["b1", "b2"]}, ["a"], {"b": ["b1", "b2"]}),
-            ({"c": ["c1", "c2"]}, "no_existing_key", {"c": ["c1", "c2"]}),
-            (
-                {
-                    "embed": ["true"],
-                    "embed_options": ["show_padding", "show_colored_line"],
-                },
-                ["embed", "embed_options"],
-                {},
-            ),
-            (
-                {"EMBED": ["TRUE"], "EMBED_OPTIONS": ["DISABLE_SCROLLING"]},
-                ["embed", "embed_options"],
-                {},
-            ),
-        ]
-    )
-    def test_exclude_keys_in_dict(
+    def test_create_fast_hasher_falls_back_for_fixed_size_blake2b(self) -> None:
+        """Test fallback for FIPS builds whose BLAKE2b has a fixed digest size."""
+        original_blake2b = hashlib.blake2b
+
+        def openssl_blake2b(
+            data: bytes = b"", *, usedforsecurity: bool = True
+        ) -> _Hash:
+            return original_blake2b(data, usedforsecurity=usedforsecurity)
+
+        data = b"test data"
+        with patch.object(hashlib, "blake2b", openssl_blake2b):
+            hasher = util.create_fast_hasher()
+            hasher.update(data)
+
+        expected = hashlib.new("md5", data, usedforsecurity=False).hexdigest()
+        assert hasher.hexdigest() == expected
+
+    def test_create_fast_hasher_falls_back_when_blake2b_raises_value_error(
         self,
-        d: Dict[str, List[str]],
-        keys_to_drop: List[str],
-        result: Dict[str, List[str]],
-    ):
-        assert util.exclude_keys_in_dict(d, keys_to_drop) == result
+    ) -> None:
+        """Test MD5 fallback when blake2b rejects digest_size with ValueError."""
 
-    @parameterized.expand(
+        def openssl_blake2b_rejecting_digest_size(
+            *args: object, **kwargs: object
+        ) -> _Hash:
+            raise ValueError("digest_size is invalid for openssl_blake2b()")
+
+        data = b"test data"
+        with patch.object(hashlib, "blake2b", openssl_blake2b_rejecting_digest_size):
+            hasher = util.create_fast_hasher()
+            hasher.update(data)
+
+        expected = hashlib.new("md5", data, usedforsecurity=False).hexdigest()
+        assert hasher.hexdigest() == expected
+
+    def test_create_fast_hasher_produces_consistent_results(self):
+        """Test that create_fast_hasher produces consistent hash results."""
+        h1 = util.create_fast_hasher()
+        h1.update(b"test data")
+        result1 = h1.hexdigest()
+
+        h2 = util.create_fast_hasher()
+        h2.update(b"test data")
+        result2 = h2.hexdigest()
+
+        assert result1 == result2
+
+    def test_create_fast_hasher_matches_calc_hash(self):
+        """Test that create_fast_hasher produces same result as calc_hash."""
+        data = b"test data"
+        h = util.create_fast_hasher()
+        h.update(data)
+        assert h.hexdigest() == util.calc_hash(data)
+
+
+# Pytest-style tests for ReadOnlyAttributeDictionary
+
+
+class TestReadOnlyAttributeDictionary:
+    """Test ReadOnlyAttributeDictionary class."""
+
+    def test_attribute_access(self) -> None:
+        """Test that attribute-style access works for reading values."""
+        d = ReadOnlyAttributeDictionary({"a": 1, "b": {"c": 2}})
+        assert d.a == 1
+        assert d.b.c == 2
+
+    def test_dict_access(self) -> None:
+        """Test that dict-style access works for reading values."""
+        d = ReadOnlyAttributeDictionary({"a": 1, "b": {"c": 2}})
+        assert d["a"] == 1
+        assert d["b"]["c"] == 2
+
+    def test_isinstance_attribute_dictionary(self) -> None:
+        """Test that ReadOnlyAttributeDictionary is an instance of AttributeDictionary."""
+        d = ReadOnlyAttributeDictionary({"a": 1})
+        assert isinstance(d, AttributeDictionary)
+        assert isinstance(d, dict)
+
+    @pytest.mark.parametrize(
+        ("operation", "mutation_func"),
         [
-            ({"x": ["a"]}, "x", {"a"}),
-            ({"a": ["a1"], "b": ["b1", "b2"]}, "a", {"a1"}),
-            ({"c": ["c1", "c2"]}, "no_existing_key", set()),
+            ("setattr", lambda d: setattr(d, "a", 2)),
+            ("setitem", lambda d: d.__setitem__("a", 2)),
+            ("delitem", lambda d: d.__delitem__("a")),
+            ("clear", lambda d: d.clear()),
+            ("pop", lambda d: d.pop("a")),
+            ("popitem", lambda d: d.popitem()),
+            ("setdefault", lambda d: d.setdefault("b", 2)),
+            ("update", lambda d: d.update({"b": 2})),
+            ("ior", lambda d: d.__ior__({"b": 2})),
+            ("nested_setattr", lambda d: setattr(d.selection, "rows", [3, 4])),
             (
-                {
-                    "embed": ["true"],
-                    "embed_options": ["show_padding", "show_colored_line"],
-                },
-                "embed",
-                {"true"},
+                "nested_bracket_setitem",
+                lambda d: d["selection"].__setitem__("rows", [3, 4]),
             ),
-            (
-                {"EMBED": ["TRUE"], "EMBED_OPTIONS": ["DISABLE_SCROLLING"]},
-                "embed_options",
-                {"disable_scrolling"},
-            ),
-        ]
+        ],
+        ids=[
+            "setattr",
+            "setitem",
+            "delitem",
+            "clear",
+            "pop",
+            "popitem",
+            "setdefault",
+            "update",
+            "ior",
+            "nested_attr",
+            "nested_bracket",
+        ],
     )
-    def test_extract_key_query_params(
-        self, query_params: Dict[str, List[str]], param_key: str, result: Set[str]
-    ):
-        assert util.extract_key_query_params(query_params, param_key) == result
+    def test_mutation_raises_typeerror(
+        self, operation: str, mutation_func: object
+    ) -> None:
+        """Test that mutation operations raise TypeError with helpful message."""
+        d = ReadOnlyAttributeDictionary({"a": 1, "selection": {"rows": [1, 2]}})
+        with pytest.raises(TypeError, match="Widget state is read-only"):
+            mutation_func(d)  # type: ignore[operator]
 
-    def test_calc_md5_can_handle_bytes_and_strings(self):
-        assert util.calc_md5("eventually bytes") == util.calc_md5(
-            "eventually bytes".encode("utf-8")
+    def test_bracket_access_returns_readonly(self) -> None:
+        """Test that bracket access to nested dicts returns ReadOnlyAttributeDictionary."""
+        d = ReadOnlyAttributeDictionary({"a": 1, "b": {"c": 2}})
+        nested = d["b"]
+        assert isinstance(nested, ReadOnlyAttributeDictionary)
+
+    def test_attribute_access_returns_readonly(self) -> None:
+        """Test that attribute access to nested dicts returns ReadOnlyAttributeDictionary."""
+        d = ReadOnlyAttributeDictionary({"a": 1, "b": {"c": 2}})
+        nested = d.b
+        assert isinstance(nested, ReadOnlyAttributeDictionary)
+
+    def test_deepcopy(self) -> None:
+        """Test that deepcopy works and returns a ReadOnlyAttributeDictionary."""
+        original = ReadOnlyAttributeDictionary({"a": 1, "b": {"c": [1, 2, 3]}})
+        copied = copy.deepcopy(original)
+
+        assert copied == original
+        assert copied is not original
+        assert isinstance(copied, ReadOnlyAttributeDictionary)
+        # Verify nested objects are also copied
+        assert copied["b"] is not original["b"]
+        assert copied["b"]["c"] is not original["b"]["c"]
+
+    def test_shallow_copy(self) -> None:
+        """Test that shallow copy works and returns a ReadOnlyAttributeDictionary."""
+        original = ReadOnlyAttributeDictionary({"a": 1, "b": [1, 2, 3]})
+        copied = copy.copy(original)
+
+        assert copied == original
+        assert copied is not original
+        assert isinstance(copied, ReadOnlyAttributeDictionary)
+        # Shallow copy shares nested mutable objects
+        assert copied["b"] is original["b"]
+
+    def test_copy_preserves_subclass(self) -> None:
+        """Copies of a subclass keep the subclass, not the base class.
+
+        Typed widget states (e.g. DataframeState) subclass
+        ReadOnlyAttributeDictionary. Session State deep-copies widget values, so
+        collapsing to the base class here would strip their type and break
+        ``isinstance`` checks on ``st.session_state[key]``.
+        """
+
+        class _TypedState(ReadOnlyAttributeDictionary):
+            pass
+
+        original = _TypedState({"a": 1, "b": {"c": [1, 2, 3]}})
+
+        assert isinstance(copy.copy(original), _TypedState)
+
+        deep_copied = copy.deepcopy(original)
+        assert isinstance(deep_copied, _TypedState)
+        assert deep_copied == original
+        assert deep_copied["b"] is not original["b"]
+
+    def test_json_serialization(self) -> None:
+        """Test that JSON serialization works correctly."""
+
+        d = ReadOnlyAttributeDictionary(
+            {"selection": {"rows": [1, 2], "columns": ["a"]}}
         )
+        serialized = json.dumps(d)
+        deserialized = json.loads(serialized)
+        assert deserialized == {"selection": {"rows": [1, 2], "columns": ["a"]}}
+
+    def test_attribute_access_raises_attribute_error_for_missing_key(self) -> None:
+        """Attribute-style access to a missing key raises a helpful AttributeError."""
+        d = ReadOnlyAttributeDictionary({"a": 1})
+        with pytest.raises(
+            AttributeError,
+            match=r"'ReadOnlyAttributeDictionary' object has no attribute 'missing'",
+        ):
+            _ = d.missing
+
+
+class TestAttributeDictionary:
+    """Test AttributeDictionary class."""
+
+    def test_setattr_updates_dict_value(self) -> None:
+        """Assigning a new attribute mutates the underlying dict storage."""
+        d = AttributeDictionary({"a": 1})
+        d.b = 2
+
+        assert d["b"] == 2
+        assert d.b == 2
+
+    def test_setattr_overwrites_existing_value(self) -> None:
+        """Setting an existing attribute updates the value rather than shadowing it."""
+        d = AttributeDictionary({"a": 1})
+        d.a = 99
+
+        assert d["a"] == 99
+
+    def test_attribute_access_raises_attribute_error_for_missing_key(self) -> None:
+        """Accessing a missing attribute raises AttributeError instead of KeyError."""
+        d = AttributeDictionary({"a": 1})
+        with pytest.raises(
+            AttributeError,
+            match=r"'AttributeDictionary' object has no attribute 'missing'",
+        ):
+            _ = d.missing

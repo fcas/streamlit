@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,13 +13,14 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from __future__ import annotations
 
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-if __name__ not in ("__main__", "__mp_main__"):
+if __name__ not in {"__main__", "__mp_main__"}:
     raise SystemExit(
         "This file is intended to be executed as an executable program. You cannot use "
         f"it as a module.To run this script, run the ./{__file__} command"
@@ -28,48 +29,60 @@ if __name__ not in ("__main__", "__mp_main__"):
 SCRIPT_DIR = Path(__file__).resolve().parent
 # We just check if the first line of the license is in the file. This is
 # enough to check that the file is okay.
-LICENSE_TEXT = (SCRIPT_DIR / "license-template.txt").read_text().splitlines()[0]
+LICENSE_TEXT = (
+    (SCRIPT_DIR / "assets" / "license-template.txt").read_text().splitlines()[0]
+)
 
 IGNORE_PATTERN = re.compile(
     # Exclude CI files.
     r"^\.(github)/"
-    # Exclude images.
-    r"|\.(?:png|jpg|jpeg|gif|ttf|woff|otf|eot|woff2|ico|svg)$"
-    # Exclude videos we use for testing st.video.
-    r"|e2e_playwright/test_assets/.*\.(mp4|webm)$"
-    # Exclude subtitle files we use for testing st.video.
-    r"|e2e_playwright/test_assets/.*\.(vtt|srt)$"
+    # Exclude images and media files.
+    r"|\.(?:png|jpg|jpeg|gif|ttf|woff|otf|eot|woff2|ico|svg|mp3|mp4|webm|pdf|vtt)$"
+    # Exclude playwright static folder.
+    r"|e2e_playwright/static/.*$"
     # Exclude js file we use for testing st.html.
     r"|^lib/tests/streamlit/elements/test_html\.js"
+    # Exclude css file we use for testing st.html.
+    r"|^lib/tests/streamlit/elements/test_html\.css"
     # Exclude files, because they make it obvious which product they relate to.
     r"|(LICENSE|NOTICES|CODE_OF_CONDUCT\.md|README\.md|CONTRIBUTING\.md|SECURITY.md)$"
     # Exclude files, because they do not support comments
-    r"|\.(json|prettierrc|nvmrc)$"
+    r"|\.(json|nvmrc|mdc|md)$"
     # Exclude generated files, because they don't have any degree of creativity.
     r"|yarn\.lock$"
+    r"|^uv\.lock$"
     # Exclude pytest config files, because they don't have any degree of creativity.
     r"|pytest\.ini$"
+    r"|\.coveragerc$"
     # Exclude empty files, because they don't have any degree of creativity.
     r"|py\.typed$"
     # Exclude dev-tools configuration files, because they don't have any
     # degree of creativity.
-    r"|^(\.dockerignore|\.editorconfig|\.gitignore|\.gitmodules)$"
-    r"|^frontend/(\.dockerignore|\.eslintrc.js|\.prettierignore)$"
-    r"|^lib/(\.coveragerc|\.dockerignore|MANIFEST\.in|mypy\.ini)$"
-    r"|^lib/(test|dev)-requirements\.txt$"
-    r"|^lib/min-constraints-gen\.txt"
+    r"|^(\.dockerignore|\.editorconfig|\.gitattributes|\.gitignore|\.gitmodules)$"
+    r"|^frontend/(\.dockerignore|\.eslintrc.js)$"
+    r"|^frontend/\.yarn"  # Exclude everything in the .yarn folder
+    r"|^frontend/component-lib/\.yarn"
+    r"|^frontend/component-v2-lib/\.yarn"  # Exclude everything in the .yarn folder
+    r"|(\.dockerignore|MANIFEST\.in|mypy\.ini)$"
+    r"|^.*-requirements\.txt$"
+    r"|min-constraints-gen\.txt"
     r"|\.isort\.cfg$"
-    r"|\.credentials/\.gitignore$"
+    # Exclude all .gitattributes / .gitignore files
+    r"|\.gitattributes$"
+    r"|\.gitignore$"
     # Excluding test files, because adding headers may cause tests to fail.
-    r"|/(fixtures|__snapshots__|test_data|data)/"
-    # Exclude vendored files.
-    r"|/vendor/|^vendor/|^component-lib/declarations/apache-arrow"
-    r"|proto/streamlit/proto/openmetrics_data_model\.proto",
+    r"|/(fixtures|__snapshots__|test_data|data|test)/"
+    # Exclude vendored files and bundled skill assets.
+    r"|/vendor/|^vendor/|^frontend/component-lib/declarations/apache-arrow"
+    r"|^lib/streamlit/\.agents/"
+    r"|proto/streamlit/proto/openmetrics_data_model\.proto"
+    # Exclude patch files.
+    r"|\.patch$",
     re.IGNORECASE,
 )
 
 
-def main():
+def main() -> None:
     git_files = sorted(
         subprocess.check_output(["git", "ls-files", "--no-empty-directory"])
         .decode()
@@ -87,11 +100,11 @@ def main():
             continue
 
         try:
-            file_content = filepath.read_text()
+            file_content = filepath.read_text(encoding="utf-8")
             if LICENSE_TEXT not in file_content:
                 print("Found file without license header", fileloc)
                 invalid_files_count += 1
-        except:
+        except Exception:
             print(
                 f"Failed to open the file: {fileloc}. Is it binary file?",
             )

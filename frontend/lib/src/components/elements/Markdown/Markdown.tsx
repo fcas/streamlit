@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,49 +14,117 @@
  * limitations under the License.
  */
 
-import StreamlitMarkdown from "@streamlit/lib/src/components/shared/StreamlitMarkdown"
-import React, { ReactElement } from "react"
-import { Markdown as MarkdownProto } from "@streamlit/lib/src/proto"
-import {
-  InlineTooltipIcon,
-  StyledLabelHelpWrapper,
-} from "@streamlit/lib/src/components/shared/TooltipIcon"
+import { memo, ReactElement } from "react"
+
+import { Markdown as MarkdownProto } from "@streamlit/protobuf"
+
+import { BaseButtonTooltip } from "~lib/components/shared/BaseButton/BaseButtonTooltip"
+import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown/StreamlitMarkdown"
+import { StyledLabelHelpWrapper } from "~lib/components/shared/TooltipIcon/styled-components"
+import { InlineTooltipIcon } from "~lib/components/shared/TooltipIcon/TooltipIcon"
 
 export interface MarkdownProps {
-  width: number
-  help?: string
   element: MarkdownProto
 }
+
+// Regex matching a single badge (e.g. ":blue-badge[Label]"), supporting escaped
+// brackets and backslashes in the label text via inner pattern (?:\\.|[^\]\\])*.
+// Matches: :blue-badge[Label], :red-badge[Bracket\]], :green-badge[Backslash\\]
+// Does not match: :blue-badge[Label] text, :blue-badge[Label] :grey-badge[Label]
+const SINGLE_BADGE_REGEX = /^:\w+-badge\[((?:\\.|[^\]\\])*)\]$/
 
 /**
  * Functional element representing Markdown formatted text.
  */
-export default function Markdown({
-  width,
-  element,
-}: MarkdownProps): ReactElement {
-  const styleProp = { width }
-  return (
-    <div className="stMarkdown" style={styleProp} data-testid="stMarkdown">
-      {element.help ? (
-        <StyledLabelHelpWrapper>
-          <StreamlitMarkdown
-            isCaption={element.isCaption}
-            source={element.body}
-            allowHTML={element.allowHtml}
-          />
-          <InlineTooltipIcon
-            content={element.help}
-            isLatex={element.elementType === MarkdownProto.Type.LATEX}
-          ></InlineTooltipIcon>
-        </StyledLabelHelpWrapper>
-      ) : (
+function Markdown({ element }: Readonly<MarkdownProps>): ReactElement {
+  const {
+    allowHtml,
+    body,
+    elementType,
+    help,
+    hideAnchors,
+    unterminatedParsing,
+  } = element
+
+  const isCaption = elementType === MarkdownProto.Type.CAPTION
+  const isLatex = elementType === MarkdownProto.Type.LATEX
+
+  // Determine if the markdown is a single badge only
+  const isSingleBadgeOnly =
+    elementType === MarkdownProto.Type.NATIVE &&
+    SINGLE_BADGE_REGEX.test(body.trim())
+
+  let content: ReactElement
+  if (help && isSingleBadgeOnly) {
+    // For single badge markdown with help, show the BaseButtonTooltip
+    content = (
+      <BaseButtonTooltip help={help} containerWidth={false}>
         <StreamlitMarkdown
-          isCaption={element.isCaption}
-          source={element.body}
-          allowHTML={element.allowHtml}
+          isCaption={isCaption}
+          source={body}
+          allowHTML={allowHtml}
+          unterminatedParsing={unterminatedParsing}
+          hideAnchors={hideAnchors}
         />
-      )}
+      </BaseButtonTooltip>
+    )
+  } else if (help && isLatex) {
+    // For LaTeX with help, use the inline tooltip icon. Adding a directive
+    // breaks the LaTeX rendering, and we don't support text alignment for LaTeX.
+    content = (
+      <StyledLabelHelpWrapper isLatex={isLatex}>
+        <StreamlitMarkdown
+          isCaption={isCaption}
+          source={body}
+          allowHTML={allowHtml}
+          unterminatedParsing={unterminatedParsing}
+          hideAnchors={hideAnchors}
+        />
+        <InlineTooltipIcon content={help} isLatex={isLatex} />
+      </StyledLabelHelpWrapper>
+    )
+  } else if (help && allowHtml) {
+    // For raw HTML with help, render the inline tooltip icon directly:
+    // CommonMark's HTML-block rule swallows a trailing `:help[]` directive
+    // appended to block-level HTML (gh-15211).
+    content = (
+      <StyledLabelHelpWrapper>
+        <StreamlitMarkdown
+          isCaption={isCaption}
+          source={body}
+          allowHTML={allowHtml}
+          unterminatedParsing={unterminatedParsing}
+          hideAnchors={hideAnchors}
+        />
+        <InlineTooltipIcon content={help} />
+      </StyledLabelHelpWrapper>
+    )
+  } else {
+    // For other markdown, render with inline help icon
+    // Use :help[] as a marker where the help icon should appear.
+    // The actual help text is passed via helpText prop to avoid limitations
+    // with special characters in text directive labels.
+    const source = help ? `${body} :help[]` : body
+
+    content = (
+      <StyledLabelHelpWrapper isLatex={isLatex}>
+        <StreamlitMarkdown
+          isCaption={isCaption}
+          source={source}
+          allowHTML={allowHtml}
+          helpText={help}
+          unterminatedParsing={unterminatedParsing}
+          hideAnchors={hideAnchors}
+        />
+      </StyledLabelHelpWrapper>
+    )
+  }
+
+  return (
+    <div className="stMarkdown" data-testid="stMarkdown">
+      {content}
     </div>
   )
 }
+
+export default memo(Markdown)

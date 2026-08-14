@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,10 +14,16 @@
 
 """streamlit.LocalSourcesWatcher unit test."""
 
+from __future__ import annotations
+
+import contextlib
 import os
+import pickle
 import sys
+import threading
+import types
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import tests.streamlit.watcher.test_data.dummy_module1 as DUMMY_MODULE_1
 import tests.streamlit.watcher.test_data.dummy_module2 as DUMMY_MODULE_2
@@ -25,6 +31,7 @@ import tests.streamlit.watcher.test_data.misbehaved_module as MISBEHAVED_MODULE
 import tests.streamlit.watcher.test_data.nested_module_child as NESTED_MODULE_CHILD
 import tests.streamlit.watcher.test_data.nested_module_parent as NESTED_MODULE_PARENT
 from streamlit import config
+from streamlit.runtime.pages_manager import PagesManager
 from streamlit.watcher import local_sources_watcher
 from streamlit.watcher.path_watcher import NoOpPathWatcher, _is_watchdog_available
 
@@ -42,7 +49,6 @@ def NOOP_CALLBACK(_filepath):
     pass
 
 
-@patch("streamlit.source_util._cached_pages", new=None)
 @patch("streamlit.file_util.file_in_pythonpath", MagicMock(return_value=False))
 class LocalSourcesWatcherTest(unittest.TestCase):
     def setUp(self):
@@ -57,45 +63,41 @@ class LocalSourcesWatcherTest(unittest.TestCase):
         the_globals = globals()
 
         for name in modules:
-            try:
+            with contextlib.suppress(Exception):
                 del sys.modules[the_globals[name].__name__]
-            except:
-                pass
 
-            try:
+            with contextlib.suppress(Exception):
                 del sys.modules[name]
-            except:
-                pass
 
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
     def test_just_script(self, fob):
-        lso = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
-        lso.register_file_change_callback(NOOP_CALLBACK)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        lsw.register_file_change_callback(NOOP_CALLBACK)
 
         fob.assert_called_once()
         args, _ = fob.call_args
-        self.assertEqual(os.path.realpath(args[0]), os.path.realpath(SCRIPT_PATH))
+        assert os.path.realpath(args[0]) == os.path.realpath(SCRIPT_PATH)
         method_type = type(self.setUp)
-        self.assertEqual(type(args[1]), method_type)
+        assert type(args[1]) is method_type
 
         fob.reset_mock()
-        lso.update_watched_modules()
-        lso.update_watched_modules()
-        lso.update_watched_modules()
-        lso.update_watched_modules()
+        lsw.update_watched_modules()
+        lsw.update_watched_modules()
+        lsw.update_watched_modules()
+        lsw.update_watched_modules()
 
-        self.assertEqual(fob.call_count, 1)  # __init__.py
+        assert fob.call_count == 1  # __init__.py
 
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
     def test_permission_error(self, fob):
         fob.side_effect = PermissionError("This error should be caught!")
-        lso = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
-        lso.register_file_change_callback(NOOP_CALLBACK)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        lsw.register_file_change_callback(NOOP_CALLBACK)
 
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
     def test_script_and_2_modules_at_once(self, fob):
-        lso = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
-        lso.register_file_change_callback(NOOP_CALLBACK)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        lsw.register_file_change_callback(NOOP_CALLBACK)
 
         fob.assert_called_once()
 
@@ -103,85 +105,88 @@ class LocalSourcesWatcherTest(unittest.TestCase):
         sys.modules["DUMMY_MODULE_2"] = DUMMY_MODULE_2
 
         fob.reset_mock()
-        lso.update_watched_modules()
+        lsw.update_watched_modules()
 
-        self.assertEqual(fob.call_count, 3)  # dummy modules and __init__.py
+        assert fob.call_count == 3  # dummy modules and __init__.py
 
         method_type = type(self.setUp)
 
         call_args_list = sort_args_list(fob.call_args_list)
 
         args, _ = call_args_list[0]
-        self.assertIn("__init__.py", args[0])
+        assert "__init__.py" in args[0]
         args, _ = call_args_list[1]
-        self.assertEqual(args[0], DUMMY_MODULE_1_FILE)
-        self.assertEqual(type(args[1]), method_type)
+        assert args[0] == DUMMY_MODULE_1_FILE
+        assert type(args[1]) is method_type
         args, _ = call_args_list[2]
-        self.assertEqual(args[0], DUMMY_MODULE_2_FILE)
-        self.assertEqual(type(args[1]), method_type)
+        assert args[0] == DUMMY_MODULE_2_FILE
+        assert type(args[1]) is method_type
 
         fob.reset_mock()
-        lso.update_watched_modules()
+        lsw.update_watched_modules()
 
-        self.assertEqual(fob.call_count, 0)
+        assert fob.call_count == 0
 
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
     def test_script_and_2_modules_in_series(self, fob):
-        lso = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
-        lso.register_file_change_callback(NOOP_CALLBACK)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        lsw.register_file_change_callback(NOOP_CALLBACK)
 
         fob.assert_called_once()
 
         sys.modules["DUMMY_MODULE_1"] = DUMMY_MODULE_1
         fob.reset_mock()
 
-        lso.update_watched_modules()
+        lsw.update_watched_modules()
 
-        self.assertEqual(fob.call_count, 2)  # dummy module and __init__.py
+        assert fob.call_count == 2  # dummy module and __init__.py
 
         method_type = type(self.setUp)
 
         call_args_list = sort_args_list(fob.call_args_list)
 
         args, _ = call_args_list[0]
-        self.assertIn("__init__.py", args[0])
+        assert "__init__.py" in args[0]
 
         args, _ = call_args_list[1]
-        self.assertEqual(args[0], DUMMY_MODULE_1_FILE)
-        self.assertEqual(type(args[1]), method_type)
+        assert args[0] == DUMMY_MODULE_1_FILE
+        assert type(args[1]) is method_type
 
         sys.modules["DUMMY_MODULE_2"] = DUMMY_MODULE_2
         fob.reset_mock()
-        lso.update_watched_modules()
+        lsw.update_watched_modules()
 
         args, _ = fob.call_args
-        self.assertEqual(args[0], DUMMY_MODULE_2_FILE)
-        self.assertEqual(type(args[1]), method_type)
+        assert args[0] == DUMMY_MODULE_2_FILE
+        assert type(args[1]) is method_type
 
         fob.assert_called_once()
 
     @patch("streamlit.watcher.local_sources_watcher._LOGGER")
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
     def test_misbehaved_module(self, fob, patched_logger):
-        lso = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
-        lso.register_file_change_callback(NOOP_CALLBACK)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        lsw.register_file_change_callback(NOOP_CALLBACK)
 
         fob.assert_called_once()
 
         sys.modules["MISBEHAVED_MODULE"] = MISBEHAVED_MODULE.MisbehavedModule
         fob.reset_mock()
-        lso.update_watched_modules()
+        lsw.update_watched_modules()
 
         fob.assert_called_once()  # Just __init__.py
 
+        # Check that the warning was called with the expected message
         patched_logger.warning.assert_called_once_with(
-            "Examining the path of MisbehavedModule raised: Oh noes!"
+            "Examining the path of %s raised:",
+            "MisbehavedModule",
+            exc_info=True,
         )
 
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
     def test_nested_module_parent_unloaded(self, fob):
-        lso = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
-        lso.register_file_change_callback(NOOP_CALLBACK)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        lsw.register_file_change_callback(NOOP_CALLBACK)
 
         fob.assert_called_once()
 
@@ -193,14 +198,17 @@ class LocalSourcesWatcherTest(unittest.TestCase):
                 "NESTED_MODULE_CHILD": NESTED_MODULE_CHILD,
             },
         ):
-            lso.update_watched_modules()
+            lsw.update_watched_modules()
 
             # Simulate a change to the child module
-            lso.on_file_changed(NESTED_MODULE_CHILD_FILE)
+            lsw.on_path_changed(NESTED_MODULE_CHILD_FILE)
 
-            # Assert that both the parent and child are unloaded, ready for reload
-            self.assertNotIn("NESTED_MODULE_CHILD", sys.modules)
-            self.assertNotIn("NESTED_MODULE_PARENT", sys.modules)
+            # Eviction is deferred until the next script run boundary.
+            assert "NESTED_MODULE_CHILD" in sys.modules
+            assert "NESTED_MODULE_PARENT" in sys.modules
+            lsw.flush_pending_evictions()
+            assert "NESTED_MODULE_CHILD" not in sys.modules
+            assert "NESTED_MODULE_PARENT" not in sys.modules
 
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
     def test_config_blacklist(self, fob):
@@ -211,15 +219,15 @@ class LocalSourcesWatcherTest(unittest.TestCase):
             "server.folderWatchBlacklist", [os.path.dirname(DUMMY_MODULE_1.__file__)]
         )
 
-        lso = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
-        lso.register_file_change_callback(NOOP_CALLBACK)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        lsw.register_file_change_callback(NOOP_CALLBACK)
 
         fob.assert_called_once()
 
         sys.modules["DUMMY_MODULE_1"] = DUMMY_MODULE_1
         fob.reset_mock()
 
-        lso.update_watched_modules()
+        lsw.update_watched_modules()
 
         fob.assert_not_called()
 
@@ -230,43 +238,42 @@ class LocalSourcesWatcherTest(unittest.TestCase):
         """Test server.fileWatcherType"""
 
         config.set_option("server.fileWatcherType", "none")
-        self.assertEqual(
-            local_sources_watcher.get_default_path_watcher_class().__name__,
-            "NoOpPathWatcher",
+        assert (
+            local_sources_watcher.get_default_path_watcher_class().__name__
+            == "NoOpPathWatcher"
         )
 
         config.set_option("server.fileWatcherType", "poll")
-        self.assertEqual(
-            local_sources_watcher.get_default_path_watcher_class().__name__,
-            "PollingPathWatcher",
+        assert (
+            local_sources_watcher.get_default_path_watcher_class().__name__
+            == "PollingPathWatcher"
         )
 
         config.set_option("server.fileWatcherType", "watchdog")
-        self.assertEqual(
-            local_sources_watcher.get_default_path_watcher_class().__name__,
-            "EventBasedPathWatcher" if _is_watchdog_available() else "NoOpPathWatcher",
+        assert local_sources_watcher.get_default_path_watcher_class().__name__ == (
+            "EventBasedPathWatcher" if _is_watchdog_available() else "NoOpPathWatcher"
         )
 
         config.set_option("server.fileWatcherType", "auto")
-        self.assertIsNotNone(local_sources_watcher.get_default_path_watcher_class())
+        assert local_sources_watcher.get_default_path_watcher_class() is not None
 
         if sys.modules["streamlit.watcher.event_based_path_watcher"] is not None:
-            self.assertEqual(
-                local_sources_watcher.get_default_path_watcher_class().__name__,
-                "EventBasedPathWatcher",
+            assert (
+                local_sources_watcher.get_default_path_watcher_class().__name__
+                == "EventBasedPathWatcher"
             )
         else:
-            self.assertEqual(
-                local_sources_watcher.get_default_path_watcher_class().__name__,
-                "PollingPathWatcher",
+            assert (
+                local_sources_watcher.get_default_path_watcher_class().__name__
+                == "PollingPathWatcher"
             )
 
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher", new=NoOpPathWatcher)
     def test_does_nothing_if_NoOpPathWatcher(self):
-        lsw = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
         lsw.register_file_change_callback(NOOP_CALLBACK)
         lsw.update_watched_modules()
-        self.assertEqual(len(lsw._watched_modules), 0)
+        assert len(lsw._watched_modules) == 0
 
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
     def test_namespace_package_unloaded(self, fob):
@@ -274,7 +281,7 @@ class LocalSourcesWatcherTest(unittest.TestCase):
 
         pkg_path = os.path.abspath(pkg.__path__._path[0])
 
-        lsw = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
         lsw.register_file_change_callback(NOOP_CALLBACK)
 
         fob.assert_called_once()
@@ -283,43 +290,89 @@ class LocalSourcesWatcherTest(unittest.TestCase):
             lsw.update_watched_modules()
 
             # Simulate a change to the child module
-            lsw.on_file_changed(pkg_path)
+            lsw.on_path_changed(pkg_path)
 
-            # Assert that both the parent and child are unloaded, ready for reload
-            self.assertNotIn("pkg", sys.modules)
+            assert "pkg" in sys.modules
+            lsw.flush_pending_evictions()
+            assert "pkg" not in sys.modules
 
         del sys.modules["tests.streamlit.watcher.test_data.namespace_package"]
 
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+    def test_namespace_partial_eviction_evicts_unwatched_children(self, fob):
+        """Unwatched site-packages children are evicted with the namespace parent.
+
+        When a PEP 420 namespace spans watched local code and blacklisted paths,
+        only watched modules were previously removed from sys.modules; orphaned
+        children broke attribute access on the re-created parent after rerun.
+        """
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        lsw.register_file_change_callback(NOOP_CALLBACK)
+
+        myns = types.ModuleType("myns")
+        myns_core = types.ModuleType("myns.core")
+        myns_spec = types.ModuleType("myns.spec")
+
+        trigger_path = os.path.realpath(NESTED_MODULE_CHILD_FILE)
+        script_real = os.path.realpath(SCRIPT_PATH)
+        lsw._watched_modules = {
+            trigger_path: local_sources_watcher.WatchedModule(MagicMock(), "myns.core"),
+            script_real: local_sources_watcher.WatchedModule(MagicMock(), "myns"),
+        }
+
+        myns_extra = types.ModuleType("myns_extra")
+
+        with patch.dict(
+            sys.modules,
+            {
+                "myns": myns,
+                "myns.core": myns_core,
+                "myns.spec": myns_spec,
+                "myns_extra": myns_extra,
+            },
+        ):
+            lsw.on_path_changed(trigger_path)
+
+            assert "myns" in sys.modules
+            assert "myns.core" in sys.modules
+            assert "myns.spec" in sys.modules
+            assert "myns_extra" in sys.modules
+            lsw.flush_pending_evictions()
+            assert "myns" not in sys.modules
+            assert "myns.core" not in sys.modules
+            assert "myns.spec" not in sys.modules
+            assert "myns_extra" in sys.modules
+
+    @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
     def test_module_caching(self, _fob):
-        lso = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
-        lso.register_file_change_callback(NOOP_CALLBACK)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        lsw.register_file_change_callback(NOOP_CALLBACK)
 
         register = MagicMock()
-        lso._register_necessary_watchers = register
+        lsw._register_necessary_watchers = register
 
         # Updates modules on first run
-        lso.update_watched_modules()
+        lsw.update_watched_modules()
         register.assert_called_once()
 
         # Skips update when module list hasn't changed
         register.reset_mock()
-        lso.update_watched_modules()
+        lsw.update_watched_modules()
         register.assert_not_called()
 
         # Invalidates cache when a new module is imported
         register.reset_mock()
         sys.modules["DUMMY_MODULE_2"] = DUMMY_MODULE_2
-        lso.update_watched_modules()
+        lsw.update_watched_modules()
         register.assert_called_once()
 
         # Skips update when new module is part of cache
         register.reset_mock()
-        lso.update_watched_modules()
+        lsw.update_watched_modules()
         register.assert_not_called()
 
     @patch(
-        "streamlit.watcher.local_sources_watcher.get_pages",
+        "streamlit.runtime.pages_manager.PagesManager.get_pages",
         MagicMock(
             return_value={
                 "someHash1": {
@@ -335,17 +388,16 @@ class LocalSourcesWatcherTest(unittest.TestCase):
     )
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
     def test_watches_all_page_scripts(self, fob):
-        lsw = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
         lsw.register_file_change_callback(NOOP_CALLBACK)
 
         args1, _ = fob.call_args_list[0]
         args2, _ = fob.call_args_list[1]
-
-        assert args1[0] == "streamlit_app.py"
-        assert args2[0] == "streamlit_app2.py"
+        assert os.path.basename(args1[0]) == "streamlit_app.py"
+        assert os.path.basename(args2[0]) == "streamlit_app2.py"
 
     @patch(
-        "streamlit.watcher.local_sources_watcher.get_pages",
+        "streamlit.runtime.pages_manager.PagesManager.get_pages",
         MagicMock(
             side_effect=[
                 {
@@ -373,21 +425,21 @@ class LocalSourcesWatcherTest(unittest.TestCase):
     )
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
     def test_watches_new_page_scripts(self, fob):
-        lsw = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
         lsw.register_file_change_callback(NOOP_CALLBACK)
 
         args1, _ = fob.call_args_list[0]
         args2, _ = fob.call_args_list[1]
 
-        assert args1[0] == "streamlit_app.py"
-        assert args2[0] == "streamlit_app2.py"
+        assert os.path.basename(args1[0]) == "streamlit_app.py"
+        assert os.path.basename(args2[0]) == "streamlit_app2.py"
 
         lsw.update_watched_pages()
         args3, _ = fob.call_args_list[2]
-        assert args3[0] == "streamlit_app3.py"
+        assert os.path.basename(args3[0]) == "streamlit_app3.py"
 
     @patch(
-        "streamlit.watcher.local_sources_watcher.get_pages",
+        "streamlit.runtime.pages_manager.PagesManager.get_pages",
         MagicMock(
             side_effect=[
                 {
@@ -414,12 +466,64 @@ class LocalSourcesWatcherTest(unittest.TestCase):
         ),
     )
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher", MagicMock())
-    def test_not_watches_removed_page_scripts(self):
-        lsw = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
-        assert lsw._watched_pages == {"page1.py", "page2.py"}
+    def test_watches_union_of_page_scripts(self):
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        assert len(lsw._watched_pages) == 2
+        assert "page1.py" in ",".join(lsw._watched_pages)
+        assert "page2.py" in ",".join(lsw._watched_pages)
 
-        lsw.update_watched_pages()
-        assert lsw._watched_pages == {"page1.py", "page3.py"}
+        def isfile_mock(x):
+            return True
+
+        with patch("os.path.isfile", wraps=isfile_mock):
+            lsw.update_watched_pages()
+            assert len(lsw._watched_pages) == 3
+            assert "page1.py" in ",".join(lsw._watched_pages)
+            assert "page2.py" in ",".join(lsw._watched_pages)
+            assert "page3.py" in ",".join(lsw._watched_pages)
+
+    @patch(
+        "streamlit.runtime.pages_manager.PagesManager.get_pages",
+        MagicMock(
+            side_effect=[
+                {
+                    "someHash1": {
+                        "page_name": "page1",
+                        "script_path": "page1.py",
+                    },
+                    "someHash2": {
+                        "page_name": "page2",
+                        "script_path": "page2.py",
+                    },
+                },
+                {
+                    "someHash1": {
+                        "page_name": "page1",
+                        "script_path": "page1.py",
+                    },
+                    "someHash3": {
+                        "page_name": "page3",
+                        "script_path": "page3.py",
+                    },
+                },
+            ]
+        ),
+    )
+    @patch("streamlit.watcher.local_sources_watcher.PathWatcher", MagicMock())
+    def test_unwatches_invalid_page_script_paths(self):
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        assert len(lsw._watched_pages) == 2
+        assert "page1.py" in ",".join(lsw._watched_pages)
+        assert "page2.py" in ",".join(lsw._watched_pages)
+
+        def isfile_mock(x):
+            return "page2.py" not in x
+
+        with patch("os.path.isfile", wraps=isfile_mock):
+            lsw.update_watched_pages()
+            assert len(lsw._watched_pages) == 2
+            assert "page1.py" in ",".join(lsw._watched_pages)
+            assert "page3.py" in ",".join(lsw._watched_pages)
 
     @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
     def test_passes_filepath_to_callback(self, fob):
@@ -430,13 +534,230 @@ class LocalSourcesWatcherTest(unittest.TestCase):
 
             saved_filepath = filepath
 
-        lso = local_sources_watcher.LocalSourcesWatcher(SCRIPT_PATH)
-        lso.register_file_change_callback(callback)
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        lsw.register_file_change_callback(callback)
 
         # Simulate a change to the report script
-        lso.on_file_changed(SCRIPT_PATH)
+        lsw.on_path_changed(SCRIPT_PATH)
 
-        self.assertEqual(saved_filepath, SCRIPT_PATH)
+        assert saved_filepath == SCRIPT_PATH
+
+    @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+    def test_extended_windows_path_matches_watched_file(self, _fob):
+        """Test that an extended-length Windows path matches a watched file."""
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        callback = MagicMock()
+        lsw.register_file_change_callback(callback)
+        watched_path = r"C:\project\module.py"
+        changed_path = r"\\?\C:\project\module.py"
+        lsw._watched_modules = {
+            watched_path: local_sources_watcher.WatchedModule(MagicMock(), None)
+        }
+
+        with (
+            patch.object(
+                local_sources_watcher.os.path, "realpath", side_effect=lambda p: p
+            ),
+            patch.object(local_sources_watcher.util.env_util, "IS_WINDOWS", True),
+        ):
+            lsw.on_path_changed(changed_path)
+
+        callback.assert_called_once_with(changed_path)
+
+    @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+    def test_extended_windows_path_matches_watched_directory(self, _fob):
+        """Test that an extended-length Windows path matches a watched directory."""
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        callback = MagicMock()
+        lsw.register_file_change_callback(callback)
+        watched_path = r"C:\project"
+        changed_path = r"\\?\C:\project\__pycache__\module.pyc"
+        lsw._watched_modules = {
+            watched_path: local_sources_watcher.WatchedModule(MagicMock(), None)
+        }
+
+        with (
+            patch.object(
+                local_sources_watcher.os.path, "realpath", side_effect=lambda p: p
+            ),
+            patch.object(local_sources_watcher.os.path, "isdir", return_value=True),
+            patch.object(local_sources_watcher.util.env_util, "IS_WINDOWS", True),
+        ):
+            lsw.on_path_changed(changed_path)
+
+        callback.assert_called_once_with(changed_path)
+
+    @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+    @patch("os.path.isdir")
+    def test_folder_watch_list(self, mock_isdir, mock_path_watcher):
+        watch_folders = ["/watch/path1", "/watch/path2"]
+        config.set_option("server.folderWatchList", watch_folders)
+
+        mock_isdir.return_value = True
+
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        lsw.register_file_change_callback(NOOP_CALLBACK)
+
+        # Check that PathWatcher was called for the main script and each directory
+        # with the glob_pattern
+        expected_calls = [
+            # Watcher for the main script file (always created)
+            call(
+                lsw._main_script_path,
+                lsw.on_path_changed,
+                glob_pattern=None,
+                allow_nonexistent=False,
+            ),
+            # Watchers for the specified folders
+            call(
+                "/watch/path1",
+                lsw.on_path_changed,
+                glob_pattern="**/*",
+                allow_nonexistent=False,
+            ),
+            call(
+                "/watch/path2",
+                lsw.on_path_changed,
+                glob_pattern="**/*",
+                allow_nonexistent=False,
+            ),
+        ]
+
+        # Check if all expected calls were made, regardless of order or extra calls
+        actual_calls = mock_path_watcher.call_args_list
+        assert expected_calls[1] in actual_calls
+        assert expected_calls[2] in actual_calls
+
+        # Simulate file changes in watched directories
+        test_file = "/watch/path1/test.txt"
+        lsw.on_path_changed(test_file)
+
+        # Clean up
+        config.set_option("server.folderWatchList", [])
+
+    @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+    def test_module_eviction_deferred_until_flush(self, fob):
+        """Modules stay in sys.modules after on_path_changed until flush."""
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        key = os.path.realpath(DUMMY_MODULE_1_FILE)
+        lsw._watched_modules = {
+            key: local_sources_watcher.WatchedModule(MagicMock(), "DUMMY_MODULE_1"),
+        }
+        with patch.dict(sys.modules, {"DUMMY_MODULE_1": DUMMY_MODULE_1}):
+            lsw.on_path_changed(DUMMY_MODULE_1_FILE)
+            assert "DUMMY_MODULE_1" in sys.modules
+            lsw.flush_pending_evictions()
+            assert "DUMMY_MODULE_1" not in sys.modules
+
+    @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+    def test_second_flush_pending_evictions_is_noop(self, fob):
+        """A second flush after clearing pending evictions is a safe no-op."""
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        key = os.path.realpath(DUMMY_MODULE_1_FILE)
+        lsw._watched_modules = {
+            key: local_sources_watcher.WatchedModule(MagicMock(), "DUMMY_MODULE_1"),
+        }
+        with patch.dict(sys.modules, {"DUMMY_MODULE_1": DUMMY_MODULE_1}):
+            lsw.on_path_changed(DUMMY_MODULE_1_FILE)
+            lsw.flush_pending_evictions()
+            lsw.flush_pending_evictions()
+
+    @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+    def test_pep420_child_names_evicted_on_flush(self, fob):
+        """Child submodules (PEP 420) are evicted along with the parent on flush."""
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        mypackage = types.ModuleType("mypackage")
+        sub = types.ModuleType("mypackage.sub")
+        trigger_path = os.path.realpath(DUMMY_MODULE_1_FILE)
+        lsw._watched_modules = {
+            trigger_path: local_sources_watcher.WatchedModule(MagicMock(), "mypackage"),
+        }
+        with patch.dict(sys.modules, {"mypackage": mypackage, "mypackage.sub": sub}):
+            lsw.on_path_changed(DUMMY_MODULE_1_FILE)
+            assert "mypackage" in sys.modules
+            assert "mypackage.sub" in sys.modules
+            lsw.flush_pending_evictions()
+            assert "mypackage" not in sys.modules
+            assert "mypackage.sub" not in sys.modules
+
+    @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+    def test_callbacks_see_sys_modules_before_flush(self, fob):
+        """Callbacks fire during on_path_changed and observe pre-eviction sys.modules."""
+        seen: list[bool] = []
+
+        def callback(_filepath: str) -> None:
+            seen.append("DUMMY_MODULE_1" in sys.modules)
+
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        lsw.register_file_change_callback(callback)
+        key = os.path.realpath(DUMMY_MODULE_1_FILE)
+        lsw._watched_modules = {
+            key: local_sources_watcher.WatchedModule(MagicMock(), "DUMMY_MODULE_1"),
+        }
+        with patch.dict(sys.modules, {"DUMMY_MODULE_1": DUMMY_MODULE_1}):
+            lsw.on_path_changed(DUMMY_MODULE_1_FILE)
+        assert seen == [True]
+
+    @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+    def test_concurrent_on_path_changed_accumulates_evictions(self, fob):
+        """Concurrent watcher threads accumulate evictions without losing entries."""
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        trigger1 = os.path.realpath(DUMMY_MODULE_1_FILE)
+        trigger2 = os.path.realpath(DUMMY_MODULE_2_FILE)
+        lsw._watched_modules = {
+            trigger1: local_sources_watcher.WatchedModule(
+                MagicMock(), "DUMMY_MODULE_1"
+            ),
+            trigger2: local_sources_watcher.WatchedModule(
+                MagicMock(), "DUMMY_MODULE_2"
+            ),
+        }
+        with patch.dict(
+            sys.modules,
+            {"DUMMY_MODULE_1": DUMMY_MODULE_1, "DUMMY_MODULE_2": DUMMY_MODULE_2},
+        ):
+            errors: list[BaseException] = []
+
+            def worker(i: int) -> None:
+                try:
+                    path = trigger1 if i % 2 == 0 else trigger2
+                    lsw.on_path_changed(path)
+                except BaseException as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=worker, args=(i,)) for i in range(64)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            assert not errors
+            lsw.flush_pending_evictions()
+            assert "DUMMY_MODULE_1" not in sys.modules
+            assert "DUMMY_MODULE_2" not in sys.modules
+
+    @patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+    def test_pickling_succeeds_between_path_change_and_flush(self, fob):
+        """Regression for gh-14593: pickle must not see torn-down sys.modules."""
+        mod_name = "_streamlit_lsw_pickle_test_mod"
+        mod = types.ModuleType(mod_name)
+
+        class Model:
+            pass
+
+        Model.__module__ = mod_name
+        Model.__qualname__ = "Model"
+        mod.Model = Model
+
+        lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        key = os.path.realpath(DUMMY_MODULE_1_FILE)
+        lsw._watched_modules = {
+            key: local_sources_watcher.WatchedModule(MagicMock(), mod_name),
+        }
+        with patch.dict(sys.modules, {mod_name: mod}):
+            obj = Model()
+            lsw.on_path_changed(DUMMY_MODULE_1_FILE)
+            pickle.dumps(obj)
+            lsw.flush_pending_evictions()
 
 
 def test_get_module_paths_outputs_abs_paths():
@@ -445,6 +766,144 @@ def test_get_module_paths_outputs_abs_paths():
 
     module_paths = local_sources_watcher.get_module_paths(mock_module)
     assert module_paths == {DUMMY_MODULE_1_FILE}
+
+
+@patch("streamlit.file_util.file_in_pythonpath", MagicMock(return_value=False))
+@patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+@patch("streamlit.watcher.local_sources_watcher.os.path.isdir", return_value=False)
+def test_watch_folder_skipped_when_not_a_directory(
+    _mock_isdir: MagicMock, mock_path_watcher: MagicMock
+) -> None:
+    """Non-directory entries in ``server.folderWatchList`` are skipped with a warning."""
+    config.set_option("server.folderWatchList", ["/not/a/dir"])
+    try:
+        with patch("streamlit.watcher.local_sources_watcher._LOGGER") as mock_logger:
+            lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+        try:
+            registered_paths = [c.args[0] for c in mock_path_watcher.call_args_list]
+            assert "/not/a/dir" not in registered_paths
+            assert any(
+                "Watch folder is not a directory" in str(c.args[0])
+                for c in mock_logger.warning.call_args_list
+            )
+        finally:
+            lsw.close()
+    finally:
+        config.set_option("server.folderWatchList", [])
+
+
+@patch("streamlit.file_util.file_in_pythonpath", MagicMock(return_value=False))
+@patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+def test_on_path_changed_with_non_watched_path_logs_error(
+    _mock_path_watcher: MagicMock,
+) -> None:
+    """``on_path_changed`` logs an error and does not notify callbacks for an
+    unknown path (neither a watched module nor a file in a watched directory)."""
+    lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+    try:
+        observed: list[str] = []
+        lsw.register_file_change_callback(observed.append)
+
+        with patch("streamlit.watcher.local_sources_watcher._LOGGER") as mock_logger:
+            lsw.on_path_changed("/totally/unwatched/path.py")
+
+        assert observed == []
+        assert any(
+            "Received event for non-watched path" in str(c.args[0])
+            for c in mock_logger.error.call_args_list
+        )
+    finally:
+        lsw.close()
+
+
+@patch("streamlit.file_util.file_in_pythonpath", MagicMock(return_value=False))
+@patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+def test_update_watched_modules_is_noop_after_close(
+    _mock_path_watcher: MagicMock,
+) -> None:
+    """``update_watched_modules`` short-circuits once the watcher is closed so
+    no new watchers are spawned on a torn-down instance."""
+    lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+    lsw.close()
+    cached_before = lsw._cached_sys_modules
+
+    lsw.update_watched_modules()
+
+    assert lsw._cached_sys_modules is cached_before
+    assert lsw._watched_modules == {}
+
+
+@patch("streamlit.file_util.file_in_pythonpath", MagicMock(return_value=False))
+@patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+def test_deregister_watcher_returns_when_filepath_unknown(
+    _mock_path_watcher: MagicMock,
+) -> None:
+    """``_deregister_watcher`` is a no-op for an unknown filepath.
+
+    Anti-regression: must not raise, must leave ``_watched_modules`` unchanged,
+    and must not close existing watchers.
+    """
+    lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+    try:
+        existing_watcher = next(iter(lsw._watched_modules.values())).watcher
+        watched_before = dict(lsw._watched_modules)
+
+        lsw._deregister_watcher("/never/watched.py")
+
+        assert lsw._watched_modules == watched_before
+        existing_watcher.close.assert_not_called()
+    finally:
+        lsw.close()
+
+
+@patch("streamlit.file_util.file_in_pythonpath", MagicMock(return_value=False))
+@patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+def test_update_watched_pages_skips_pages_without_script_path(
+    mock_path_watcher: MagicMock,
+) -> None:
+    """Pages with an empty ``script_path`` are skipped rather than registered.
+
+    Anti-regression: must not raise from ``os.path.realpath("")`` and must not
+    spawn a watcher for the empty path.
+    """
+    pages_manager = PagesManager(SCRIPT_PATH)
+    with patch.object(
+        pages_manager,
+        "get_pages",
+        return_value={
+            "real_page": {"script_path": SCRIPT_PATH},
+            "broken_page": {"script_path": ""},
+        },
+    ):
+        lsw = local_sources_watcher.LocalSourcesWatcher(pages_manager)
+
+    try:
+        registered_paths = [
+            call_args[0][0] for call_args in mock_path_watcher.call_args_list
+        ]
+        assert "" not in registered_paths
+        assert "" not in lsw._watched_pages
+    finally:
+        lsw.close()
+
+
+@patch("streamlit.file_util.file_in_pythonpath", MagicMock(return_value=False))
+@patch("streamlit.watcher.local_sources_watcher.PathWatcher")
+def test_deregister_watcher_keeps_main_script(
+    _mock_path_watcher: MagicMock,
+) -> None:
+    """``_deregister_watcher`` never tears down the main script watcher,
+    even when explicitly asked, so the app keeps reacting to file edits."""
+    lsw = local_sources_watcher.LocalSourcesWatcher(PagesManager(SCRIPT_PATH))
+    try:
+        main_watcher_entry = lsw._watched_modules[lsw._main_script_path]
+
+        lsw._deregister_watcher(lsw._main_script_path)
+
+        assert lsw._main_script_path in lsw._watched_modules
+        main_watcher_entry.watcher.close.assert_not_called()
+    finally:
+        lsw.close()
 
 
 def sort_args_list(args_list):

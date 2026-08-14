@@ -1,0 +1,44 @@
+{
+  "name": "@streamlit/utils",
+  "version": "1.61.1",
+  "license": "Apache-2.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/streamlit-utils.cjs.js",
+  "module": "./dist/streamlit-utils.es.js",
+  "browser": "./dist/streamlit-utils.umd.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/streamlit-utils.es.js",
+      "require": "./dist/streamlit-utils.cjs.js",
+      "default": "./dist/streamlit-utils.umd.js"
+    }
+  },
+  "scripts": {
+    "build": "vite build",
+    "buildWatch": "env DEV_WATCH=1 vite build --watch",
+    "test": "vitest run",
+    "testWatch": "vitest",
+    "lint": "yarn run -T eslint --cache --max-warnings 0 src",
+    "lint:fix": "yarn run -T eslint --cache --max-warnings 0 --fix src",
+    "typecheck": "yarn run typecheck:all",
+    "format": "yarn run -T oxfmt --config ../.oxfmtrc.json './src/**/*.{js,ts,jsx,tsx}'",
+    "formatCheck": "yarn run -T oxfmt --check --config ../.oxfmtrc.json './src/**/*.{js,ts,jsx,tsx}'",
+    "typesync": "typesync",
+    "typesync:ci": "typesync --dry=fail"
+  },
+  "devDependencies": {
+    "typesync": "^0.14.3",
+    "vite": "^8.2.1",
+    "vite-plugin-dts": "^5.0.3",
+    "vitest": "^4.1.10"
+  },
+  "browserslist": [
+    ">0.2%",
+    "not dead",
+    "not ie <= 11",
+    "not op_mini all"
+  ]
+}

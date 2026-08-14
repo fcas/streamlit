@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,16 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# ruff: noqa: E501
+
 """Unit tests for MediaFileManager"""
 
+from __future__ import annotations
+
+import io
 import random
 import unittest
-from typing import Optional
 from unittest import TestCase, mock
 from unittest.mock import MagicMock, call, mock_open
 
-from streamlit.runtime.media_file_manager import MediaFileManager
-from streamlit.runtime.media_file_storage import MediaFileKind
+import pytest
+
+from streamlit.runtime.media_file_manager import (
+    MediaFileManager,
+    MediaFileMetadata,
+    _get_session_id,
+)
+from streamlit.runtime.media_file_storage import MediaFileKind, MediaFileStorageError
 from streamlit.runtime.memory_media_file_storage import (
     MemoryFile,
     MemoryMediaFileStorage,
@@ -31,11 +41,7 @@ from tests.exception_capturing_thread import call_on_threads
 
 
 def random_coordinates():
-    return "{}.{}.{}".format(
-        random.randint(1, 4),
-        (random.randint(1, 12), random.randint(1, 12)),
-        random.randint(1, 99),
-    )
+    return f"{random.randint(1, 4)}.{(random.randint(1, 12), random.randint(1, 12))}.{random.randint(1, 99)}"
 
 
 # Smallest possible "real" media files for a handful of different formats.
@@ -86,7 +92,7 @@ TEXT_FIXTURES = {
     },
 }
 
-ALL_FIXTURES = dict()
+ALL_FIXTURES = {}
 ALL_FIXTURES.update(AUDIO_FIXTURES)
 ALL_FIXTURES.update(VIDEO_FIXTURES)
 ALL_FIXTURES.update(IMAGE_FIXTURES)
@@ -105,7 +111,7 @@ class MediaFileManagerTest(TestCase):
         content: bytes,
         mimetype: str,
         coordinates: str,
-        filename: Optional[str] = None,
+        filename: str | None = None,
     ) -> MemoryFile:
         """Add a new file to our test manager and return its MediaFile object."""
         file_id = _calculate_file_id(content, mimetype, filename)
@@ -115,23 +121,19 @@ class MediaFileManagerTest(TestCase):
     def test_calculate_file_id(self):
         """Test that file_id generation from data works as expected."""
 
-        fake_bytes = "\x00\x00\xff\x00\x00\xff\x00\x00\xff\x00\x00\xff\x00".encode(
-            "utf-8"
-        )
-        test_hash = "2ba850426b188d25adc5a37ad313080c346f5e88e069e0807d0cdb2b"
-        self.assertEqual(test_hash, _calculate_file_id(fake_bytes, "media/any"))
+        fake_bytes = "\x00\x00\xff\x00\x00\xff\x00\x00\xff\x00\x00\xff\x00".encode()
+        test_hash = "401df29c0b6e3fa089b88cc65c9f6daf"
+        assert test_hash == _calculate_file_id(fake_bytes, "media/any")
 
         # Make sure we get different file ids for files with same bytes but diff't mimetypes.
-        self.assertNotEqual(
-            _calculate_file_id(fake_bytes, "audio/wav"),
-            _calculate_file_id(fake_bytes, "video/mp4"),
+        assert _calculate_file_id(fake_bytes, "audio/wav") != _calculate_file_id(
+            fake_bytes, "video/mp4"
         )
 
         # Make sure we get different file ids for files with same bytes and mimetypes but diff't filenames.
-        self.assertNotEqual(
-            _calculate_file_id(fake_bytes, "audio/wav", filename="name1.wav"),
-            _calculate_file_id(fake_bytes, "audio/wav", filename="name2.wav"),
-        )
+        assert _calculate_file_id(
+            fake_bytes, "audio/wav", filename="name1.wav"
+        ) != _calculate_file_id(fake_bytes, "audio/wav", filename="name2.wav")
 
     @mock.patch(
         "streamlit.runtime.media_file_manager._get_session_id",
@@ -139,7 +141,7 @@ class MediaFileManagerTest(TestCase):
     )
     def test_reject_null_files(self):
         """MediaFileManager.add raises a TypeError if it's passed None."""
-        with self.assertRaises(TypeError):
+        with pytest.raises(TypeError):
             self.media_file_manager.add(None, "media/any", random_coordinates())
 
     @mock.patch(
@@ -157,12 +159,12 @@ class MediaFileManagerTest(TestCase):
 
         for sample in ALL_FIXTURES.values():
             content = sample["content"]
-            self.assertIsInstance(content, bytes)
+            assert isinstance(content, bytes)
             mimetype = sample["mimetype"]
             media_file = self._add_file_and_get_object(
                 content, mimetype, sample_coords.pop()
             )
-            self.assertIsNotNone(media_file)
+            assert media_file is not None
 
             # Ensure MediaFileStorage.load_and_get_id was called as expected.
             storage_load_spy.assert_called_once_with(
@@ -171,10 +173,10 @@ class MediaFileManagerTest(TestCase):
             storage_load_spy.reset_mock()
 
         # There should be as many files in MFM as we added.
-        self.assertEqual(len(self.media_file_manager._file_metadata), len(ALL_FIXTURES))
+        assert len(self.media_file_manager._file_metadata) == len(ALL_FIXTURES)
 
         # There should only be 1 session with registered files.
-        self.assertEqual(len(self.media_file_manager._files_by_session_and_coord), 1)
+        assert len(self.media_file_manager._files_by_session_and_coord) == 1
 
     @mock.patch(
         "streamlit.runtime.media_file_manager._get_session_id",
@@ -195,11 +197,12 @@ class MediaFileManagerTest(TestCase):
         )
 
         # We should have a single file in the MFM.
-        self.assertEqual(len(self.media_file_manager._file_metadata), 1)
+        assert len(self.media_file_manager._file_metadata) == 1
 
         # And it should be registered to our session
-        self.assertEqual(
-            len(self.media_file_manager._files_by_session_and_coord["mock_session"]), 1
+        assert (
+            len(self.media_file_manager._files_by_session_and_coord["mock_session"])
+            == 1
         )
 
         # Ensure MediaFileStorage.load_and_get_id was called as expected.
@@ -219,25 +222,25 @@ class MediaFileManagerTest(TestCase):
             self.media_file_manager.add(sample["content"], sample["mimetype"], coord)
 
         # There should be 6 files in MFM.
-        self.assertEqual(len(self.media_file_manager._file_metadata), len(ALL_FIXTURES))
+        assert len(self.media_file_manager._file_metadata) == len(ALL_FIXTURES)
 
         # There should only be 1 session with registered files.
-        self.assertEqual(len(self.media_file_manager._files_by_session_and_coord), 1)
+        assert len(self.media_file_manager._files_by_session_and_coord) == 1
 
         # There should only be 1 coord in that session.
-        self.assertEqual(
-            len(self.media_file_manager._files_by_session_and_coord["mock_session_id"]),
-            1,
+        assert (
+            len(self.media_file_manager._files_by_session_and_coord["mock_session_id"])
+            == 1
         )
 
         self.media_file_manager.clear_session_refs()
         self.media_file_manager.remove_orphaned_files()
 
         # There should be only 0 file in MFM.
-        self.assertEqual(len(self.media_file_manager._file_metadata), 0)
+        assert len(self.media_file_manager._file_metadata) == 0
 
         # There should only be 0 session with registered files.
-        self.assertEqual(len(self.media_file_manager._files_by_session_and_coord), 0)
+        assert len(self.media_file_manager._files_by_session_and_coord) == 0
 
     @mock.patch(
         "streamlit.runtime.media_file_manager._get_session_id",
@@ -252,16 +255,16 @@ class MediaFileManagerTest(TestCase):
 
         self.media_file_manager.add(sample["content"], sample["mimetype"], coord)
         file_id = _calculate_file_id(sample["content"], sample["mimetype"])
-        self.assertTrue(file_id in self.media_file_manager._file_metadata)
+        assert file_id in self.media_file_manager._file_metadata
 
         self.media_file_manager.add(sample["content"], sample["mimetype"], coord)
-        self.assertTrue(file_id in self.media_file_manager._file_metadata)
+        assert file_id in self.media_file_manager._file_metadata
 
         # There should only be 1 file in MFM.
-        self.assertEqual(len(self.media_file_manager._file_metadata), 1)
+        assert len(self.media_file_manager._file_metadata) == 1
 
         # There should only be 1 session with registered files.
-        self.assertEqual(len(self.media_file_manager._files_by_session_and_coord), 1)
+        assert len(self.media_file_manager._files_by_session_and_coord) == 1
 
     @mock.patch(
         "streamlit.runtime.media_file_manager._get_session_id",
@@ -276,17 +279,17 @@ class MediaFileManagerTest(TestCase):
         coord = random_coordinates()
         self.media_file_manager.add(sample["content"], sample["mimetype"], coord)
         file_id = _calculate_file_id(sample["content"], sample["mimetype"])
-        self.assertTrue(file_id in self.media_file_manager._file_metadata)
+        assert file_id in self.media_file_manager._file_metadata
 
         coord = random_coordinates()
         self.media_file_manager.add(sample["content"], sample["mimetype"], coord)
-        self.assertTrue(file_id in self.media_file_manager._file_metadata)
+        assert file_id in self.media_file_manager._file_metadata
 
         # There should only be 1 file in MFM.
-        self.assertEqual(len(self.media_file_manager._file_metadata), 1)
+        assert len(self.media_file_manager._file_metadata) == 1
 
         # There should only be 1 session with registered files.
-        self.assertEqual(len(self.media_file_manager._files_by_session_and_coord), 1)
+        assert len(self.media_file_manager._files_by_session_and_coord) == 1
 
     @mock.patch(
         "streamlit.runtime.media_file_manager._get_session_id",
@@ -299,14 +302,14 @@ class MediaFileManagerTest(TestCase):
         storage_delete_spy = MagicMock(side_effect=self.storage.delete_file)
         self.storage.delete_file = storage_delete_spy
 
-        self.assertEqual(len(self.media_file_manager._file_metadata), 0)
-        self.assertEqual(len(self.media_file_manager._files_by_session_and_coord), 0)
+        assert len(self.media_file_manager._file_metadata) == 0
+        assert len(self.media_file_manager._files_by_session_and_coord) == 0
 
         self.media_file_manager.clear_session_refs()
         self.media_file_manager.remove_orphaned_files()
 
-        self.assertEqual(len(self.media_file_manager._file_metadata), 0)
-        self.assertEqual(len(self.media_file_manager._files_by_session_and_coord), 0)
+        assert len(self.media_file_manager._file_metadata) == 0
+        assert len(self.media_file_manager._files_by_session_and_coord) == 0
 
         # MediaFileStorage.delete_file should not have been called, because
         # no files were actually deleted.
@@ -329,9 +332,7 @@ class MediaFileManagerTest(TestCase):
                     sample["content"], sample["mimetype"], coord
                 )
 
-        self.assertEqual(
-            len(self.media_file_manager._file_metadata), len(VIDEO_FIXTURES)
-        )
+        assert len(self.media_file_manager._file_metadata) == len(VIDEO_FIXTURES)
 
         file_ids = list(self.media_file_manager._file_metadata.keys())
 
@@ -341,9 +342,7 @@ class MediaFileManagerTest(TestCase):
         self.media_file_manager.remove_orphaned_files()
 
         # The files are all still referenced by session_2
-        self.assertEqual(
-            len(self.media_file_manager._file_metadata), len(VIDEO_FIXTURES)
-        )
+        assert len(self.media_file_manager._file_metadata) == len(VIDEO_FIXTURES)
 
         # MediaFileStorage.delete_file should not have been called yet...
         storage_delete_spy.assert_not_called()
@@ -354,16 +353,14 @@ class MediaFileManagerTest(TestCase):
 
         # The files still exist, because they've only been de-referenced and not
         # removed.
-        self.assertEqual(
-            len(self.media_file_manager._file_metadata), len(VIDEO_FIXTURES)
-        )
+        assert len(self.media_file_manager._file_metadata) == len(VIDEO_FIXTURES)
 
         # MediaFileStorage.delete_file should not have been called yet...
         storage_delete_spy.assert_not_called()
 
         # After a final call to remove_orphaned_files, the files should be gone.
         self.media_file_manager.remove_orphaned_files()
-        self.assertEqual(len(self.media_file_manager._file_metadata), 0)
+        assert len(self.media_file_manager._file_metadata) == 0
 
         # MediaFileStorage.delete_file should have been called once for each
         # file.
@@ -395,7 +392,7 @@ class MediaFileManagerThreadingTest(unittest.TestCase):
             self.media_file_manager.add(data, "image/png", coord)
 
         call_on_threads(add_file, num_threads=self.NUM_THREADS)
-        self.assertEqual(self.NUM_THREADS, len(self.media_file_manager._file_metadata))
+        assert len(self.media_file_manager._file_metadata) == self.NUM_THREADS
 
     @mock.patch(
         "streamlit.runtime.media_file_manager._get_session_id",
@@ -410,7 +407,7 @@ class MediaFileManagerThreadingTest(unittest.TestCase):
             self.media_file_manager.add(
                 sample["content"], sample["mimetype"], random_coordinates()
             )
-        self.assertEqual(len(ALL_FIXTURES), len(self.media_file_manager._file_metadata))
+        assert len(ALL_FIXTURES) == len(self.media_file_manager._file_metadata)
 
         # Remove those files from multiple threads
         def remove_files(_: int) -> None:
@@ -420,4 +417,515 @@ class MediaFileManagerThreadingTest(unittest.TestCase):
         call_on_threads(remove_files, num_threads=self.NUM_THREADS)
 
         # Our files should be gone!
-        self.assertEqual(0, len(self.media_file_manager._file_metadata))
+        assert len(self.media_file_manager._file_metadata) == 0
+
+
+class MediaFileManagerDeferredTest(TestCase):
+    """Tests for deferred callable functionality in MediaFileManager."""
+
+    def setUp(self):
+        super().setUp()
+        self.storage = MemoryMediaFileStorage("/mock/endpoint")
+        self.media_file_manager = MediaFileManager(self.storage)
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_add_deferred_generates_file_id(self):
+        """Test that add_deferred generates a unique file_id."""
+
+        def callable1():
+            return b"content1"
+
+        def callable2():
+            return b"content2"
+
+        file_id1 = self.media_file_manager.add_deferred(
+            callable1, "text/plain", random_coordinates()
+        )
+        file_id2 = self.media_file_manager.add_deferred(
+            callable2, "text/plain", random_coordinates()
+        )
+
+        # File IDs should be different
+        assert file_id1 != file_id2
+        # File IDs should be non-empty
+        assert file_id1 != ""
+        assert file_id2 != ""
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_add_deferred_stores_callable(self):
+        """Test that add_deferred stores the callable with metadata."""
+
+        def generate_data():
+            return b"test data"
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_data, "application/pdf", random_coordinates(), file_name="test.pdf"
+        )
+
+        # Callable should be stored
+        assert file_id in self.media_file_manager._deferred_callables
+        deferred = self.media_file_manager._deferred_callables[file_id]
+        assert deferred["callable"] == generate_data
+        assert deferred["mimetype"] == "application/pdf"
+        assert deferred["filename"] == "test.pdf"
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_add_deferred_tracks_session_coordinate(self):
+        """Test that add_deferred tracks session and coordinate mapping."""
+        coord = random_coordinates()
+
+        def generate_data():
+            return b"data"
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_data, "text/plain", coord
+        )
+
+        # Should be tracked by session and coordinate
+        assert (
+            self.media_file_manager._files_by_session_and_coord["mock_session"][coord]
+            == file_id
+        )
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_calls_callable(self):
+        """Test that execute_deferred invokes the callable."""
+        call_count = 0
+
+        def generate_data():
+            nonlocal call_count
+            call_count += 1
+            return b"data"
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_data, "text/plain", random_coordinates()
+        )
+
+        assert call_count == 0
+        self.media_file_manager.execute_deferred(file_id)
+        assert call_count == 1
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_returns_url(self):
+        """Test that execute_deferred returns a valid URL."""
+
+        def generate_data():
+            return b"test data"
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_data, "text/plain", random_coordinates()
+        )
+
+        url = self.media_file_manager.execute_deferred(file_id)
+        assert url.startswith("/mock/endpoint/")
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_handles_str_return(self):
+        """Test that execute_deferred handles string return values."""
+
+        def generate_string():
+            return "string data"
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_string, "text/plain", random_coordinates()
+        )
+
+        url = self.media_file_manager.execute_deferred(file_id)
+        assert url.startswith("/mock/endpoint/")
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_handles_bytes_return(self):
+        """Test that execute_deferred handles bytes return values."""
+
+        def generate_bytes():
+            return b"bytes data"
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_bytes, "application/octet-stream", random_coordinates()
+        )
+
+        url = self.media_file_manager.execute_deferred(file_id)
+        assert url.startswith("/mock/endpoint/")
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_handles_bytesio_return(self):
+        """Test that execute_deferred handles BytesIO return values."""
+
+        def generate_bytesio():
+            return io.BytesIO(b"bytesio data")
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_bytesio, "application/octet-stream", random_coordinates()
+        )
+
+        url = self.media_file_manager.execute_deferred(file_id)
+        assert url.startswith("/mock/endpoint/")
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_handles_buffered_reader_return(self):
+        """Test that execute_deferred handles BufferedReader return values."""
+
+        def generate_buffered_reader():
+            return io.BufferedReader(io.BytesIO(b"buffered data"))
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_buffered_reader, "application/octet-stream", random_coordinates()
+        )
+
+        url = self.media_file_manager.execute_deferred(file_id)
+        assert url.startswith("/mock/endpoint/")
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_keeps_callable(self):
+        """Test that execute_deferred keeps callable for multiple downloads."""
+
+        def generate_data():
+            return b"data"
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_data, "text/plain", random_coordinates()
+        )
+
+        # Callable should exist before execution
+        assert file_id in self.media_file_manager._deferred_callables
+
+        self.media_file_manager.execute_deferred(file_id)
+
+        # Callable should still exist after execution for multiple downloads
+        assert file_id in self.media_file_manager._deferred_callables
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_file_not_found(self):
+        """Test that execute_deferred raises error for non-existent file_id."""
+        with pytest.raises(MediaFileStorageError, match=r"Deferred file .* not found"):
+            self.media_file_manager.execute_deferred("nonexistent_id")
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_callable_raises_exception(self):
+        """Test that execute_deferred propagates callable execution errors."""
+
+        def failing_callable():
+            raise ValueError("Test error")
+
+        file_id = self.media_file_manager.add_deferred(
+            failing_callable, "text/plain", random_coordinates()
+        )
+
+        with pytest.raises(MediaFileStorageError, match="Callable execution failed"):
+            self.media_file_manager.execute_deferred(file_id)
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_callable_returns_invalid_type(self):
+        """Test that execute_deferred handles invalid return types."""
+
+        def invalid_callable():
+            return 123  # Invalid type
+
+        file_id = self.media_file_manager.add_deferred(
+            invalid_callable, "text/plain", random_coordinates()
+        )
+
+        with pytest.raises(
+            MediaFileStorageError, match="Callable returned unsupported type"
+        ):
+            self.media_file_manager.execute_deferred(file_id)
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_multiple_times_same_callable(self):
+        """Test that the same deferred callable can be executed multiple times."""
+        call_count = 0
+
+        def generate_data():
+            nonlocal call_count
+            call_count += 1
+            return f"data_{call_count}".encode()
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_data, "text/plain", random_coordinates()
+        )
+
+        # First execution should work
+        url1 = self.media_file_manager.execute_deferred(file_id)
+        assert url1.startswith("/mock/endpoint/")
+        assert call_count == 1
+
+        # Second execution should also work (callable is kept)
+        url2 = self.media_file_manager.execute_deferred(file_id)
+        assert url2.startswith("/mock/endpoint/")
+        assert call_count == 2
+
+        # URLs can be different if the callable returns different data
+        # but both should be valid
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_clear_session_refs_and_remove_orphaned_cleans_deferred(self):
+        """Test that deferred callables are cleaned up after clear_session_refs + remove_orphaned_files."""
+
+        def generate_data():
+            return b"data"
+
+        # Add a deferred callable
+        file_id = self.media_file_manager.add_deferred(
+            generate_data, "text/plain", random_coordinates()
+        )
+
+        # Callable should exist
+        assert file_id in self.media_file_manager._deferred_callables
+        assert len(self.media_file_manager._deferred_callables) == 1
+
+        # Clear session refs (doesn't immediately delete callables)
+        self.media_file_manager.clear_session_refs("mock_session")
+
+        # Callable should still exist (not immediately deleted to avoid race conditions)
+        assert file_id in self.media_file_manager._deferred_callables
+        assert len(self.media_file_manager._deferred_callables) == 1
+
+        # Remove orphaned files (this cleans up orphaned deferred callables)
+        self.media_file_manager.remove_orphaned_files()
+
+        # Now the deferred callable should be removed
+        assert file_id not in self.media_file_manager._deferred_callables
+        assert len(self.media_file_manager._deferred_callables) == 0
+
+    @mock.patch("streamlit.runtime.media_file_manager._get_session_id")
+    def test_remove_orphaned_only_cleans_unreferenced_deferred(
+        self, mock_get_session_id
+    ):
+        """Test that only truly orphaned deferred callables are removed."""
+
+        def generate_data():
+            return b"data"
+
+        # Add deferred callable for session 1
+        mock_get_session_id.return_value = "session_1"
+        file_id_1 = self.media_file_manager.add_deferred(
+            generate_data, "text/plain", random_coordinates()
+        )
+
+        # Add deferred callable for session 2
+        mock_get_session_id.return_value = "session_2"
+        file_id_2 = self.media_file_manager.add_deferred(
+            generate_data, "text/plain", random_coordinates()
+        )
+
+        # Both callables should exist
+        assert file_id_1 in self.media_file_manager._deferred_callables
+        assert file_id_2 in self.media_file_manager._deferred_callables
+        assert len(self.media_file_manager._deferred_callables) == 2
+
+        # Clear session 1 refs (doesn't immediately delete)
+        self.media_file_manager.clear_session_refs("session_1")
+
+        # Both callables still exist
+        assert file_id_1 in self.media_file_manager._deferred_callables
+        assert file_id_2 in self.media_file_manager._deferred_callables
+
+        # Remove orphaned files - only session 1's callable should be cleaned
+        self.media_file_manager.remove_orphaned_files()
+
+        assert file_id_1 not in self.media_file_manager._deferred_callables
+        assert file_id_2 in self.media_file_manager._deferred_callables
+        assert len(self.media_file_manager._deferred_callables) == 1
+
+        # Clear session 2 refs and remove orphans
+        self.media_file_manager.clear_session_refs("session_2")
+        self.media_file_manager.remove_orphaned_files()
+
+        # Now both should be removed
+        assert file_id_2 not in self.media_file_manager._deferred_callables
+        assert len(self.media_file_manager._deferred_callables) == 0
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_handles_text_io_wrapper_return(self):
+        """Test that execute_deferred handles TextIOWrapper (text stream) return values."""
+
+        def generate_text_wrapper():
+            # Create a TextIOWrapper over BytesIO containing UTF-8 text
+            byte_stream = io.BytesIO(b"wrapped text")
+            return io.TextIOWrapper(byte_stream, encoding="utf-8")
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_text_wrapper, "text/plain", random_coordinates()
+        )
+
+        url = self.media_file_manager.execute_deferred(file_id)
+        assert url.startswith("/mock/endpoint/")
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_infers_text_plain_for_string_when_mimetype_none(self):
+        """If mimetype is None, infer text/plain for str returns."""
+
+        def generate_text():
+            return "hello world"
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_text, None, random_coordinates()
+        )
+
+        url = self.media_file_manager.execute_deferred(file_id)
+        assert url.startswith("/mock/endpoint/")
+        assert url.endswith(".txt")
+
+        # Verify stored mimetype is text/plain
+        filename = url.split("/")[-1]
+        stored = self.storage.get_file(filename)
+        assert stored.mimetype == "text/plain"
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_respects_provided_mimetype_over_inferred(self):
+        """Test that provided mimetype is used even when data type suggests different."""
+
+        def generate_text():
+            return "hello world"
+
+        # Even though data is string (would infer text/plain), use provided mimetype
+        file_id = self.media_file_manager.add_deferred(
+            generate_text, "text/csv", random_coordinates()
+        )
+
+        url = self.media_file_manager.execute_deferred(file_id)
+        assert url.startswith("/mock/endpoint/")
+
+        # Verify stored mimetype is text/csv (the provided one)
+        filename = url.split("/")[-1]
+        stored = self.storage.get_file(filename)
+        assert stored.mimetype == "text/csv"
+
+    @mock.patch(
+        "streamlit.runtime.media_file_manager._get_session_id",
+        MagicMock(return_value="mock_session"),
+    )
+    def test_execute_deferred_infers_octet_stream_for_bytes_when_mimetype_none(self):
+        """If mimetype is None, infer application/octet-stream for bytes returns."""
+
+        def generate_bytes():
+            return b"binary data"
+
+        file_id = self.media_file_manager.add_deferred(
+            generate_bytes, None, random_coordinates()
+        )
+
+        url = self.media_file_manager.execute_deferred(file_id)
+        assert url.startswith("/mock/endpoint/")
+
+        # Verify stored mimetype is application/octet-stream
+        filename = url.split("/")[-1]
+        stored = self.storage.get_file(filename)
+        assert stored.mimetype == "application/octet-stream"
+
+
+def test_media_file_metadata_defaults_to_media_kind() -> None:
+    """``MediaFileMetadata`` defaults to ``MediaFileKind.MEDIA`` and is not
+    initially marked for deletion."""
+    metadata = MediaFileMetadata()
+    assert metadata.kind == MediaFileKind.MEDIA
+    assert metadata.is_marked_for_delete is False
+
+
+def test_media_file_metadata_mark_for_delete_flips_flag() -> None:
+    """``mark_for_delete`` flips ``is_marked_for_delete`` to ``True``."""
+    metadata = MediaFileMetadata(MediaFileKind.DOWNLOADABLE)
+    assert metadata.kind == MediaFileKind.DOWNLOADABLE
+
+    metadata.mark_for_delete()
+    assert metadata.is_marked_for_delete is True
+
+
+@pytest.mark.parametrize(
+    ("ctx", "expected"),
+    [(None, "dontcare"), (MagicMock(session_id="real_session"), "real_session")],
+    ids=["no_context", "with_context"],
+)
+def test_get_session_id(ctx: object, expected: str) -> None:
+    """``_get_session_id`` returns the session ID, or ``"dontcare"`` when no ctx."""
+    with mock.patch(
+        "streamlit.runtime.scriptrunner_utils.script_run_context.get_script_run_ctx",
+        return_value=ctx,
+    ):
+        assert _get_session_id() == expected
+
+
+@mock.patch(
+    "streamlit.runtime.media_file_manager._get_session_id",
+    MagicMock(return_value="mock_session_id"),
+)
+def test_downloadable_file_marked_then_deleted_on_second_sweep() -> None:
+    """Orphaned ``DOWNLOADABLE`` files survive the first sweep (marked) and
+    are deleted on the second sweep, mirroring ``st.download_button`` behavior."""
+    storage = MemoryMediaFileStorage("/mock/endpoint")
+    manager = MediaFileManager(storage)
+    storage_delete_spy = MagicMock(side_effect=storage.delete_file)
+    storage.delete_file = storage_delete_spy
+
+    content, mimetype, filename = b"download me", "text/plain", "report.txt"
+    manager.add(content, mimetype, "1.2.3", filename, is_for_static_download=True)
+    file_id = _calculate_file_id(content, mimetype, filename)
+    metadata = manager._file_metadata[file_id]
+    assert metadata.kind == MediaFileKind.DOWNLOADABLE
+    assert metadata.is_marked_for_delete is False
+
+    manager.clear_session_refs("mock_session_id")
+    manager.remove_orphaned_files()
+
+    assert file_id in manager._file_metadata
+    assert metadata.is_marked_for_delete is True
+    storage_delete_spy.assert_not_called()
+
+    manager.remove_orphaned_files()
+
+    assert file_id not in manager._file_metadata
+    storage_delete_spy.assert_called_once_with(file_id)

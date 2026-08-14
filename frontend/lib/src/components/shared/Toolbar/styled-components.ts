@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,20 +14,26 @@
  * limitations under the License.
  */
 
-import styled, { StyledComponent } from "@emotion/styled"
+import { ComponentSelector } from "@emotion/serialize"
+import styled from "@emotion/styled"
 
-import { hasLightBackgroundColor } from "@streamlit/lib/src/theme"
+import { hasLightBackgroundColor } from "~lib/theme/getColors"
+
+export const TOP_DISTANCE = "-2.65rem"
+
+/** A styled component usable as a CSS selector in template literals. */
+type StyledComponentSelector = ComponentSelector & { toString(): string }
 
 export interface StyledToolbarWrapperProps {
   locked?: boolean
-  target?: StyledComponent<any, any, any>
+  target?: StyledComponentSelector
 }
 
 export const StyledToolbarWrapper = styled.div<StyledToolbarWrapperProps>(
   ({ theme, locked, target }) => ({
-    padding: "0.5rem 0 0.5rem 0.5rem",
+    padding: `${theme.spacing.sm} 0 ${theme.spacing.sm} ${theme.spacing.sm}`,
     position: "absolute",
-    top: locked ? "-2.4rem" : "-1rem",
+    top: locked ? TOP_DISTANCE : "-1rem",
     right: theme.spacing.none,
     transition: "none",
     ...(!locked && {
@@ -35,13 +41,13 @@ export const StyledToolbarWrapper = styled.div<StyledToolbarWrapperProps>(
       "&:active, &:focus-visible, &:hover": {
         transition: "opacity 150ms 100ms, top 100ms 100ms",
         opacity: 1,
-        top: "-2.4rem",
+        top: TOP_DISTANCE,
       },
       ...(target && {
         [`${target}:hover &, ${target}:active &, ${target}:focus-visible &`]: {
           transition: "opacity 150ms 100ms, top 100ms 100ms",
           opacity: 1,
-          top: "-2.4rem",
+          top: TOP_DISTANCE,
         },
       }),
     }),
@@ -56,9 +62,34 @@ export const StyledToolbar = styled.div(({ theme }) => ({
   flexDirection: "row",
   alignItems: "center",
   justifyContent: "flex-end",
-  boxShadow: "1px 2px 8px rgba(0, 0, 0, 0.08)",
-  borderRadius: theme.radii.lg,
+  boxShadow: theme.shadows.toolbar,
+  borderRadius: theme.radii.default,
   backgroundColor: theme.colors.lightenedBg05,
   width: "fit-content",
   zIndex: theme.zIndices.sidebar + 1,
+  padding: theme.spacing.twoXS,
+}))
+
+export const StyledToolbarElementContainer = styled.div<{
+  width?: number | string
+  height?: number | string
+  useContainerWidth: boolean
+  topCentered?: boolean
+  useContainerHeight?: boolean
+}>(({ height, useContainerWidth, topCentered, useContainerHeight }) => ({
+  position: "relative",
+  height:
+    useContainerWidth && height
+      ? height
+      : useContainerHeight
+        ? height || "100%"
+        : "fit-content",
+  maxWidth: "100%",
+  width: useContainerWidth ? "100%" : "fit-content",
+  ...(topCentered
+    ? {
+        display: "flex",
+        justifyContent: "center",
+      }
+    : {}),
 }))

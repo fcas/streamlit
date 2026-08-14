@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,71 +15,75 @@
  */
 
 import {
-  GridCell,
-  Theme as GlideTheme,
-  TextCell,
-  GridCellKind,
-  LoadingCell,
-  GridColumn,
   BaseGridCell,
+  Theme as GlideTheme,
+  GridCell,
+  GridCellKind,
+  GridColumn,
+  LoadingCell,
+  TextCell,
 } from "@glideapps/glide-data-grid"
-import toString from "lodash/toString"
-import merge from "lodash/merge"
-import numbro from "numbro"
-import { sprintf } from "sprintf-js"
-import moment, { Moment } from "moment"
+import { Vector } from "apache-arrow"
+import { merge, toString } from "lodash-es"
+import moment from "moment"
 import "moment-duration-format"
 import "moment-timezone"
+import numbro from "numbro"
 
-import { EmotionTheme } from "@streamlit/lib/src/theme"
-import {
-  Type as ArrowType,
-  Quiver,
-} from "@streamlit/lib/src/dataframes/Quiver"
-import {
-  notNullOrUndefined,
-  isNullOrUndefined,
-} from "@streamlit/lib/src/util/utils"
+import { ArrowType } from "~lib/dataframes/arrowTypeUtils"
+import type { EmotionTheme } from "~lib/theme/types"
+import { isNullOrUndefined, notNullOrUndefined } from "~lib/util/utils"
 
 /**
  * Interface used for defining the properties (configuration options) of a column.
  * These options can also be used to overwrite from user-defined column config.
  */
 export interface BaseColumnProps {
-  // The id of the column:
+  /** The id of the column. */
   readonly id: string
-  // The name of the column from the original data:
+  /** The name of the column from the original data. */
   readonly name: string
-  // The display title of the column:
+  /** The display title of the column. */
   readonly title: string
-  // The index number of the column:
+  /** The index number of the column. */
   readonly indexNumber: number
-  // The arrow data type of the column:
+  /** The arrow data type of the column. */
   readonly arrowType: ArrowType
-  // If `True`, the column can be edited:
+  /** If `True`, the column can be edited. */
   readonly isEditable: boolean
-  // If `True`, the column is hidden (will not be shown):
+  /** If `True`, the column is hidden (will not be shown). */
   readonly isHidden: boolean
-  // If `True`, the column is a table index:
+  /** If `True`, the column is a table index. */
   readonly isIndex: boolean
-  // If `True`, the column is a stretched:
+  /** If `True`, the column is pinned/frozen. */
+  readonly isPinned: boolean
+  /** If `True`, the column is a stretched. */
   readonly isStretched: boolean
-  // If `True`, a value is required before the cell or row can be submitted:
+  /** If `True`, a value is required before the cell or row can be submitted. */
   readonly isRequired?: boolean
-  // The initial width of the column:
+  /**
+   * If `True`, the content of the cell is allowed to be wrapped to fill the
+   * available height of the cell.
+   */
+  readonly isWrappingAllowed?: boolean
+  /** The initial width of the column. */
   readonly width?: number
-  // A help text that is displayed on hovering the column header.
+  /** A help text that is displayed on hovering the column header. */
   readonly help?: string
-  // Configuration options related to the column type:
-  readonly columnTypeOptions?: Record<string, any>
-  // The content alignment of the column:
+  /**
+   * Configuration options related to the column type.
+   */
+  readonly columnTypeOptions?: Record<string, unknown>
+  /** The content alignment of the column. */
   readonly contentAlignment?: "left" | "center" | "right"
-  // The default value of the column used when adding a new row:
+  /** The default value of the column used when adding a new row. */
   readonly defaultValue?: string | number | boolean
-  // Theme overrides for this column:
+  /** Theme overrides for this column. */
   readonly themeOverride?: Partial<GlideTheme>
-  // A custom icon to be displayed in the column header:
+  /** A custom icon to be displayed in the column header. */
   readonly icon?: string
+  /** The group that this column belongs to. */
+  readonly group?: string
 }
 
 /**
@@ -92,14 +96,19 @@ export interface BaseColumn extends BaseColumnProps {
   // smart: Detects if value is a number or a string and sorts accordingly.
   // raw: Sorts based on the actual type of the cell data value.
   readonly sortMode: "default" | "raw" | "smart"
+  // An material icon identifier (":material/...") that is used
+  // as type icon in the column menu.
+  readonly typeIcon: string
   // Validate the input data for compatibility with the column type:
   // Either returns a boolean indicating if the data is valid or not, or
   // returns the corrected value.
-  validateInput?(data?: any): boolean | any
+  validateInput?(data?: unknown): unknown
   // Get a cell with the provided data for the column type:
-  getCell(data?: any, validate?: boolean): GridCell
+  getCell(data?: unknown, validate?: boolean): GridCell
   // Get the raw value of the given cell:
-  getCellValue(cell: GridCell): any | null
+  getCellValue(cell: GridCell): unknown
+  // Compare two raw cell values for equality:
+  valuesEqual?(a: unknown, b: unknown): boolean
 }
 
 /**
@@ -118,29 +127,31 @@ const BOOLEAN_FALSE_VALUES = ["false", "f", "no", "n", "off", "0"]
 /**
  * Interface used for indicating if a cell contains an error.
  */
-interface ErrorCell extends TextCell {
+export interface ErrorCell extends TextCell {
   readonly isError: true
+  readonly errorDetails: string
 }
 
 /**
  * Returns a cell with an error message.
  *
- * @param errorMsg: A short error message to use as display value.
+ * @param errorMsg: A short error message or the wrong value to use as display value.
  * @param errorDetails: The full error message to show when the user
- *                     clicks on a cell.
+ *                     hovers on a cell.
  *
  * @return a read-only GridCell object that can be used by glide-data-grid.
  */
 export function getErrorCell(errorMsg: string, errorDetails = ""): ErrorCell {
-  errorMsg = `⚠️ ${errorMsg}`
   return {
     kind: GridCellKind.Text,
     readonly: true,
     allowOverlay: true,
-    data: errorMsg + (errorDetails ? `\n\n${errorDetails}\n` : ""),
+    data: errorMsg,
     displayData: errorMsg,
+    errorDetails: errorDetails,
     isError: true,
-  } as ErrorCell
+    style: "faded",
+  }
 }
 
 /**
@@ -149,7 +160,7 @@ export function getErrorCell(errorMsg: string, errorDetails = ""): ErrorCell {
  * the given value type.
  */
 export function isErrorCell(cell: GridCell): cell is ErrorCell {
-  return cell.hasOwnProperty("isError") && (cell as ErrorCell).isError
+  return Object.hasOwn(cell, "isError") && (cell as ErrorCell).isError
 }
 
 interface CellWithTooltip extends BaseGridCell {
@@ -161,7 +172,7 @@ interface CellWithTooltip extends BaseGridCell {
  */
 export function hasTooltip(cell: BaseGridCell): cell is CellWithTooltip {
   return (
-    cell.hasOwnProperty("tooltip") && (cell as CellWithTooltip).tooltip !== ""
+    Object.hasOwn(cell, "tooltip") && (cell as CellWithTooltip).tooltip !== ""
   )
 }
 /**
@@ -179,9 +190,50 @@ export function isMissingValueCell(
   cell: BaseGridCell
 ): cell is MissingValueCell {
   return (
-    cell.hasOwnProperty("isMissingValue") &&
+    Object.hasOwn(cell, "isMissingValue") &&
     (cell as MissingValueCell).isMissingValue
   )
+}
+
+/**
+ * Returns `true` if both values are arrays with strictly equal items in the same order.
+ */
+export function arrayValuesEqual(a: unknown, b: unknown): boolean {
+  if (!Array.isArray(a) || !Array.isArray(b)) {
+    return false
+  }
+
+  return a.length === b.length && a.every((value, index) => value === b[index])
+}
+
+/**
+ * Returns `true` if two raw values should be treated as equal for the column.
+ */
+export function valuesEqual(
+  a: unknown,
+  b: unknown,
+  column: BaseColumn
+): boolean {
+  if (isNullOrUndefined(a) && isNullOrUndefined(b)) {
+    return true
+  }
+
+  if (isNullOrUndefined(a) || isNullOrUndefined(b)) {
+    return false
+  }
+
+  if (column.valuesEqual) {
+    try {
+      return column.valuesEqual(a, b)
+    } catch {
+      // Column comparators may coerce or serialize values (e.g. Number(),
+      // JSON.stringify()), which can throw on unexpected inputs. Fall back to
+      // an identity check so equality checks never break the data editor.
+      return Object.is(a, b)
+    }
+  }
+
+  return Object.is(a, b)
 }
 
 /**
@@ -193,13 +245,15 @@ export function getEmptyCell(missingCell = false): LoadingCell {
       kind: GridCellKind.Loading,
       allowOverlay: false,
       isMissingValue: true,
+      copyData: "",
     } as LoadingCell
   }
 
   return {
     kind: GridCellKind.Loading,
     allowOverlay: false,
-  } as LoadingCell
+    copyData: "",
+  }
 }
 
 /**
@@ -219,7 +273,7 @@ export function getTextCell(readonly: boolean, faded: boolean): TextCell {
     allowOverlay: true,
     readonly,
     style,
-  } as TextCell
+  }
 }
 
 /**
@@ -230,15 +284,19 @@ export function toGlideColumn(column: BaseColumn): GridColumn {
     id: column.id,
     title: column.title,
     hasMenu: false,
+    menuIcon: "dots",
     themeOverride: column.themeOverride,
     icon: column.icon,
-    ...(column.isStretched && {
-      grow: column.isIndex ? 1 : 3,
-    }),
+    group: column.group,
+    // Only grow non pinned columns, it looks a bit broken otherwise:
+    ...(column.isStretched &&
+      !column.isPinned && {
+        grow: 1,
+      }),
     ...(column.width && {
       width: column.width,
     }),
-  } as GridColumn
+  }
 }
 
 /**
@@ -249,19 +307,19 @@ export function toGlideColumn(column: BaseColumn): GridColumn {
  *
  * @returns The merged column parameters.
  */
-export function mergeColumnParameters(
-  defaultParams: Record<string, any> | undefined | null,
-  userParams: Record<string, any> | undefined | null
-): Record<string, any> {
+export function mergeColumnParameters<T = Record<string, unknown>>(
+  defaultParams: Record<string, unknown> | undefined | null,
+  userParams: Record<string, unknown> | undefined | null
+): T {
   if (isNullOrUndefined(defaultParams)) {
-    return userParams || {}
+    return (userParams || {}) as T
   }
 
   if (isNullOrUndefined(userParams)) {
-    return defaultParams || {}
+    return (defaultParams || {}) as T
   }
 
-  return merge(defaultParams, userParams)
+  return merge(defaultParams, userParams) as T
 }
 
 /**
@@ -272,7 +330,7 @@ export function mergeColumnParameters(
  *
  * @returns The converted array or an empty array if the value cannot be interpreted as an array.
  */
-export function toSafeArray(data: any): any[] {
+export function toSafeArray(data: unknown): unknown[] {
   if (isNullOrUndefined(data)) {
     return []
   }
@@ -293,7 +351,7 @@ export function toSafeArray(data: any): any[] {
       // Support for JSON arrays: ["foo", 1, null, "test"]
       try {
         return JSON.parse(data)
-      } catch (error) {
+      } catch {
         return [data]
       }
     } else {
@@ -312,14 +370,49 @@ export function toSafeArray(data: any): any[] {
       return [toSafeString(parsedData)]
     }
 
-    return parsedData.map((value: any) =>
+    return parsedData.map((value: unknown) =>
       ["string", "number", "boolean", "null"].includes(typeof value)
         ? value
         : toSafeString(value)
     )
-  } catch (error) {
+  } catch {
     return [toSafeString(data)]
   }
+}
+
+/**
+ * Checks if the provided data used as array value is supported for editing.
+ *
+ * @param data - The value to inspect.
+ * @returns True if `data` is supported for array-editing.
+ */
+export function isEditableArrayValue(data: unknown): boolean {
+  if (typeof data === "string" || data instanceof String) {
+    return true
+  }
+
+  if (data instanceof Vector) {
+    data = Array.from(data)
+  }
+
+  return (
+    Array.isArray(data) &&
+    data.every(v => typeof v === "string" || v instanceof String)
+  )
+}
+
+/**
+ * Efficient check to determine if a string is looks like a JSON string.
+ *
+ * This is only a heuristic check and does not guarantee that the string is a
+ * valid JSON string.
+ *
+ * @param data - The data to check.
+ *
+ * @returns `true` if the data might be a JSON string.
+ */
+export function isMaybeJson(data: unknown): boolean {
+  return typeof data === "string" && data.startsWith("{") && data.endsWith("}")
 }
 
 /**
@@ -330,16 +423,16 @@ export function toSafeArray(data: any): any[] {
  *
  * @return The converted string or a string showing the type of the object as fallback.
  */
-export function toSafeString(data: any): string {
+export function toSafeString(data: unknown): string {
   try {
     try {
       return toString(data)
-    } catch (error) {
+    } catch {
       return JSON.stringify(data, (_key, value) =>
         typeof value === "bigint" ? Number(value) : value
       )
     }
-  } catch (error) {
+  } catch {
     // This is most likely an object that cannot be converted to a string
     // console.log converts this to `[object Object]` which we are doing here as well:
     return `[${typeof data}]`
@@ -355,7 +448,7 @@ export function toSafeString(data: any): string {
  * @return The converted boolean, null if the value is empty or undefined if the
  *         value cannot be interpreted as a boolean.
  */
-export function toSafeBoolean(value: any): boolean | null | undefined {
+export function toSafeBoolean(value: unknown): boolean | null | undefined {
   if (isNullOrUndefined(value)) {
     return null
   }
@@ -385,7 +478,7 @@ export function toSafeBoolean(value: any): boolean | null | undefined {
  * @returns The converted number or null if the value is empty or undefined or NaN if the
  *          value cannot be interpreted as a number.
  */
-export function toSafeNumber(value: any): number | null {
+export function toSafeNumber(value: unknown): number | null {
   // TODO(lukasmasuch): Should this return null as replacement for NaN?
 
   if (isNullOrUndefined(value)) {
@@ -409,12 +502,11 @@ export function toSafeNumber(value: any): number | null {
       if (notNullOrUndefined(unformattedValue)) {
         return unformattedValue
       }
-    } catch (error) {
+    } catch {
       // Do nothing here
     }
   } else if (value instanceof Int32Array) {
     // int values need to be extracted this way:
-    // eslint-disable-next-line prefer-destructuring
     return Number(value[0])
   }
 
@@ -422,77 +514,54 @@ export function toSafeNumber(value: any): number | null {
 }
 
 /**
- * Formats the given number to a string based on a provided format or the default format.
+ * Converts an array to a string representation suitable for copying.
  *
- * @param value - The number to format.
- * @param format - The format to use. If not provided, the default format is used.
- * @param maxPrecision - The maximum number of decimals to show. This is only used by the default format.
- *                     If not provided, the default is 4 decimals and trailing zeros are hidden.
- *
- * @returns The formatted number as a string.
+ * @param array - The array to convert.
+ * @returns The string representation of the array.
  */
-export function formatNumber(
-  value: number,
-  format?: string | undefined,
-  maxPrecision?: number | undefined
-): string {
-  if (Number.isNaN(value) || !Number.isFinite(value)) {
+export function arrayToCopyValue(array?: unknown[] | null): string {
+  if (isNullOrUndefined(array)) {
     return ""
   }
 
-  if (isNullOrUndefined(format) || format === "") {
-    if (maxPrecision === 0) {
-      // Numbro is unable to format the number with 0 decimals.
-      value = Math.round(value)
-    }
-    return numbro(value).format(
-      notNullOrUndefined(maxPrecision)
-        ? `0,0.${"0".repeat(maxPrecision)}`
-        : `0,0.[0000]` // If no precision is given, use 4 decimals and hide trailing zeros
+  return toSafeString(
+    array.map((x: unknown) =>
+      // Replace commas with spaces since commas are used to
+      // separate the list items.
+      typeof x === "string" && x.includes(",") ? x.replace(/,/g, " ") : x
     )
-  }
-
-  if (format === "percent") {
-    return new Intl.NumberFormat(undefined, {
-      style: "percent",
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(value)
-  } else if (["compact", "scientific", "engineering"].includes(format)) {
-    return new Intl.NumberFormat(undefined, {
-      notation: format as any,
-    }).format(value)
-  } else if (format === "duration[ns]") {
-    return moment.duration(value / (1000 * 1000), "milliseconds").humanize()
-  } else if (format.startsWith("period[")) {
-    return Quiver.formatPeriodType(BigInt(value), format as any)
-  }
-
-  return sprintf(format, value)
+  )
 }
 
 /**
- * Formats the given date to a string with the given format.
+ * Tries to convert a given value of unknown type to a JSON string without
+ * the risks of any exceptions.
  *
- * @param momentDate The moment date to format.
- * @param format The format to use.
- *   If the format is `locale` the date will be formatted according to the user's locale.
- *   If the format is `relative` the date will be formatted as a relative time (e.g. "2 hours ago").
- *   Otherwise, it is interpreted as momentJS format string: https://momentjs.com/docs/#/displaying/format/
- * @returns The formatted date as a string.
+ * @param value - The value to convert to a JSON string.
+ *
+ * @returns The converted JSON string or a string showing the type of the object as fallback.
  */
-export function formatMoment(momentDate: Moment, format: string): string {
-  if (format === "locale") {
-    return new Intl.DateTimeFormat(undefined, {
-      dateStyle: "medium",
-      timeStyle: "medium",
-    }).format(momentDate.toDate())
-  } else if (format === "distance") {
-    return momentDate.fromNow()
-  } else if (format === "relative") {
-    return momentDate.calendar()
+export function toJsonString(value: unknown): string {
+  if (isNullOrUndefined(value)) {
+    return ""
   }
-  return momentDate.format(format)
+
+  if (typeof value === "string") {
+    // If the value is already a string, return it as-is
+    return value
+  }
+
+  try {
+    // Try to convert the value to a JSON string
+    return JSON.stringify(value, (_key, val) =>
+      // BigInt are not supported by JSON.stringify
+      // so we convert them to a number as fallback
+      typeof val === "bigint" ? Number(val) : val
+    )
+  } catch {
+    // If the value cannot be converted to a JSON string, return the stringified value
+    return toSafeString(value)
+  }
 }
 
 /**
@@ -505,7 +574,7 @@ export function formatMoment(momentDate: Moment, format: string): string {
  *
  * @returns The converted date or null if the value cannot be interpreted as a date.
  */
-export function toSafeDate(value: any): Date | null | undefined {
+export function toSafeDate(value: unknown): Date | null | undefined {
   if (isNullOrUndefined(value)) {
     return null
   }
@@ -571,7 +640,7 @@ export function toSafeDate(value: any): Date | null | undefined {
         return parsedMomentTime.toDate()
       }
     }
-  } catch (error) {
+  } catch {
     return undefined
   }
 
@@ -623,9 +692,17 @@ export function countDecimals(value: number): number {
  * truncateDecimals(123.456, 0); // returns 123
  */
 export function truncateDecimals(value: number, decimals: number): number {
-  return decimals === 0
-    ? Math.trunc(value)
-    : Math.trunc(value * 10 ** decimals) / 10 ** decimals
+  if (!Number.isFinite(value)) return value // keep NaN/±∞ untouched
+  if (decimals <= 0) return Math.trunc(value)
+
+  const factor = 10 ** decimals
+  const shifted = value * factor
+
+  // Add/subtract a relative ε that is just large enough to push
+  // 451.999… → 452 (or −452.000… → −451.999…) before we truncate.
+  const epsilon = Number.EPSILON * Math.abs(shifted) * 10
+
+  return Math.trunc(shifted + Math.sign(shifted) * epsilon) / factor
 }
 
 const LINE_BREAK_REGEX = new RegExp(/(\r\n|\n|\r)/gm)
@@ -666,15 +743,16 @@ export function getLinkDisplayValueFromRegex(
   try {
     // apply the regex pattern to display the value
     const patternMatch = href.match(displayTextRegex)
-    if (patternMatch && patternMatch[1] !== undefined) {
+    if (patternMatch?.[1] !== undefined) {
       // return the first matching group
       // Since this might be a URI encoded value, we decode it.
-      return decodeURI(patternMatch[1])
+      // Note: we replace + with %20 to correctly convert + to whitespaces.
+      return decodeURIComponent(patternMatch[1].replace(/\+/g, "%20"))
     }
 
     // if the regex doesn't find a match with the url, just use the url as display value
     return href
-  } catch (error) {
+  } catch {
     // if there was any error return the href
     return href
   }

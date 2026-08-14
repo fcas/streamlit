@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,24 +14,19 @@
 
 """Unit tests for runtime_util.py."""
 
+from __future__ import annotations
+
 import unittest
+from unittest.mock import patch
 
 from streamlit.proto.ForwardMsg_pb2 import ForwardMsg
 from streamlit.runtime import runtime_util
-from streamlit.runtime.runtime_util import is_cacheable_msg, serialize_forward_msg
+from streamlit.runtime.runtime_util import serialize_forward_msg
 from tests.streamlit.message_mocks import create_dataframe_msg
 from tests.testutil import patch_config_options
 
 
 class RuntimeUtilTest(unittest.TestCase):
-    def test_should_cache_msg(self):
-        """Test runtime_util.should_cache_msg"""
-        with patch_config_options({"global.minCachedMessageSize": 0}):
-            self.assertTrue(is_cacheable_msg(create_dataframe_msg([1, 2, 3])))
-
-        with patch_config_options({"global.minCachedMessageSize": 1000}):
-            self.assertFalse(is_cacheable_msg(create_dataframe_msg([1, 2, 3])))
-
     def test_should_limit_msg_size(self):
         max_message_size_mb = 50
 
@@ -49,9 +44,17 @@ class RuntimeUtilTest(unittest.TestCase):
             deserialized_msg.ParseFromString(serialize_forward_msg(large_msg_copy))
 
             # The metadata should be the same, but contents should be replaced
-            self.assertEqual(deserialized_msg.metadata, large_msg.metadata)
-            self.assertNotEqual(deserialized_msg, large_msg)
-            self.assertTrue(
+            assert deserialized_msg.metadata == large_msg.metadata
+            assert deserialized_msg != large_msg
+            assert (
                 "exceeds the message size limit"
                 in deserialized_msg.delta.new_element.exception.message
             )
+
+    def test_get_max_widget_state_size_bytes_reads_config(self):
+        """The widget state size limit is derived from the config option in bytes."""
+        with (
+            patch.object(runtime_util, "_max_widget_state_size_bytes", None),
+            patch_config_options({"server.maxWidgetStateSize": 10}),
+        ):
+            assert runtime_util.get_max_widget_state_size_bytes() == 10 * int(1e6)

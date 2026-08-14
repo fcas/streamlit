@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,15 @@
 # limitations under the License.
 
 """exception Unittest."""
-import os
-import unittest
 
+import os
+import traceback
+import unittest
+from pathlib import Path
+from typing import cast
+from unittest.mock import MagicMock, patch
+
+import pytest
 from parameterized import parameterized
 
 import streamlit as st
@@ -24,11 +30,16 @@ from streamlit.elements import exception
 from streamlit.elements.exception import (
     _GENERIC_UNCAUGHT_EXCEPTION_TEXT,
     _format_syntax_error_message,
+    _get_stack_trace_str_list,
+    _split_internal_streamlit_frames,
+    _split_list,
 )
-from streamlit.errors import StreamlitAPIException, UncaughtAppException
+from streamlit.errors import StreamlitAPIException, StreamlitInvalidWidthError
 from streamlit.proto.Exception_pb2 import Exception as ExceptionProto
 from tests import testutil
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.elements.layout_test_utils import WidthConfigFields
+from tests.streamlit.elements.support_files import exception_test_utils as user_module
 
 
 class ExceptionProtoTest(unittest.TestCase):
@@ -44,65 +55,255 @@ File "syntax_hilite.py", line 84
                         ^
 SyntaxError: invalid syntax
 """
-        self.assertEqual(expected.strip(), _format_syntax_error_message(err))
+        assert expected.strip() == _format_syntax_error_message(err)
 
-    def test_markdown_flag(self):
+    @parameterized.expand([(True,), (False,)])
+    def test_markdown_flag(self, apply_show_error_details):
         """Test that ExceptionProtos for StreamlitAPIExceptions (and
         subclasses) have the "message_is_markdown" flag set.
         """
         proto = ExceptionProto()
-        exception.marshall(proto, RuntimeError("oh no!"))
-        self.assertFalse(proto.message_is_markdown)
+        exception.marshall(
+            proto,
+            RuntimeError("oh no!"),
+            apply_show_error_details=apply_show_error_details,
+        )
+        assert not proto.message_is_markdown
 
         proto = ExceptionProto()
-        exception.marshall(proto, StreamlitAPIException("oh no!"))
-        self.assertTrue(proto.message_is_markdown)
+        exception.marshall(
+            proto,
+            StreamlitAPIException("oh no!"),
+            apply_show_error_details=apply_show_error_details,
+        )
+        assert proto.message_is_markdown
 
         proto = ExceptionProto()
-        exception.marshall(proto, errors.DuplicateWidgetID("oh no!"))
-        self.assertTrue(proto.message_is_markdown)
+        exception.marshall(
+            proto,
+            errors.DuplicateWidgetID("oh no!"),
+            apply_show_error_details=apply_show_error_details,
+        )
+        assert proto.message_is_markdown
 
-    def test_strip_streamlit_stack_entries(self):
-        """Test that StreamlitAPIExceptions don't include Streamlit entries
-        in the stack trace.
+    @parameterized.expand(
+        [
+            (user_module.st_call_with_arguments_missing, 2),
+            (user_module.st_call_with_bad_arguments, 7),
+            (user_module.pandas_call_with_bad_arguments, 2),
+            (user_module.internal_python_call_with_bad_arguments, 2),
+        ]
+    )
+    @patch("streamlit.elements.exception.get_script_run_ctx")
+    def test_external_error_stack_starts_with_user_module(
+        self, user_func, stack_len, patched_get_script_run_ctx
+    ):
+        """Test stack traces for exceptions thrown by user code start from the first
+        line of user code.
 
         """
-        # Create a StreamlitAPIException.
+        ctx = MagicMock()
+        user_module_path = Path(user_module.__file__).parent
+        ctx.main_script_parent = user_module_path
+        patched_get_script_run_ctx.return_value = ctx
+
         err = None
+
         try:
-            st.image("http://not_an_image.png", width=-1)
-        except StreamlitAPIException as e:
-            err = e
-        self.assertIsNotNone(err)
-
-        # Marshall it.
-        proto = ExceptionProto()
-        exception.marshall(proto, err)
-
-        # The streamlit package should not appear in any stack entry.
-        streamlit_dir = os.path.dirname(st.__file__)
-        streamlit_dir = os.path.join(os.path.realpath(streamlit_dir), "")
-        for line in proto.stack_trace:
-            self.assertNotIn(streamlit_dir, line, "Streamlit stack entry not stripped")
-
-    def test_uncaught_app_exception(self):
-        err = None
-        try:
-            st.format("http://not_an_image.png", width=-1)
+            user_func()
         except Exception as e:
-            err = UncaughtAppException(e)
-        self.assertIsNotNone(err)
+            err = e
+
+        assert err is not None
 
         # Marshall it.
         proto = ExceptionProto()
-        exception.marshall(proto, err)
+        exception.marshall(proto, cast("Exception", err), apply_show_error_details=True)
 
-        for line in proto.stack_trace:
-            # assert message that could contain secret information in the stack trace
-            assert "module 'streamlit' has no attribute 'format'" not in line
+        user_module_path = os.path.join(os.path.realpath(user_module_path), "")
+        assert user_module_path in proto.stack_trace[0], "Stack not stripped"
+        assert len(proto.stack_trace) == stack_len, (
+            f"Stack does not have length {stack_len}: {proto.stack_trace}"
+        )
 
-        assert proto.message == _GENERIC_UNCAUGHT_EXCEPTION_TEXT
-        assert proto.type == "AttributeError"
+    @patch("streamlit.elements.exception.get_script_run_ctx")
+    def test_internal_error_stack_doesnt_start_with_user_module(
+        self, patched_get_script_run_ctx
+    ):
+        """Test stack traces for exceptions thrown by Streamlit code *not* called by the
+        user.
+
+        """
+        ctx = MagicMock()
+        user_module_path = Path(user_module.__file__).parent
+        ctx.main_script_parent = user_module_path
+        patched_get_script_run_ctx.return_value = ctx
+
+        err = None
+
+        def func_with_error():
+            raise RuntimeError("This function throws on purpose")
+
+        try:
+            func_with_error()
+        except Exception as e:
+            err = e
+
+        assert err is not None
+
+        original_stack_len = len(traceback.extract_tb(err.__traceback__))
+
+        # Marshall it.
+        proto = ExceptionProto()
+        exception.marshall(
+            proto, cast("Exception", err), apply_show_error_details=False
+        )
+
+        user_module_path = os.path.join(os.path.realpath(user_module_path), "")
+        assert not any(user_module_path in t for t in proto.stack_trace)
+        assert len(proto.stack_trace) == original_stack_len, (
+            f"Stack does not have length {original_stack_len}: {proto.stack_trace}"
+        )
+
+    @parameterized.expand([(True,), ("true",), ("True",), ("full",)])
+    def test_uncaught_app_exception_show_everything(
+        self, show_error_details_config_value
+    ):
+        with testutil.patch_config_options(
+            {"client.showErrorDetails": show_error_details_config_value}
+        ):
+            err = None
+            try:
+                st.format("http://not_an_image.png", width=-1)
+            except Exception as e:
+                err = e
+            assert err is not None
+
+            # Marshall it.
+            proto = ExceptionProto()
+            exception.marshall(proto, err, apply_show_error_details=True)
+
+            assert proto.message == "module 'streamlit' has no attribute 'format'"
+            assert len(proto.stack_trace) > 0
+            assert proto.type == "AttributeError"
+
+    @parameterized.expand([(False,), ("false",), ("False",), ("stacktrace",)])
+    def test_uncaught_app_exception_hide_message(self, show_error_details_config_value):
+        with testutil.patch_config_options(
+            {"client.showErrorDetails": show_error_details_config_value}
+        ):
+            err = None
+            try:
+                st.format("http://not_an_image.png", width=-1)
+            except Exception as e:
+                err = e
+            assert err is not None
+
+            # Marshall it.
+            proto = ExceptionProto()
+            exception.marshall(proto, err, apply_show_error_details=True)
+
+            assert proto.message == _GENERIC_UNCAUGHT_EXCEPTION_TEXT
+            assert len(proto.stack_trace) > 0
+            assert proto.type == "AttributeError"
+
+    def test_uncaught_app_exception_show_type_and_stacktrace_only(self):
+        with testutil.patch_config_options({"client.showErrorDetails": "stacktrace"}):
+            err = None
+            try:
+                st.format("http://not_an_image.png", width=-1)
+            except Exception as e:
+                err = e
+            assert err is not None
+
+            # Marshall it.
+            proto = ExceptionProto()
+            exception.marshall(proto, err, apply_show_error_details=True)
+
+            assert proto.message == _GENERIC_UNCAUGHT_EXCEPTION_TEXT
+            assert len(proto.stack_trace) > 0
+            assert proto.type == "AttributeError"
+
+    def test_uncaught_app_exception_show_only_type(self):
+        with testutil.patch_config_options({"client.showErrorDetails": "type"}):
+            err = None
+            try:
+                st.format("http://not_an_image.png", width=-1)
+            except Exception as e:
+                err = e
+            assert err is not None
+
+            # Marshall it.
+            proto = ExceptionProto()
+            exception.marshall(proto, err, apply_show_error_details=True)
+
+            assert proto.message == _GENERIC_UNCAUGHT_EXCEPTION_TEXT
+            assert len(proto.stack_trace) == 0
+            assert proto.type == "AttributeError"
+
+    def test_uncaught_app_exception_hide_everything(self):
+        with testutil.patch_config_options({"client.showErrorDetails": "none"}):
+            err = None
+            try:
+                st.format("http://not_an_image.png", width=-1)
+            except Exception as e:
+                err = e
+            assert err is not None
+
+            # Marshall it.
+            proto = ExceptionProto()
+            exception.marshall(proto, err, apply_show_error_details=True)
+
+            assert proto.message == _GENERIC_UNCAUGHT_EXCEPTION_TEXT
+            assert len(proto.stack_trace) == 0
+            assert proto.type == ""
+
+
+class ExceptionWidthTest(DeltaGeneratorTestCase):
+    def test_exception_with_width_pixels(self):
+        """Test that exceptions can be displayed with a specific width in pixels."""
+        e = RuntimeError("This is an exception")
+        st.exception(e, width=500)
+        c = self.get_delta_from_queue().new_element.exception
+        assert (
+            c.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.PIXEL_WIDTH.value
+        )
+        assert c.width_config.pixel_width == 500
+
+    def test_exception_with_width_stretch(self):
+        """Test that exceptions can be displayed with a width of 'stretch'."""
+        e = RuntimeError("This is an exception")
+        st.exception(e, width="stretch")
+        c = self.get_delta_from_queue().new_element.exception
+        assert (
+            c.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert c.width_config.use_stretch
+
+    def test_exception_with_default_width(self):
+        """Test that the default width is used when not specified."""
+        e = RuntimeError("This is an exception")
+        st.exception(e)
+        c = self.get_delta_from_queue().new_element.exception
+        assert (
+            c.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert c.width_config.use_stretch
+
+    def test_exception_with_invalid_width(self):
+        """Test that an invalid width raises an exception."""
+        e = RuntimeError("This is an exception")
+        with pytest.raises(StreamlitInvalidWidthError):
+            st.exception(e, width="invalid")
+
+    def test_exception_with_negative_width(self):
+        """Test that a negative width raises an exception."""
+        e = RuntimeError("This is an exception")
+        with pytest.raises(StreamlitInvalidWidthError):
+            st.exception(e, width=-100)
 
 
 class StExceptionAPITest(DeltaGeneratorTestCase):
@@ -113,7 +314,7 @@ class StExceptionAPITest(DeltaGeneratorTestCase):
         """Test st.exception."""
         # client.showErrorDetails has no effect on code that calls
         # st.exception directly. This test should have the same result
-        # regardless fo the config option.
+        # regardless of the config option.
         with testutil.patch_config_options(
             {"client.showErrorDetails": show_error_details}
         ):
@@ -121,8 +322,93 @@ class StExceptionAPITest(DeltaGeneratorTestCase):
             st.exception(e)
 
             el = self.get_delta_from_queue().new_element
-            self.assertEqual(el.exception.type, "RuntimeError")
-            self.assertEqual(el.exception.message, "Test Exception")
+            assert el.exception.type == "RuntimeError"
+            assert el.exception.message == "Test Exception"
             # We will test stack_trace when testing
             # streamlit.elements.exception_element
-            self.assertEqual(el.exception.stack_trace, [])
+            assert el.exception.stack_trace == []
+
+
+def test_marshall_with_alternate_name() -> None:
+    """Test that alternate_name attribute is used as the exception type."""
+
+    class CustomException(Exception):
+        alternate_name = "PrettyErrorName"
+
+    err = CustomException("something went wrong")
+    proto = ExceptionProto()
+    exception.marshall(proto, err)
+    assert proto.type == "PrettyErrorName"
+
+
+def test_marshall_syntax_error() -> None:
+    """Test that SyntaxErrors are formatted with _format_syntax_error_message."""
+    err = SyntaxError(
+        "unexpected EOF",
+        ("myfile.py", 10, 5, "print(\n"),
+    )
+    proto = ExceptionProto()
+    exception.marshall(proto, err)
+    assert "SyntaxError" in proto.message
+    assert "myfile.py" in proto.message
+
+
+def test_marshall_str_exception_raises() -> None:
+    """Test that marshall handles exceptions whose __str__ raises."""
+
+    class BadStrException(Exception):
+        def __str__(self) -> str:
+            raise RuntimeError("cannot convert to string")
+
+    err = BadStrException()
+    proto = ExceptionProto()
+    exception.marshall(proto, err)
+    assert proto.message == ""
+
+
+def test_format_syntax_error_without_text() -> None:
+    """Test _format_syntax_error_message fallback when text is None."""
+    err = SyntaxError("encoding declaration in Unicode string")
+    err.text = None
+    result = _format_syntax_error_message(err)
+    assert "encoding declaration" in result
+
+
+def test_get_stack_trace_no_traceback() -> None:
+    """Test _get_stack_trace_str_list when __traceback__ is None.
+
+    When __traceback__ is None, extract_tb returns an empty StackSummary,
+    so _split_internal_streamlit_frames runs and yields empty lists.
+    """
+    err = RuntimeError("no traceback")
+    err.__traceback__ = None
+    result = _get_stack_trace_str_list(err)
+    assert result == []
+
+
+@patch("streamlit.elements.exception.get_script_run_ctx")
+def test_split_internal_frames_no_ctx(mock_ctx: MagicMock) -> None:
+    """Test _split_internal_streamlit_frames returns all frames when no ctx."""
+    mock_ctx.return_value = None
+    tb = traceback.StackSummary.from_list([("file.py", 1, "func", "code")])
+    internal, external = _split_internal_streamlit_frames(tb)
+    assert internal == []
+    assert len(external) == 1
+
+
+class SplitListTest(unittest.TestCase):
+    @parameterized.expand(
+        [
+            (["a", "b", "c", "-", "d", "e"], 3),
+            (["-", "a", "b", "c", "d", "e"], 0),
+            (["a", "b", "c", "d", "e", "-"], 5),
+            (["a", "b", "c", "d", "e", "f"], 100),
+            (["a", "-", "c", "d", "-", "f"], 1),
+            ([], 100),
+        ]
+    )
+    def test_split_list(self, input_list, split_index):
+        before, after = _split_list(input_list, split_point=lambda x: x == "-")
+
+        assert before == input_list[:split_index]
+        assert after == input_list[split_index:]

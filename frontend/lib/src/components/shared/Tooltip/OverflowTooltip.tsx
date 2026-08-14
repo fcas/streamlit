@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,12 @@
  * limitations under the License.
  */
 
-import React, { ReactNode, ReactElement, useState } from "react"
+import { ReactElement, ReactNode, useEffect, useRef, useState } from "react"
 
+import { StyledEllipsizedDiv, StyledWrapper } from "./styled-components"
 import Tooltip, { Placement } from "./Tooltip"
-import { StyledWrapper, StyledEllipsizedDiv } from "./styled-components"
 
-export interface OverflowTooltipProps {
+interface OverflowTooltipProps {
   content: ReactNode
   placement: Placement
   children: ReactNode
@@ -38,12 +38,13 @@ function OverflowTooltip({
   inline,
   style,
 }: OverflowTooltipProps): ReactElement {
-  const childRef = React.useRef<HTMLDivElement>(null)
+  const childRef = useRef<HTMLDivElement>(null)
   const [allowTooltip, setAllowTooltip] = useState(false)
 
-  React.useEffect(() => {
+  useEffect(() => {
     const newAllowTooltip = childRef?.current
-      ? childRef.current.offsetWidth < childRef.current.scrollWidth
+      ? // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
+        childRef.current.offsetWidth < childRef.current.scrollWidth
       : false
     if (newAllowTooltip !== allowTooltip) {
       setAllowTooltip(newAllowTooltip)

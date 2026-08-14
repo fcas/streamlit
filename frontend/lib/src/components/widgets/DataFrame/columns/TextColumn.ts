@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,25 +14,26 @@
  * limitations under the License.
  */
 
-import { GridCell, TextCell, GridCellKind } from "@glideapps/glide-data-grid"
+import { GridCell, GridCellKind, TextCell } from "@glideapps/glide-data-grid"
 
-import {
-  notNullOrUndefined,
-  isNullOrUndefined,
-} from "@streamlit/lib/src/util/utils"
+import { isNullOrUndefined, notNullOrUndefined } from "~lib/util/utils"
 
 import {
   BaseColumn,
   BaseColumnProps,
   getErrorCell,
-  toSafeString,
   removeLineBreaks,
+  toSafeString,
 } from "./utils"
 
-export interface TextColumnParams {
-  // The maximum number of characters the user can enter into the text input.
+interface TextColumnParams {
+  /**
+   * The maximum number of characters the user can enter into the text input.
+   */
   readonly max_chars?: number
-  // Regular expression that the input's value must match for the value to pass
+  /**
+   * Regular expression that the input's value must match for the value to pass.
+   */
   readonly validate?: string
 }
 
@@ -52,21 +53,24 @@ function TextColumn(props: BaseColumnProps): BaseColumn {
       validateRegex = new RegExp(parameters.validate, "us")
     } catch (error) {
       // Put error message in validateRegex so we can display it in the cell
+      // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
       validateRegex = `Invalid validate regex: ${parameters.validate}.\nError: ${error}`
     }
   }
 
-  const cellTemplate = {
+  const cellTemplate: TextCell = {
     kind: GridCellKind.Text,
     data: "",
     displayData: "",
     allowOverlay: true,
-    contentAlignment: props.contentAlignment,
+    contentAlign: props.contentAlignment,
+    allowWrapping: props.isWrappingAllowed,
     readonly: !props.isEditable,
-    style: props.isIndex ? "faded" : "normal",
-  } as TextCell
+    // The text in pinned columns should be faded.
+    style: props.isPinned ? "faded" : "normal",
+  }
 
-  const validateInput = (data?: any): boolean | string => {
+  const validateInput = (data?: unknown): boolean | string => {
     if (isNullOrUndefined(data)) {
       if (props.isRequired) {
         return false
@@ -99,8 +103,9 @@ function TextColumn(props: BaseColumnProps): BaseColumn {
     ...props,
     kind: "text",
     sortMode: "default",
+    typeIcon: ":material/notes:",
     validateInput,
-    getCell(data?: any, validate?: boolean): GridCell {
+    getCell(data?: unknown, validate?: boolean): GridCell {
       if (typeof validateRegex === "string") {
         // The regex is invalid, we return an error to indicate this
         // to the developer:
@@ -137,6 +142,7 @@ function TextColumn(props: BaseColumnProps): BaseColumn {
         // This should never happen, but if it does, we want to show an error
         return getErrorCell(
           "Incompatible value",
+          // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
           `The value cannot be interpreted as string. Error: ${error}`
         )
       }

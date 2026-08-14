@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import math
 from datetime import date, timedelta
 from typing import Any
@@ -19,19 +21,20 @@ from typing import Any
 import pytest
 from parameterized import parameterized
 
-from streamlit.time_util import BadTimeStringError, adjust_years, time_to_seconds
+from streamlit.errors import StreamlitBadTimeStringError
+from streamlit.time_util import adjust_years, time_to_seconds
 
 TIME_STRING_TO_SECONDS_PARAMS = [
     ("float", 3.5, 3.5),
     ("timedelta", timedelta(minutes=3), 60 * 3),
-    ("str 1 arg", "1d", 24 * 60 * 60),
-    ("str 2 args", "1d23h", 24 * 60 * 60 + 23 * 60 * 60),
+    ("str 1 arg", "1D", 24 * 60 * 60),
+    ("str 2 args", "1D23h", 24 * 60 * 60 + 23 * 60 * 60),
     (
         "complex str 3 args",
         "1 day 23hr 45minutes",
         24 * 60 * 60 + 23 * 60 * 60 + 45 * 60,
     ),
-    ("str 2 args with float", "1.5d23.5h", 1.5 * 24 * 60 * 60 + 23.5 * 60 * 60),
+    ("str 2 args with float", "1.5D23.5h", 1.5 * 24 * 60 * 60 + 23.5 * 60 * 60),
 ]
 
 
@@ -84,8 +87,8 @@ def test_time_to_seconds_not_coerced(_, input_value: Any, expected_seconds: floa
 
 def test_time_str_exception():
     """Test that a badly-formatted time string raises an exception."""
-    with pytest.raises(BadTimeStringError):
+    with pytest.raises(StreamlitBadTimeStringError):
         time_to_seconds("")
 
-    with pytest.raises(BadTimeStringError):
+    with pytest.raises(StreamlitBadTimeStringError):
         time_to_seconds("1 flecond")

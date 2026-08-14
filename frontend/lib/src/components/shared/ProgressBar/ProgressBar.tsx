@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,90 +14,52 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
-import { useTheme } from "@emotion/react"
-import { LibContext } from "@streamlit/lib/src/components/core/LibContext"
-import { EmotionTheme, isPresetTheme } from "@streamlit/lib/src/theme"
-import {
-  ProgressBar as UIProgressBar,
-  ProgressBarOverrides,
-} from "baseui/progress-bar"
-import { mergeOverrides } from "baseui"
-import { Overrides } from "baseui/overrides"
+import { ReactElement } from "react"
 
-export enum Size {
-  EXTRASMALL = "xs",
-  SMALL = "sm",
-  MEDIUM = "md",
-  LARGE = "lg",
-  EXTRALARGE = "xl",
-}
+import { ProgressBar as AriaProgressBar } from "react-aria-components"
 
-export interface ProgressBarProps {
-  width?: number
+import { StyledProgressFill, StyledProgressTrack } from "./styled-components"
+import { Size } from "./types"
+
+export { Size }
+
+interface ProgressBarProps {
   value: number
-  overrides?: Overrides<any>
   size?: Size
+  squareTopCorners?: boolean
+  /** Accessible label for the progress indicator. */
+  "aria-label"?: string
 }
 
 function ProgressBar({
   value,
-  width,
   size = Size.SMALL,
-  overrides,
+  squareTopCorners = false,
+  "aria-label": ariaLabel = "progress",
 }: ProgressBarProps): ReactElement {
-  const theme: EmotionTheme = useTheme()
-  const heightMap = {
-    xs: theme.spacing.twoXS,
-    sm: theme.spacing.sm,
-    md: theme.spacing.lg,
-    lg: theme.spacing.xl,
-    xl: theme.spacing.twoXL,
-  }
-  const { activeTheme } = React.useContext(LibContext)
-  const usingCustomTheme = !isPresetTheme(activeTheme)
-  const defaultOverrides: Overrides<ProgressBarOverrides> = {
-    BarContainer: {
-      style: {
-        marginTop: theme.spacing.none,
-        marginBottom: theme.spacing.none,
-        marginRight: theme.spacing.none,
-        marginLeft: theme.spacing.none,
-      },
-    },
-    Bar: {
-      style: ({ $theme }: { $theme: any }) => ({
-        width: width ? width.toString() : undefined,
-        marginTop: theme.spacing.none,
-        marginBottom: theme.spacing.none,
-        marginRight: theme.spacing.none,
-        marginLeft: theme.spacing.none,
-        height: heightMap[size],
-        backgroundColor: $theme.colors.progressbarTrackFill,
-        borderTopLeftRadius: theme.spacing.twoXS,
-        borderTopRightRadius: theme.spacing.twoXS,
-        borderBottomLeftRadius: theme.spacing.twoXS,
-        borderBottomRightRadius: theme.spacing.twoXS,
-      }),
-    },
-    BarProgress: {
-      style: () => ({
-        backgroundColor: usingCustomTheme
-          ? theme.colors.primary
-          : theme.colors.blue70,
-        borderTopLeftRadius: theme.spacing.twoXS,
-        borderTopRightRadius: theme.spacing.twoXS,
-        borderBottomLeftRadius: theme.spacing.twoXS,
-        borderBottomRightRadius: theme.spacing.twoXS,
-      }),
-    },
-  }
+  const clamped = Math.min(100, Math.max(0, value))
 
   return (
-    <UIProgressBar
-      value={value}
-      overrides={mergeOverrides(defaultOverrides, overrides)}
-    />
+    <AriaProgressBar
+      value={clamped}
+      minValue={0}
+      maxValue={100}
+      aria-label={ariaLabel}
+    >
+      <StyledProgressTrack
+        $size={size}
+        data-testid="stProgressBarTrack"
+        style={
+          squareTopCorners
+            ? { borderTopLeftRadius: "0", borderTopRightRadius: "0" }
+            : undefined
+        }
+      >
+        <StyledProgressFill
+          style={{ transform: `translateX(${clamped - 100}%)` }}
+        />
+      </StyledProgressTrack>
+    </AriaProgressBar>
   )
 }
 

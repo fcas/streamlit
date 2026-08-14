@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
-import React from "react"
-import { render } from "@streamlit/lib/src/test_util"
-import { screen, fireEvent } from "@testing-library/react"
-import "@testing-library/jest-dom"
+import { act, screen } from "@testing-library/react"
+import { userEvent } from "@testing-library/user-event"
 
-import { WidgetStateManager } from "@streamlit/lib/src/WidgetStateManager"
-import { Radio as RadioProto } from "@streamlit/lib/src/proto"
+import { Radio as RadioProto } from "@streamlit/protobuf"
+
+import { render } from "~lib/test_util"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
 import Radio, { Props } from "./Radio"
 
 const getProps = (
@@ -35,11 +36,10 @@ const getProps = (
     captions: [],
     ...elementProps,
   }),
-  width: 0,
   disabled: false,
   widgetMgr: new WidgetStateManager({
-    sendRerunBackMsg: jest.fn(),
-    formsDataChanged: jest.fn(),
+    sendRerunBackMsg: vi.fn(),
+    formsDataChanged: vi.fn(),
   }),
   ...otherProps,
 })
@@ -57,38 +57,37 @@ describe("Radio widget", () => {
 
   it("sets widget value on mount", () => {
     const props = getProps()
-    jest.spyOn(props.widgetMgr, "setIntValue")
+    vi.spyOn(props.widgetMgr, "setStringValue")
     render(<Radio {...props} />)
 
-    expect(props.widgetMgr.setIntValue).toHaveBeenCalledWith(
+    // Widget uses string values - the default option string at index 0 is "a"
+    expect(props.widgetMgr.setStringValue).toHaveBeenCalledWith(
       props.element,
-      props.element.default,
+      "a",
       { fromUi: false },
       undefined
     )
   })
 
-  it("can pass fragmentId to setIntValue", () => {
+  it("can pass fragmentId to setStringValue", () => {
     const props = getProps(undefined, { fragmentId: "myFragmentId" })
-    jest.spyOn(props.widgetMgr, "setIntValue")
+    vi.spyOn(props.widgetMgr, "setStringValue")
     render(<Radio {...props} />)
 
-    expect(props.widgetMgr.setIntValue).toHaveBeenCalledWith(
+    expect(props.widgetMgr.setStringValue).toHaveBeenCalledWith(
       props.element,
-      props.element.default,
+      "a",
       { fromUi: false },
       "myFragmentId"
     )
   })
 
-  it("has correct className and style", () => {
+  it("has correct className", () => {
     const props = getProps()
     render(<Radio {...props} />)
     const radioElement = screen.getByTestId("stRadio")
 
-    expect(radioElement).toHaveClass("row-widget")
     expect(radioElement).toHaveClass("stRadio")
-    expect(radioElement).toHaveStyle(`width: ${props.width}px`)
   })
 
   it("renders a label", () => {
@@ -165,60 +164,128 @@ describe("Radio widget", () => {
     expect(noOptionLabel).toBeInTheDocument()
   })
 
-  it("sets the widget value when an option is selected", () => {
+  it("sets the widget value when an option is selected", async () => {
+    const user = userEvent.setup()
     const props = getProps()
-    jest.spyOn(props.widgetMgr, "setIntValue")
+    vi.spyOn(props.widgetMgr, "setStringValue")
     render(<Radio {...props} />)
     const radioOptions = screen.getAllByRole("radio")
     const secondOption = radioOptions[1]
 
-    fireEvent.click(secondOption)
+    await user.click(secondOption)
 
-    expect(props.widgetMgr.setIntValue).toHaveBeenLastCalledWith(
+    // Widget uses string values - selecting index 1 sends option "b"
+    expect(props.widgetMgr.setStringValue).toHaveBeenLastCalledWith(
       props.element,
-      1,
+      "b",
       { fromUi: true },
       undefined
     )
     expect(secondOption).toBeChecked()
   })
 
-  it("resets its value when form is cleared", () => {
+  it("resets its value when form is cleared", async () => {
+    const user = userEvent.setup()
     // Create a widget in a clearOnSubmit form
     const props = getProps({ formId: "form" })
-    props.widgetMgr.setFormClearOnSubmit("form", true)
+    props.widgetMgr.setFormSubmitBehaviors("form", true)
 
-    jest.spyOn(props.widgetMgr, "setIntValue")
+    vi.spyOn(props.widgetMgr, "setStringValue")
     render(<Radio {...props} />)
 
     const radioOptions = screen.getAllByRole("radio")
     const secondOption = radioOptions[1]
 
     // Change the widget value
-    fireEvent.click(secondOption)
+    await user.click(secondOption)
     expect(secondOption).toBeChecked()
 
-    expect(props.widgetMgr.setIntValue).toHaveBeenLastCalledWith(
+    expect(props.widgetMgr.setStringValue).toHaveBeenLastCalledWith(
       props.element,
-      1,
+      "b",
       { fromUi: true },
       undefined
     )
 
     // "Submit" the form
-    props.widgetMgr.submitForm("form")
+    act(() => {
+      props.widgetMgr.submitForm("form", undefined)
+    })
 
     // Our widget should be reset, and the widgetMgr should be updated
     // @ts-expect-error
     const defaultValue = radioOptions[props.element.default]
     expect(defaultValue).toBeChecked()
 
-    expect(props.widgetMgr.setIntValue).toHaveBeenLastCalledWith(
+    // Reset sends the default option string "a"
+    expect(props.widgetMgr.setStringValue).toHaveBeenLastCalledWith(
       props.element,
-      props.element.default,
+      "a",
       {
         fromUi: true,
       },
+      undefined
+    )
+  })
+})
+
+describe("Radio query param binding", () => {
+  it("registers query param binding on mount when queryParamKey is set", () => {
+    const props = getProps({ queryParamKey: "my_radio" })
+    vi.spyOn(props.widgetMgr, "registerQueryParamBinding")
+
+    render(<Radio {...props} />)
+
+    expect(props.widgetMgr.registerQueryParamBinding).toHaveBeenCalledWith(
+      props.element.id,
+      "my_radio",
+      "string_value",
+      "a",
+      false,
+      undefined
+    )
+  })
+
+  it("unregisters query param binding on unmount", () => {
+    const props = getProps({ queryParamKey: "my_radio" })
+    const unregisterSpy = vi.spyOn(
+      props.widgetMgr,
+      "unregisterQueryParamBinding"
+    )
+
+    const { unmount } = render(<Radio {...props} />)
+
+    // Clear any calls from React Strict Mode's initial mount/unmount/remount cycle
+    unregisterSpy.mockClear()
+
+    unmount()
+
+    expect(props.widgetMgr.unregisterQueryParamBinding).toHaveBeenCalledWith(
+      props.element.id
+    )
+  })
+
+  it("does not register query param binding when queryParamKey is not set", () => {
+    const props = getProps()
+    vi.spyOn(props.widgetMgr, "registerQueryParamBinding")
+
+    render(<Radio {...props} />)
+
+    expect(props.widgetMgr.registerQueryParamBinding).not.toHaveBeenCalled()
+  })
+
+  it("registers with clearable=true when no default", () => {
+    const props = getProps({ queryParamKey: "my_radio", default: null })
+    vi.spyOn(props.widgetMgr, "registerQueryParamBinding")
+
+    render(<Radio {...props} />)
+
+    expect(props.widgetMgr.registerQueryParamBinding).toHaveBeenCalledWith(
+      props.element.id,
+      "my_radio",
+      "string_value",
+      null,
+      true,
       undefined
     )
   })

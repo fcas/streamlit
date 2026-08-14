@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,15 +14,23 @@
  * limitations under the License.
  */
 
+import decamelize from "decamelize"
+import { get } from "lodash-es"
+import xxhash from "xxhashjs"
+
 import {
   Alert as AlertProto,
-  LabelVisibilityMessage as LabelVisibilityMessageProto,
+  ChatInput as ChatInputProto,
   Element,
+  LabelVisibility as LabelVisibilityProto,
   Skeleton as SkeletonProto,
-} from "@streamlit/lib/src/proto"
-import get from "lodash/get"
-import xxhash from "xxhashjs"
-import decamelize from "decamelize"
+} from "@streamlit/protobuf"
+import { isNullOrUndefined, notNullOrUndefined } from "@streamlit/utils"
+
+import { assertNever } from "./assertNever"
+
+// This prefix should be in sync with the value on the python side:
+export const GENERATED_ELEMENT_ID_PREFIX = "$$ID"
 
 /**
  * Wraps a function to allow it to be called, at most, once per interval
@@ -31,14 +39,18 @@ import decamelize from "decamelize"
  * will only be called after the full interval has elapsed since the last
  * call.
  */
-export function debounce(delay: number, fn: any): any {
-  let timerId: any
+export function debounce<TArgs extends unknown[]>(
+  delay: number,
+  fn: (...args: TArgs) => void
+): (...args: TArgs) => void {
+  let timerId: ReturnType<typeof setTimeout> | null = null
 
-  return (...args: any[]) => {
+  return (...args: TArgs) => {
     if (timerId) {
       clearTimeout(timerId)
     }
 
+    // eslint-disable-next-line no-restricted-globals -- Shared utility debounce is framework-agnostic and cannot use hooks.
     timerId = setTimeout(() => {
       fn(...args)
       timerId = null
@@ -50,19 +62,17 @@ export function debounce(delay: number, fn: any): any {
  * Embed query param values, which can be set in ?embed={value}, all should be lowercase
  */
 export const EMBED_QUERY_PARAM_KEY = "embed"
-export const EMBED_OPTIONS_QUERY_PARAM_KEY = "embed_options"
-export const EMBED_SHOW_COLORED_LINE = "show_colored_line"
-export const EMBED_SHOW_TOOLBAR = "show_toolbar"
-export const EMBED_SHOW_PADDING = "show_padding"
-export const EMBED_DISABLE_SCROLLING = "disable_scrolling"
-export const EMBED_LIGHT_THEME = "light_theme"
-export const EMBED_DARK_THEME = "dark_theme"
-export const EMBED_TRUE = "true"
-export const EMBED_HIDE_LOADING_SCREEN = "hide_loading_screen"
-export const EMBED_SHOW_LOADING_SCREEN_V1 = "show_loading_screen_v1"
-export const EMBED_SHOW_LOADING_SCREEN_V2 = "show_loading_screen_v2"
+const EMBED_OPTIONS_QUERY_PARAM_KEY = "embed_options"
+const EMBED_SHOW_TOOLBAR = "show_toolbar"
+const EMBED_SHOW_PADDING = "show_padding"
+const EMBED_DISABLE_SCROLLING = "disable_scrolling"
+const EMBED_LIGHT_THEME = "light_theme"
+const EMBED_DARK_THEME = "dark_theme"
+const EMBED_TRUE = "true"
+const EMBED_HIDE_LOADING_SCREEN = "hide_loading_screen"
+const EMBED_SHOW_LOADING_SCREEN_V1 = "show_loading_screen_v1"
+const EMBED_SHOW_LOADING_SCREEN_V2 = "show_loading_screen_v2"
 export const EMBED_QUERY_PARAM_VALUES = [
-  EMBED_SHOW_COLORED_LINE,
   EMBED_SHOW_TOOLBAR,
   EMBED_SHOW_PADDING,
   EMBED_DISABLE_SCROLLING,
@@ -126,22 +136,29 @@ export function preserveEmbedQueryParams(): string {
 }
 
 /**
+ * Builds a query string by combining an optional override with preserved embed params.
+ * Used during page navigation to merge user query params with embed options.
+ */
+export function getQueryString(
+  queryStringOverride: string | undefined,
+  preservedQueryParams: string
+): string {
+  if (queryStringOverride !== undefined) {
+    if (preservedQueryParams) {
+      return queryStringOverride
+        ? `${preservedQueryParams}&${queryStringOverride}`
+        : preservedQueryParams
+    }
+    return queryStringOverride
+  }
+  return preservedQueryParams
+}
+
+/**
  * Returns true if the URL parameters contain ?embed=true (case insensitive).
  */
 export function isEmbed(): boolean {
   return getEmbedUrlParams(EMBED_QUERY_PARAM_KEY).has(EMBED_TRUE)
-}
-
-/**
- * Returns true if the URL parameters contain ?embed=true&embed_options=show_colored_line (case insensitive).
- */
-export function isColoredLineDisplayed(): boolean {
-  return (
-    isEmbed() &&
-    getEmbedUrlParams(EMBED_OPTIONS_QUERY_PARAM_KEY).has(
-      EMBED_SHOW_COLORED_LINE
-    )
-  )
 }
 
 /**
@@ -179,7 +196,7 @@ export function isPaddingDisplayed(): boolean {
 /**
  * Returns true if the URL parameters contain ?embed_options=light_theme (case insensitive).
  */
-export function isLightTheme(): boolean {
+export function isLightThemeInQueryParams(): boolean {
   // NOTE: We don't check for ?embed=true here, because we want to allow display without any
   // other embed options (for example in our e2e tests).
   return getEmbedUrlParams(EMBED_OPTIONS_QUERY_PARAM_KEY).has(
@@ -190,7 +207,7 @@ export function isLightTheme(): boolean {
 /**
  * Returns true if the URL parameters contain ?embed_options=dark_theme (case insensitive).
  */
-export function isDarkTheme(): boolean {
+export function isDarkThemeInQueryParams(): boolean {
   // NOTE: We don't check for ?embed=true here, because we want to allow display without any
   // other embed options (for example in our e2e tests).
   return getEmbedUrlParams(EMBED_OPTIONS_QUERY_PARAM_KEY).has(EMBED_DARK_THEME)
@@ -204,6 +221,68 @@ export function isInChildFrame(): boolean {
 }
 
 /**
+ * Returns the URL of the app without query parameters, handling both embedded and non-embedded cases.
+ * If the app is embedded in an iframe, it attempts to get the parent frame's URL.
+ */
+export function getUrl(): string {
+  let url: string
+
+  try {
+    // Try to access top location if we're in an iframe
+    if (isInChildFrame() && window.top) {
+      url = window.top.location.href
+    } else {
+      url = document.location.href
+    }
+  } catch {
+    // CSP error might occur when trying to access parent frame
+    url = document.location.href
+  }
+
+  // Remove query parameters and anchor from the URL
+  const urlObj = new URL(url)
+  urlObj.search = ""
+  urlObj.hash = ""
+  return urlObj.toString()
+}
+
+/**
+ * Returns date in "YYYY-MM-DD-HH-MM-SS" format to be used for screencast recording file name.
+ */
+export function getScreencastTimestamp(): string {
+  const date = new Date()
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, "0")
+  const day = String(date.getDate()).padStart(2, "0")
+  const hours = String(date.getHours()).padStart(2, "0")
+  const minutes = String(date.getMinutes()).padStart(2, "0")
+  const seconds = String(date.getSeconds()).padStart(2, "0")
+
+  return `${year}-${month}-${day}-${hours}-${minutes}-${seconds}`
+}
+
+/**
+ * Returns the timezone from the browser's Intl API.
+ */
+export function getTimezone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone
+}
+
+/**
+ * Returns the timezone offset in minutes from the browser's Date API.
+ */
+export function getTimezoneOffset(): number {
+  return new Date().getTimezoneOffset()
+}
+
+/**
+ * Returns the browser's locale language setting.
+ */
+export function getLocaleLanguage(): string {
+  return navigator.language
+}
+
+/**
  * Returns a string with the type of loading screen to use while the app is
  * waiting for the backend to send displayable protos.
  */
@@ -213,8 +292,8 @@ export function getLoadingScreenType(): LoadingScreenType {
   return params.has(EMBED_HIDE_LOADING_SCREEN)
     ? LoadingScreenType.NONE
     : params.has(EMBED_SHOW_LOADING_SCREEN_V1)
-    ? LoadingScreenType.V1
-    : LoadingScreenType.V2
+      ? LoadingScreenType.V1
+      : LoadingScreenType.V2
 }
 
 /** Return an info Element protobuf with the given text. */
@@ -256,8 +335,8 @@ export function hashString(s: string): string {
  * Coerces a possibly-null value into a non-null value, throwing an error
  * if the value is null or undefined.
  */
-export function requireNonNull<T>(obj: T | null | undefined): T {
-  if (obj == null) {
+function requireNonNull<T>(obj: T | null | undefined): T {
+  if (isNullOrUndefined(obj)) {
     throw new Error("value is null")
   }
   return obj
@@ -268,41 +347,6 @@ export function requireNonNull<T>(obj: T | null | undefined): T {
  */
 export function notUndefined<T>(value: T | undefined): value is T {
   return value !== undefined
-}
-
-/**
- * A type predicate that is true if the given value is not null.
- */
-export function notNull<T>(value: T | null): value is T {
-  return value != null
-}
-
-/**
- * A type predicate that is true if the given value is neither undefined
- * nor null.
- */
-export function notNullOrUndefined<T>(
-  value: T | null | undefined
-): value is T {
-  return <T>value !== null && <T>value !== undefined
-}
-
-/**
- * A type predicate that is true if the given value is either undefined
- * or null.
- */
-export function isNullOrUndefined<T>(
-  value: T | null | undefined
-): value is null | undefined {
-  return <T>value === null || <T>value === undefined
-}
-
-/**
- * A promise that would be resolved after certain time
- * @param ms number
- */
-export function timeout(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 /**
@@ -320,14 +364,6 @@ export function isFromWindows(): boolean {
 }
 
 /**
- * Returns cookie value
- */
-export function getCookie(name: string): string | undefined {
-  const r = document.cookie.match(`\\b${name}=([^;]*)\\b`)
-  return r ? r[1] : undefined
-}
-
-/**
  * Sets cookie value
  */
 export function setCookie(
@@ -342,19 +378,88 @@ export function setCookie(
   document.cookie = `${name}=${value};${expirationStr}path=/`
 }
 
-/** Return an Element's widget ID if it's a widget, and undefined otherwise. */
-export function getElementWidgetID(element: Element): string | undefined {
-  return get(element as any, [requireNonNull(element.type), "id"])
+export function isValidElementId(
+  elementId: string | undefined | null
+): boolean {
+  if (!elementId) {
+    return false
+  }
+  return (
+    elementId.startsWith(GENERATED_ELEMENT_ID_PREFIX) &&
+    // There must be at least 3 parts: $$ID-<hash>-<userKey>
+    elementId.split("-").length >= 3
+  )
+}
+
+/**
+ * If the element has a valid ID, returns it. Otherwise, returns undefined.
+ */
+export function getElementId(element: Element): string | undefined {
+  const elementId = get(element as unknown as Record<string, unknown>, [
+    requireNonNull(element.type),
+    "id",
+  ])
+  if (elementId && isValidElementId(elementId)) {
+    // We only care about valid element IDs (with the correct prefix)
+    return elementId
+  }
+  return undefined
 }
 
 /** True if the given form ID is non-null and non-empty. */
 export function isValidFormId(formId?: string): formId is string {
-  return formId != null && formId.length > 0
+  return notNullOrUndefined(formId) && formId.length > 0
 }
 
 /** True if the given widget element is part of a form. */
 export function isInForm(widget: { formId?: string }): boolean {
   return isValidFormId(widget.formId)
+}
+
+/**
+ * Determines the appropriate placeholder text for select-type widgets.
+ * Handles both single-select and multi-select cases with appropriate pluralization.
+ *
+ * @param placeholder - The custom placeholder provided by the user (empty string means use defaults)
+ * @param options - Array of available options
+ * @param acceptNewOptions - Whether the widget accepts new options
+ * @param isMultiSelect - Whether this is for a multi-select widget (affects pluralization)
+ * @returns Object containing the placeholder text and whether the widget should be disabled
+ */
+export function getSelectPlaceholder(
+  placeholder: string,
+  options: readonly string[],
+  acceptNewOptions: boolean,
+  isMultiSelect = false
+): { placeholder: string; shouldDisable: boolean } {
+  let shouldDisable = false
+
+  // If custom placeholder is provided (not empty string), use it as-is
+  if (placeholder !== "") {
+    return { placeholder, shouldDisable }
+  }
+
+  // Determine appropriate default placeholder based on widget state
+  if (options.length === 0) {
+    if (!acceptNewOptions) {
+      placeholder = "No options to select"
+      // When a user cannot add new options and there are no options to select from, we disable the widget
+      shouldDisable = true
+    } else {
+      placeholder = isMultiSelect ? "Add options" : "Add an option"
+    }
+  } else {
+    // For non-empty options, set appropriate default placeholder
+    if (acceptNewOptions) {
+      placeholder = isMultiSelect
+        ? "Choose or add options"
+        : "Choose or add an option"
+    } else {
+      placeholder = isMultiSelect ? "Choose options" : "Choose an option"
+    }
+  }
+
+  return { placeholder, shouldDisable }
 }
 
 export enum LabelVisibilityOptions {
@@ -364,24 +469,49 @@ export enum LabelVisibilityOptions {
 }
 
 export function labelVisibilityProtoValueToEnum(
-  value: LabelVisibilityMessageProto.LabelVisibilityOptions | null | undefined
+  value: LabelVisibilityProto.LabelVisibilityOptions | null | undefined
 ): LabelVisibilityOptions {
   switch (value) {
-    case LabelVisibilityMessageProto.LabelVisibilityOptions.VISIBLE:
+    case LabelVisibilityProto.LabelVisibilityOptions.VISIBLE:
       return LabelVisibilityOptions.Visible
-    case LabelVisibilityMessageProto.LabelVisibilityOptions.HIDDEN:
+    case LabelVisibilityProto.LabelVisibilityOptions.HIDDEN:
       return LabelVisibilityOptions.Hidden
-    case LabelVisibilityMessageProto.LabelVisibilityOptions.COLLAPSED:
+    case LabelVisibilityProto.LabelVisibilityOptions.COLLAPSED:
       return LabelVisibilityOptions.Collapsed
     default:
       return LabelVisibilityOptions.Visible
   }
 }
 
+export enum AcceptFileValue {
+  None,
+  Single,
+  Multiple,
+  Directory,
+}
+
+export function chatInputAcceptFileProtoValueToEnum(
+  value: ChatInputProto.AcceptFile
+): AcceptFileValue {
+  switch (value) {
+    case ChatInputProto.AcceptFile.NONE:
+      return AcceptFileValue.None
+    case ChatInputProto.AcceptFile.SINGLE:
+      return AcceptFileValue.Single
+    case ChatInputProto.AcceptFile.MULTIPLE:
+      return AcceptFileValue.Multiple
+    case ChatInputProto.AcceptFile.DIRECTORY:
+      return AcceptFileValue.Directory
+    default:
+      assertNever(value)
+      return AcceptFileValue.None
+  }
+}
+
 /**
  * Looks for an IFrame with given className inside given querySet
  */
-export function findAnIFrameWithClassName(
+function findAnIFrameWithClassName(
   qs: NodeListOf<HTMLIFrameElement> | HTMLCollectionOf<HTMLIFrameElement>,
   className: string
 ): HTMLIFrameElement | null {
@@ -397,13 +527,13 @@ export function findAnIFrameWithClassName(
 /**
  * Returns True if IFrame can be accessed otherwise returns False
  */
-export function canAccessIFrame(iframe: HTMLIFrameElement): boolean {
+function canAccessIFrame(iframe: HTMLIFrameElement): boolean {
   try {
     if (iframe.contentWindow === null) return false
     const doc = iframe.contentDocument || iframe.contentWindow.document
     const html = doc.body.innerHTML
     return html !== null && html !== ""
-  } catch (err) {
+  } catch {
     return false
   }
 }
@@ -421,9 +551,8 @@ export function getIFrameEnclosingApp(
   }
   const embeddingIdClassName = getEmbeddingIdClassName(embeddingId)
   const qsStreamlitAppStr = 'iframe[title="streamlitApp"]'
-  let qs = window.document.querySelectorAll(
-    qsStreamlitAppStr
-  ) as NodeListOf<HTMLIFrameElement>
+  let qs: NodeListOf<HTMLIFrameElement> =
+    window.document.querySelectorAll(qsStreamlitAppStr)
   let foundIFrame = findAnIFrameWithClassName(qs, embeddingIdClassName)
   if (foundIFrame && !canAccessIFrame(foundIFrame)) {
     return null
@@ -441,9 +570,7 @@ export function getIFrameEnclosingApp(
   if (foundIFrame) {
     return foundIFrame
   }
-  let htmlCollection = window.document.getElementsByTagName(
-    "iframe"
-  ) as HTMLCollectionOf<HTMLIFrameElement>
+  let htmlCollection = window.document.getElementsByTagName("iframe")
   foundIFrame = findAnIFrameWithClassName(htmlCollection, embeddingIdClassName)
   if (foundIFrame && !canAccessIFrame(foundIFrame)) {
     return null
@@ -496,8 +623,8 @@ export function extractPageNameFromPathName(
   // regex special-characters. This is why we're stuck with the
   // weird-looking triple `replace()`.
   return decodeURIComponent(
-    document.location.pathname
-      .replace(`/${basePath}`, "")
+    pathname
+      .replace(basePath, "")
       .replace(new RegExp("^/?"), "")
       .replace(new RegExp("/$"), "")
   )
@@ -524,25 +651,33 @@ export function extractPageNameFromPathName(
  * // }
  */
 export function keysToSnakeCase(
-  obj: Record<string, any>
-): Record<string, any> {
-  return Object.keys(obj).reduce((acc, key) => {
-    const newKey = decamelize(key, {
-      preserveConsecutiveUppercase: true,
-    }).replace(".", "_")
-    let value = obj[key]
+  obj: Record<string, unknown>
+): Record<string, unknown> {
+  return Object.keys(obj).reduce(
+    (acc, key) => {
+      const newKey = decamelize(key, {
+        preserveConsecutiveUppercase: true,
+      }).replace(".", "_")
+      let value = obj[key]
 
-    if (value && typeof value === "object" && !Array.isArray(value)) {
-      value = keysToSnakeCase(value)
-    }
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        value = keysToSnakeCase(value as Record<string, unknown>)
+      }
 
-    if (Array.isArray(value)) {
-      value = value.map(item =>
-        typeof item === "object" ? keysToSnakeCase(item) : item
-      )
-    }
+      if (Array.isArray(value)) {
+        value = value.map(item =>
+          item !== null && typeof item === "object"
+            ? keysToSnakeCase(item as Record<string, unknown>)
+            : item
+        )
+      }
 
-    acc[newKey] = value
-    return acc
-  }, {} as Record<string, any>)
+      acc[newKey] = value
+      return acc
+    },
+    {} as Record<string, unknown>
+  )
 }
+
+// TODO: Update all imports to use @streamlit/utils and remove this line.
+export { isNullOrUndefined, notNullOrUndefined } from "@streamlit/utils"

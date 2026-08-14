@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,7 +14,7 @@
 
 from hypothesis import strategies as hst
 
-from streamlit.runtime.state.common import GENERATED_WIDGET_ID_PREFIX
+from streamlit.runtime.state.common import GENERATED_ELEMENT_ID_PREFIX
 from streamlit.runtime.state.session_state import SessionState, WidgetMetadata
 
 ASCII = list("abcdefghijklmnopqrstuvwxyz0123456789_-")
@@ -23,17 +23,19 @@ USER_KEY = hst.one_of(hst.text(alphabet=ASCII, min_size=1), hst.integers().map(s
 
 NEW_SESSION_STATE = hst.dictionaries(keys=USER_KEY, values=hst.integers())
 
-UNKEYED_WIDGET_IDS = hst.uuids().map(lambda s: f"{GENERATED_WIDGET_ID_PREFIX}-{s}-None")
+UNKEYED_WIDGET_IDS = hst.uuids().map(
+    lambda s: f"{GENERATED_ELEMENT_ID_PREFIX}-{s}-None"
+)
 
 
 def as_keyed_widget_id(raw_wid, key):
-    return f"{GENERATED_WIDGET_ID_PREFIX}-{raw_wid}-{key}"
+    return f"{GENERATED_ELEMENT_ID_PREFIX}-{raw_wid}-{key}"
 
 
 def mock_metadata(widget_id: str, default_value: int) -> WidgetMetadata:
     return WidgetMetadata(
         id=widget_id,
-        deserializer=lambda x, s: default_value if x is None else x,
+        deserializer=lambda x: default_value if x is None else x,
         serializer=lambda x: x,
         value_type="int_value",
     )
@@ -80,7 +82,7 @@ def _merge_states(a: SessionState, b: SessionState) -> None:
     a._new_session_state.update(b._new_session_state)
     a._new_widget_state.update(b._new_widget_state)
     a._old_state.update(b._old_state)
-    a._key_id_mapping.update(b._key_id_mapping)
+    a._key_id_mapper.update(b._key_id_mapper)
 
 
 # TODO: don't generate states where there is a k-wid mapping where the key exists but the widget doesn't

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,32 +14,35 @@
 
 """st.cache_resource unit tests."""
 
+from __future__ import annotations
+
 import threading
 import unittest
-from typing import Any, List
 from unittest.mock import Mock, patch
 
+import pytest
 from parameterized import parameterized
 
 import streamlit as st
+from streamlit.errors import StreamlitAPIException, StreamlitValueError
 from streamlit.runtime.caching import (
+    cache_background_refresh,
     cache_resource_api,
+    cached_message_replay,
+    clear_session_resource_cache,
     get_resource_cache_stats_provider,
 )
-from streamlit.runtime.caching.cache_type import CacheType
-from streamlit.runtime.caching.cached_message_replay import MultiCacheResults
+from streamlit.runtime.caching.cache_resource_api import ResourceCache, _resource_caches
 from streamlit.runtime.caching.hashing import UserHashError
 from streamlit.runtime.scriptrunner import add_script_run_ctx
-from streamlit.runtime.stats import CacheStat
-from streamlit.vendor.pympler.asizeof import asizeof
-from tests.streamlit.runtime.caching.common_cache_test import (
-    as_cached_result as _as_cached_result,
+from streamlit.runtime.stats import CACHE_MEMORY_FAMILY, CacheStat
+from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.element_mocks import (
+    ELEMENT_PRODUCER,
+    NON_WIDGET_ELEMENTS,
+    WIDGET_ELEMENTS,
 )
-from tests.testutil import create_mock_script_run_ctx
-
-
-def as_cached_result(value: Any) -> MultiCacheResults:
-    return _as_cached_result(value, CacheType.RESOURCE)
+from tests.testutil import create_mock_script_run_ctx, patch_config_options
 
 
 class CacheResourceTest(unittest.TestCase):
@@ -69,65 +72,8 @@ class CacheResourceTest(unittest.TestCase):
 
         exception.assert_not_called()
 
-        self.assertEqual(r1, [1, 1])
-        self.assertEqual(r2, [1, 1])
-
-    def test_multiple_api_names(self):
-        """`st.experimental_singleton` is effectively an alias for `st.cache_resource`, and we
-        support both APIs while experimental_singleton is being deprecated.
-        """
-        num_calls = [0]
-
-        def foo():
-            num_calls[0] += 1
-            return 42
-
-        # Annotate a function with both `cache_resource` and `experimental_singleton`.
-        cache_resource_func = st.cache_resource(foo)
-        singleton_func = st.experimental_singleton(foo)
-
-        # Call both versions of the function and assert the results.
-        self.assertEqual(42, cache_resource_func())
-        self.assertEqual(42, singleton_func())
-
-        # Because these decorators share the same cache, calling both functions
-        # results in just a single call to the decorated function.
-        self.assertEqual(1, num_calls[0])
-
-    @parameterized.expand(
-        [
-            ("cache_resource", st.cache_resource, False),
-            ("experimental_singleton", st.experimental_singleton, True),
-        ]
-    )
-    @patch("streamlit.runtime.caching.cache_resource_api.show_deprecation_warning")
-    def test_deprecation_warnings(
-        self, _, decorator: Any, should_show_warning: bool, show_warning_mock: Mock
-    ):
-        """We show deprecation warnings when using `@st.experimental_singleton`, but not `@st.cache_resource`."""
-        warning_str = (
-            "`st.experimental_singleton` is deprecated. Please use the new command `st.cache_resource` instead, "
-            "which has the same behavior. More information [in our docs](https://docs.streamlit.io/library/advanced-features/caching)."
-        )
-
-        # We show the deprecation warning at declaration time:
-        @decorator
-        def foo():
-            return 42
-
-        if should_show_warning:
-            show_warning_mock.assert_called_once_with(warning_str)
-        else:
-            show_warning_mock.assert_not_called()
-
-        # And also when clearing the cache:
-        show_warning_mock.reset_mock()
-        decorator.clear()
-
-        if should_show_warning:
-            show_warning_mock.assert_called_once_with(warning_str)
-        else:
-            show_warning_mock.assert_not_called()
+        assert r1 == [1, 1]
+        assert r2 == [1, 1]
 
     def test_cached_member_function_with_hash_func(self):
         """@st.cache_resource can be applied to class member functions
@@ -137,7 +83,9 @@ class CacheResourceTest(unittest.TestCase):
         class TestClass:
             @st.cache_resource(
                 hash_funcs={
-                    "tests.streamlit.runtime.caching.cache_resource_api_test.CacheResourceTest.test_cached_member_function_with_hash_func.<locals>.TestClass": id
+                    "tests.streamlit.runtime.caching.cache_resource_api_test."
+                    "CacheResourceTest.test_cached_member_function_with_hash_func."
+                    "<locals>.TestClass": id
                 }
             )
             def member_func(self):
@@ -154,9 +102,9 @@ class CacheResourceTest(unittest.TestCase):
                 return "static method!"
 
         obj = TestClass()
-        self.assertEqual("member func!", obj.member_func())
-        self.assertEqual("class method!", obj.class_method())
-        self.assertEqual("static method!", obj.static_method())
+        assert obj.member_func() == "member func!"
+        assert obj.class_method() == "class method!"
+        assert obj.static_method() == "static method!"
 
     def test_function_name_does_not_use_hashfuncs(self):
         """Hash funcs should only be used on arguments to a function,
@@ -165,7 +113,7 @@ class CacheResourceTest(unittest.TestCase):
 
         str_hash_func = Mock(return_value=None)
 
-        @st.cache(hash_funcs={str: str_hash_func})
+        @st.cache_resource(hash_funcs={str: str_hash_func})
         def foo(string_arg):
             return []
 
@@ -190,7 +138,7 @@ class CacheResourceTest(unittest.TestCase):
         def user_hash_error_func(x):
             pass
 
-        with self.assertRaises(UserHashError) as ctx:
+        with pytest.raises(UserHashError) as ctx:
             my_obj = MyObj()
             user_hash_error_func(my_obj)
 
@@ -210,8 +158,8 @@ Object of type tests.streamlit.runtime.caching.cache_resource_api_test.CacheReso
 ```
 
 If you think this is actually a Streamlit bug, please
-[file a bug report here](https://github.com/streamlit/streamlit/issues/new/choose)."""
-        self.assertEqual(str(ctx.exception), expected_message)
+[file a bug report here](https://github.com/streamlit/streamlit/issues/new/choose)."""  # noqa: E501
+        assert str(ctx.value) == expected_message
 
     def test_cached_st_function_clear_args(self):
         self.x = 0
@@ -226,6 +174,99 @@ If you think this is actually a Streamlit bug, please
         assert foo(1) == 1
         foo.clear(1)
         assert foo(1) == 2
+
+    def test_cached_class_method_clear_args(self):
+        self.x = 0
+
+        class ExampleClass:
+            @st.cache_resource()
+            def foo(_self, y):
+                self.x += y
+                return self.x
+
+        example_instance = ExampleClass()
+        # Calling method foo produces the side effect of incrementing self.x
+        # and returning it as the result.
+
+        # calling foo(1) should return 1
+        assert example_instance.foo(1) == 1
+        # calling foo.clear(2) should clear the cache for the argument 2,
+        # and keep the cache for the argument 1, therefore calling foo(1) should return
+        # cached value 1
+        example_instance.foo.clear(2)
+        assert example_instance.foo(1) == 1
+        # calling foo.clear(1) should clear the cache for the argument 1,
+        # therefore calling foo(1) should return the new value 2
+        example_instance.foo.clear(1)
+        assert example_instance.foo(1) == 2
+
+        # Try the same with a keyword argument:
+        example_instance.foo.clear(y=1)
+        assert example_instance.foo(1) == 3
+
+    def test_cached_class_method_clear(self):
+        self.x = 0
+
+        class ExampleClass:
+            @st.cache_resource()
+            def foo(_self, y):
+                self.x += y
+                return self.x
+
+        example_instance = ExampleClass()
+        # Calling method foo produces the side effect of incrementing self.x
+        # and returning it as the result.
+
+        # calling foo(1) should return 1
+        assert example_instance.foo(1) == 1
+        example_instance.foo.clear()
+        # calling foo.clear() should clear all cached values:
+        # So the call to foo() should return the new value 2
+        assert example_instance.foo(1) == 2
+
+    def test_on_release_fires(self):
+        """Tests that on_release functions are called appropriately."""
+        seen: list[int] = []
+
+        def release(element: int) -> None:
+            seen.append(element)
+
+        @st.cache_resource(max_entries=2, on_release=release)
+        def return_plus_one(value: int) -> int:
+            return value + 1
+
+        for i in range(5):
+            assert return_plus_one(i) == i + 1
+
+        # Validate that release was called for the first three elements.
+        assert seen == [1, 2, 3]
+
+        # Clear the cache, and validate that `release` was called.
+        st.cache_resource.clear()
+        assert seen == [1, 2, 3, 4, 5]
+
+    def test_on_release_fires_when_cleared_with_exceptions(self):
+        """Tests that on_release functions are called.
+
+        Tests that on_release is called for all elements when clear() is called even if
+        some invocations throw exceptions."""
+        seen: list[int] = []
+
+        def release(element: int) -> None:
+            seen.append(element)
+            if element % 3 == 0:
+                raise Exception("third time is the charm")
+
+        @st.cache_resource(on_release=release)
+        def return_plus_one(value: int) -> int:
+            return value + 1
+
+        for i in range(10):
+            assert return_plus_one(i) == i + 1
+
+        # Clear the cache, and validate that `release` was called for each element.
+        st.cache_resource.clear()
+        assert seen == [i + 1 for i in range(10)]
 
 
 class CacheResourceValidateTest(unittest.TestCase):
@@ -243,7 +284,7 @@ class CacheResourceValidateTest(unittest.TestCase):
         """If we have a validate function and it returns True, we don't recompute our cached value."""
         validate = Mock(return_value=True)
 
-        call_count: List[int] = [0]
+        call_count: list[int] = [0]
 
         @st.cache_resource(validate=validate)
         def f() -> int:
@@ -251,12 +292,12 @@ class CacheResourceValidateTest(unittest.TestCase):
             return call_count[0]
 
         # First call: call_count == 1; validate not called (because we computed a new value)
-        self.assertEqual(1, f())
+        assert f() == 1
         validate.assert_not_called()
 
         # Subsequent calls: call_count == 1; validate called each time
         for _ in range(3):
-            self.assertEqual(1, f())
+            assert f() == 1
             validate.assert_called_once_with(1)
             validate.reset_mock()
 
@@ -264,7 +305,7 @@ class CacheResourceValidateTest(unittest.TestCase):
         """If we have a validate function and it returns False, we recompute our cached value."""
         validate = Mock(return_value=False)
 
-        call_count: List[int] = [0]
+        call_count: list[int] = [0]
 
         @st.cache_resource(validate=validate)
         def f() -> int:
@@ -273,13 +314,13 @@ class CacheResourceValidateTest(unittest.TestCase):
 
         # First call: call_count == 1; validate not called (because we computed a new value)
         expected_call_count = 1
-        self.assertEqual(expected_call_count, f())
+        assert expected_call_count == f()
         validate.assert_not_called()
 
         # Subsequent calls: call_count increases; validate called with previous value
         for _ in range(3):
             expected_call_count += 1
-            self.assertEqual(expected_call_count, f())
+            assert expected_call_count == f()
             validate.assert_called_once_with(expected_call_count - 1)
             validate.reset_mock()
 
@@ -297,14 +338,14 @@ class CacheResourceStatsProviderTest(unittest.TestCase):
         st.cache_resource.clear()
 
     def test_no_stats(self):
-        self.assertEqual([], get_resource_cache_stats_provider().get_stats())
+        assert get_resource_cache_stats_provider().get_stats() == {}
 
-    def test_multiple_stats(self):
-        @st.cache_resource
+    def test_multiple_stats_use_fast_proxy_by_default(self):
+        @st.cache_resource(show_spinner=False)
         def foo(count):
             return [3.14] * count
 
-        @st.cache_resource
+        @st.cache_resource(show_spinner=False)
         def bar():
             return threading.Lock()
 
@@ -320,25 +361,573 @@ class CacheResourceStatsProviderTest(unittest.TestCase):
             CacheStat(
                 category_name="st_cache_resource",
                 cache_name=foo_cache_name,
-                byte_length=(
-                    get_byte_length(as_cached_result([3.14]))
-                    + get_byte_length(as_cached_result([3.14] * 53))
-                ),
+                byte_length=2,
             ),
             CacheStat(
                 category_name="st_cache_resource",
                 cache_name=bar_cache_name,
-                byte_length=get_byte_length(as_cached_result(bar())),
+                byte_length=1,
             ),
         ]
 
-        # The order of these is non-deterministic, so check Set equality
-        # instead of List equality
-        self.assertEqual(
-            set(expected), set(get_resource_cache_stats_provider().get_stats())
+        with patch(
+            "streamlit.runtime.stats.safe_sizeof",
+            side_effect=AssertionError("safe_sizeof should not be called"),
+        ):
+            stats_dict = get_resource_cache_stats_provider().get_stats()
+
+        assert CACHE_MEMORY_FAMILY in stats_dict
+        assert set(expected) == set(stats_dict[CACHE_MEMORY_FAMILY])
+
+    def test_multiple_stats(self):
+        with patch_config_options({"server.enableExpensiveMemoryStats": True}):
+
+            @st.cache_resource(show_spinner=False)
+            def foo(count):
+                return [3.14] * count
+
+            @st.cache_resource(show_spinner=False)
+            def bar():
+                return threading.Lock()
+
+            foo(1)
+            foo(53)
+            bar()
+            bar()
+
+            foo_cache_name = f"{foo.__module__}.{foo.__qualname__}"
+            bar_cache_name = f"{bar.__module__}.{bar.__qualname__}"
+
+            expected = [
+                CacheStat(
+                    category_name="st_cache_resource",
+                    cache_name=foo_cache_name,
+                    byte_length=84,
+                ),
+                CacheStat(
+                    category_name="st_cache_resource",
+                    cache_name=bar_cache_name,
+                    byte_length=42,
+                ),
+            ]
+
+            # The order of these is non-deterministic, so check Set equality
+            # instead of List equality
+            with patch("streamlit.runtime.stats.safe_sizeof", return_value=42):
+                stats_dict = get_resource_cache_stats_provider().get_stats()
+            assert CACHE_MEMORY_FAMILY in stats_dict
+            assert set(expected) == set(stats_dict[CACHE_MEMORY_FAMILY])
+
+
+class CacheResourceMessageReplayTest(DeltaGeneratorTestCase):
+    def setUp(self):
+        super().setUp()
+        # Guard against external tests not properly cache-clearing
+        # in their teardowns.
+        st.cache_resource.clear()
+
+    def tearDown(self):
+        st.cache_resource.clear()
+
+    @parameterized.expand(WIDGET_ELEMENTS)
+    def test_shows_cached_widget_replay_warning(
+        self, _widget_name: str, widget_producer: ELEMENT_PRODUCER
+    ):
+        """Test that a warning is shown when a widget is created inside a cached function."""
+
+        @st.cache_resource(show_spinner=False)
+        def cache_widget():
+            widget_producer()
+
+        cache_widget()
+
+        # There should be only two elements in the queue:
+        assert len(self.get_all_deltas_from_queue()) == 2
+
+        # The widget itself is still created, so we need to go back one element more:
+        el = self.get_delta_from_queue(-2).new_element.exception
+        assert el.type == "CachedWidgetWarning"
+        assert el.is_warning is True
+
+    @parameterized.expand(NON_WIDGET_ELEMENTS)
+    def test_works_with_element_replay(
+        self, element_name: str, element_producer: ELEMENT_PRODUCER
+    ):
+        """Test that it works with element replay if used as non-widget element."""
+
+        if element_name in {"toast", "spinner", "logo", "echo"}:
+            # These elements are not supported in the cache_resource API
+            #   - toast only corresponds to the event dg
+            #   - spinner is transient and not replayed
+            #   - logo is not replayed because it's not tied to a specific dg
+            #   - echo does not produce an element unless it's executed with code
+            return
+
+        @st.cache_resource(show_spinner=False)
+        def cache_element():
+            element_producer()
+
+        with patch(
+            "streamlit.runtime.caching.cache_utils.replay_cached_messages",
+            wraps=cached_message_replay.replay_cached_messages,
+        ) as replay_cached_messages_mock:
+            # Call first time:
+            cache_element()
+            assert self.get_delta_from_queue().HasField("new_element") is True
+            # The first time the cached function is called, the replay function is not called
+            replay_cached_messages_mock.assert_not_called()
+
+            # Call second time:
+            cache_element()
+            assert self.get_delta_from_queue().HasField("new_element") is True
+            # The second time the cached function is called, the replay function is called
+            replay_cached_messages_mock.assert_called()
+
+            # Call third time:
+            cache_element()
+            assert self.get_delta_from_queue().HasField("new_element") is True
+            # The third time the cached function is called, the replay function is called
+            replay_cached_messages_mock.assert_called()
+
+    def _assert_layout_config(
+        self, element, expected_width: int, expected_height: int, description: str
+    ):
+        """Helper to assert both width and height config are set correctly."""
+        # Test width_config
+        assert element.HasField("width_config"), (
+            f"{description} should have width_config"
+        )
+        assert element.width_config.HasField("pixel_width"), (
+            "Should have pixel_width set"
+        )
+        actual_width = element.width_config.pixel_width
+        expected_msg = (
+            f"Expected {description.lower()} width {expected_width}, got {actual_width}"
+        )
+        assert actual_width == expected_width, expected_msg
+
+        # Test height_config
+        assert element.HasField("height_config"), (
+            f"{description} should have height_config"
+        )
+        assert element.height_config.HasField("pixel_height"), (
+            "Should have pixel_height set"
+        )
+        actual_height = element.height_config.pixel_height
+        expected_msg = f"Expected {description.lower()} height {expected_height}, got {actual_height}"
+        assert actual_height == expected_height, expected_msg
+
+    def test_layout_config_preserved_during_replay(self):
+        """Test that width_config and height_config are preserved during cache replay for @st.cache_resource."""
+        expected_width = 300
+        expected_height = 150
+
+        @st.cache_resource(show_spinner=False)
+        def cache_resource_code_with_layout():
+            # Use code element with both width and height since it supports both
+            st.code(
+                "print('Cached Resource!')",
+                width=expected_width,
+                height=expected_height,
+            )
+
+        # Call first time to cache the element
+        cache_resource_code_with_layout()
+        first_delta = self.get_delta_from_queue()
+
+        # Verify the first call has width_config and height_config set correctly
+        assert first_delta.HasField("new_element"), (
+            "First call should create new_element"
+        )
+        first_element = first_delta.new_element
+        self._assert_layout_config(
+            first_element, expected_width, expected_height, "First element"
         )
 
+        # Call second time to trigger cache replay
+        cache_resource_code_with_layout()
+        second_delta = self.get_delta_from_queue()
 
-def get_byte_length(value: Any) -> int:
-    """Return the byte length of the pickled value."""
-    return asizeof(value)
+        # Verify the replayed element also has width_config and height_config set correctly
+        assert second_delta.HasField("new_element"), (
+            "Replayed call should create new_element"
+        )
+        second_element = second_delta.new_element
+        self._assert_layout_config(
+            second_element, expected_width, expected_height, "Replayed element"
+        )
+
+        # Verify both are identical
+        assert (
+            first_element.width_config.pixel_width
+            == second_element.width_config.pixel_width
+        ), "Width config should be identical between original and replayed elements"
+
+        assert (
+            first_element.height_config.pixel_height
+            == second_element.height_config.pixel_height
+        ), "Height config should be identical between original and replayed elements"
+
+
+# The fresh ttl (in seconds) used across the background-refresh tests.
+_BG_TTL = 100
+
+
+class CacheResourceBackgroundRefreshTest(unittest.TestCase):
+    """st.cache_resource refresh_mode="background" tests."""
+
+    def setUp(self) -> None:
+        add_script_run_ctx(threading.current_thread(), create_mock_script_run_ctx())
+
+    def tearDown(self) -> None:
+        st.cache_resource.clear()
+        cache_background_refresh.reset()
+
+    @staticmethod
+    def _sync_submit(task):
+        task()
+        return True
+
+    def _patch_sync_submit(self):
+        return patch.object(
+            cache_background_refresh.get_background_refresh_manager(),
+            "submit",
+            side_effect=self._sync_submit,
+        )
+
+    def test_background_without_ttl_raises(self) -> None:
+        """refresh_mode="background" without a ttl raises a StreamlitAPIException."""
+        with pytest.raises(StreamlitAPIException) as exc:
+
+            @st.cache_resource(refresh_mode="background")
+            def foo() -> int:
+                return 1
+
+        assert "requires a 'ttl' value" in str(exc.value)
+
+    def test_invalid_refresh_mode_raises(self) -> None:
+        """An unknown refresh_mode value raises a StreamlitValueError."""
+        with pytest.raises(StreamlitValueError) as exc:
+
+            @st.cache_resource(ttl="1h", refresh_mode="sideways")
+            def foo() -> int:
+                return 1
+
+        assert (
+            str(exc.value)
+            == "Invalid `refresh_mode` value. Supported values: foreground, background."
+        )
+
+    def test_hard_ttl_is_double_fresh_ttl(self) -> None:
+        """In background mode the underlying cache ttl is 2x the user-facing ttl."""
+        cache = _resource_caches.get_cache(
+            key="bg_key",
+            display_name="bg",
+            max_entries=None,
+            ttl=_BG_TTL,
+            validate=None,
+            on_release=lambda _v: None,
+            refresh_mode="background",
+        )
+        assert cache.fresh_ttl_seconds == _BG_TTL
+        assert cache.ttl_seconds == _BG_TTL * 2
+
+    def test_cache_recreated_on_mode_change(self) -> None:
+        """Changing refresh_mode across reruns rebuilds the cache."""
+        kwargs = {
+            "key": "mode_key",
+            "display_name": "mode",
+            "max_entries": None,
+            "ttl": _BG_TTL,
+            "validate": None,
+            "on_release": lambda _v: None,
+        }
+        cache_fg = _resource_caches.get_cache(**kwargs, refresh_mode="foreground")
+        assert (
+            _resource_caches.get_cache(**kwargs, refresh_mode="foreground") is cache_fg
+        )
+        cache_bg = _resource_caches.get_cache(**kwargs, refresh_mode="background")
+        assert cache_bg is not cache_fg
+        assert cache_fg.is_active is False
+
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_replaced_resource_on_release_fires_once(self, timer_patch: Mock) -> None:
+        """A successful background refresh releases the replaced resource exactly once."""
+        released: list[int] = []
+        counter = [0]
+
+        @st.cache_resource(
+            ttl=_BG_TTL,
+            refresh_mode="background",
+            on_release=released.append,
+            show_spinner=False,
+        )
+        def foo() -> int:
+            counter[0] += 1
+            return counter[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+
+        with self._patch_sync_submit():
+            timer_patch.return_value = _BG_TTL * 1.5
+            # Stale value served; background refresh replaces it and releases the old one.
+            assert foo() == 1
+
+        assert released == [1]
+        timer_patch.return_value = _BG_TTL * 1.5
+        assert foo() == 2
+
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_orphan_produced_resource_released(self, timer_patch: Mock) -> None:
+        """A discarded (orphaned) refresh releases the resource it produced."""
+        released: list[int] = []
+        counter = [0]
+
+        @st.cache_resource(
+            ttl=_BG_TTL,
+            refresh_mode="background",
+            on_release=released.append,
+            show_spinner=False,
+        )
+        def foo() -> int:
+            counter[0] += 1
+            return counter[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+
+        captured: list = []
+
+        def capture_submit(task):
+            captured.append(task)
+            return True
+
+        with patch.object(
+            cache_background_refresh.get_background_refresh_manager(),
+            "submit",
+            side_effect=capture_submit,
+        ):
+            timer_patch.return_value = _BG_TTL * 1.5
+            assert foo() == 1
+
+        # Clear the cache (releases the current resource, value 1) before write-back.
+        foo.clear()
+        assert released == [1]
+
+        # The refresh produces value 2 but is discarded; its resource is released too.
+        captured[0]()
+        assert released == [1, 2]
+
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_background_replacement_survives_on_release_error(
+        self, timer_patch: Mock
+    ) -> None:
+        """An on_release that raises during background replacement is contained.
+
+        The new value is stored first, so a failing release of the replaced resource
+        neither drops the entry (no premature foreground miss) nor leaks the freshly
+        built resource; the worker never raises.
+        """
+        release_attempts: list[int] = []
+        counter = [0]
+
+        def failing_release(value: int) -> None:
+            release_attempts.append(value)
+            raise RuntimeError("release boom")
+
+        @st.cache_resource(
+            ttl=_BG_TTL,
+            refresh_mode="background",
+            on_release=failing_release,
+            show_spinner=False,
+        )
+        def foo() -> int:
+            counter[0] += 1
+            return counter[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+
+        # A stale serve triggers a refresh whose write-back releases the replaced
+        # resource; on_release raises, but the worker swallows it (never raises).
+        with self._patch_sync_submit():
+            timer_patch.return_value = _BG_TTL * 1.5
+            assert foo() == 1
+        assert counter[0] == 2
+        assert release_attempts == [1]
+
+        # The refresh still succeeded: the new value is stored and served on the next
+        # access (no recompute), rather than the entry being dropped by the failure.
+        timer_patch.return_value = _BG_TTL * 1.5
+        assert foo() == 2
+        assert counter[0] == 2
+
+    def test_same_instance_refresh_skips_release(self) -> None:
+        """A refresh returning the already-cached object must not release it.
+
+        When the cached function returns the same object it replaces (e.g. a
+        process-wide singleton), releasing the "replaced" resource would tear down the
+        live cached object, so on_release must be skipped.
+        """
+        released: list[object] = []
+        cache: ResourceCache[object] = ResourceCache(
+            key="same_instance",
+            max_entries=float("inf"),
+            ttl_seconds=_BG_TTL * 2,
+            validate=None,
+            display_name="same",
+            on_release=released.append,
+            fresh_ttl_seconds=_BG_TTL,
+            refresh_mode="background",
+        )
+        singleton = object()
+        cache.write_result("k", singleton, [])
+
+        cache.write_background_refresh_result(
+            "k",
+            singleton,
+            expected_generation=cache.generation,
+            expected_key_generation=cache.key_generation("k"),
+        )
+
+        assert released == []
+        assert cache.read_result("k").value is singleton
+
+    def test_orphan_discard_swallows_release_error(self) -> None:
+        """A raising on_release while discarding an orphaned refresh must not propagate.
+
+        The compute itself succeeded, so a failing release of the discarded resource is
+        swallowed rather than raised (which would otherwise be treated as a failed
+        refresh and start a retry cooldown).
+        """
+        released: list[int] = []
+
+        def failing_release(value: int) -> None:
+            released.append(value)
+            raise RuntimeError("release boom")
+
+        cache: ResourceCache[int] = ResourceCache(
+            key="discard_err",
+            max_entries=float("inf"),
+            ttl_seconds=_BG_TTL * 2,
+            validate=None,
+            display_name="discard",
+            on_release=failing_release,
+            fresh_ttl_seconds=_BG_TTL,
+            refresh_mode="background",
+        )
+        cache.write_result("k", 1, [])
+
+        # A stale generation orphans the write-back, so the produced value (2) is
+        # discarded and released; the raising on_release must not escape.
+        cache.write_background_refresh_result(
+            "k",
+            2,
+            expected_generation=cache.generation + 1,
+            expected_key_generation=cache.key_generation("k"),
+        )
+
+        assert released == [2]
+        # The originally cached value is untouched by the discarded refresh.
+        assert cache.read_result("k").value == 1
+
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_validate_fail_forces_foreground(self, timer_patch: Mock) -> None:
+        """A stale resource that fails validate is a hard miss recomputed in the foreground."""
+        counter = [0]
+        validate_ok = [True]
+
+        @st.cache_resource(
+            ttl=_BG_TTL,
+            refresh_mode="background",
+            validate=lambda _v: validate_ok[0],
+            show_spinner=False,
+        )
+        def foo() -> int:
+            counter[0] += 1
+            return counter[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+
+        # validate fails: even a stale access recomputes in the foreground (no stale
+        # serve, no background refresh triggered).
+        validate_ok[0] = False
+        with self._patch_sync_submit() as submit_mock:
+            timer_patch.return_value = _BG_TTL * 1.5
+            assert foo() == 2
+            submit_mock.assert_not_called()
+        assert counter[0] == 2
+
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_validate_pass_allows_stale_serve(self, timer_patch: Mock) -> None:
+        """A stale resource that passes validate is served stale and refreshed in the background."""
+        counter = [0]
+
+        @st.cache_resource(
+            ttl=_BG_TTL,
+            refresh_mode="background",
+            validate=lambda _v: True,
+            show_spinner=False,
+        )
+        def foo() -> int:
+            counter[0] += 1
+            return counter[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+
+        with self._patch_sync_submit() as submit_mock:
+            timer_patch.return_value = _BG_TTL * 1.5
+            assert foo() == 1
+            submit_mock.assert_called_once()
+
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_session_scope_refresh_discarded_after_clear_session(
+        self, timer_patch: Mock
+    ) -> None:
+        """A session-scoped refresh completing after the session ends is discarded and released."""
+        released: list[int] = []
+        counter = [0]
+        session_id = "bg-session"
+
+        @st.cache_resource(
+            scope="session",
+            ttl=_BG_TTL,
+            refresh_mode="background",
+            on_release=released.append,
+            show_spinner=False,
+        )
+        def foo() -> int:
+            counter[0] += 1
+            return counter[0]
+
+        captured: list = []
+
+        def capture_submit(task):
+            captured.append(task)
+            return True
+
+        with patch.object(
+            cache_resource_api, "get_session_id_or_throw", return_value=session_id
+        ):
+            timer_patch.return_value = 0
+            assert foo() == 1
+
+            with patch.object(
+                cache_background_refresh.get_background_refresh_manager(),
+                "submit",
+                side_effect=capture_submit,
+            ):
+                timer_patch.return_value = _BG_TTL * 1.5
+                assert foo() == 1
+
+        # End the session before the refresh writes back (releases the current resource).
+        clear_session_resource_cache(session_id)
+        assert released == [1]
+
+        # The refresh produces value 2 but the cache is detached, so it is discarded and
+        # its resource released rather than repopulating the ended session's cache.
+        captured[0]()
+        assert released == [1, 2]

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+from __future__ import annotations
 
 import unittest
 
@@ -28,12 +30,15 @@ class ConfigOptionTest(unittest.TestCase):
             ("has spaces",),
             ("_.key"),
             ("section.v_1_name"),
+            ("section.another_section.key"),
         ]
     )
     def test_invalid_key(self, key):
-        with pytest.raises(AssertionError) as e:
+        with pytest.raises(
+            ValueError,
+            match=f'Key "{key}" has invalid format.',
+        ):
             ConfigOption(key)
-        self.assertEqual('Key "%s" has invalid format.' % key, str(e.value))
 
     @parameterized.expand(
         [
@@ -41,20 +46,21 @@ class ConfigOptionTest(unittest.TestCase):
             ("section.numbered12", "section", "numbered12"),
             ("numbered1.allowCaps", "numbered1", "allowCaps"),
             ("allowCaps.numbered2", "allowCaps", "numbered2"),
+            ("section.subSection.name", "section.subSection", "name"),
         ]
     )
     def test_valid_keys(self, key, section, name):
         c = ConfigOption(key)
-        self.assertEqual(section, c.section)
-        self.assertEqual(name, c.name)
+        assert section == c.section
+        assert name == c.name
 
     def test_constructor_default_values(self):
         key = "mysection.myName"
         c = ConfigOption(key)
-        self.assertEqual("mysection", c.section)
-        self.assertEqual("myName", c.name)
-        self.assertEqual(None, c.description)
-        self.assertEqual("visible", c.visibility)
+        assert c.section == "mysection"
+        assert c.name == "myName"
+        assert None is c.description
+        assert c.visibility == "visible"
 
     def test_call(self):
         key = "mysection.myName"
@@ -63,25 +69,23 @@ class ConfigOptionTest(unittest.TestCase):
         @c
         def someRandomFunction():
             """Random docstring."""
-            pass
 
-        self.assertEqual("Random docstring.", c.description)
-        self.assertEqual(someRandomFunction._get_val_func, c._get_val_func)
+        assert c.description == "Random docstring."
+        assert someRandomFunction._get_val_func == c._get_val_func
 
-    def test_call_assert(self):
+    def test_call_with_missing_docstring(self):
+        """Test that missing docstrings default to empty string.
+
+        This supports PYTHONOPTIMIZE=2 where docstrings are stripped.
+        """
         key = "mysection.myName"
         c = ConfigOption(key)
 
-        with pytest.raises(AssertionError) as e:
+        @c
+        def someRandomFunction():
+            pass
 
-            @c
-            def someRandomFunction():
-                pass
-
-        self.assertEqual(
-            "Complex config options require doc strings for their description.",
-            str(e.value),
-        )
+        assert c.description == ""
 
     def test_value(self):
         my_value = "myValue"
@@ -94,7 +98,7 @@ class ConfigOptionTest(unittest.TestCase):
             """Random docstring."""
             return my_value
 
-        self.assertEqual(my_value, c.value)
+        assert my_value == c.value
 
     def test_set_value(self):
         my_value = "myValue"
@@ -104,8 +108,8 @@ class ConfigOptionTest(unittest.TestCase):
         c = ConfigOption(key)
         c.set_value(my_value, where_defined)
 
-        self.assertEqual(my_value, c.value)
-        self.assertEqual(where_defined, c.where_defined)
+        assert my_value == c.value
+        assert where_defined == c.where_defined
 
     def test_deprecated_expired(self):
         my_value = "myValue"
@@ -124,7 +128,7 @@ class ConfigOptionTest(unittest.TestCase):
         # just a slightly different text.
         c.set_value(my_value, where_defined)
 
-        self.assertTrue(c.is_expired())
+        assert c.is_expired()
 
     def test_deprecated_unexpired(self):
         my_value = "myValue"
@@ -141,7 +145,7 @@ class ConfigOptionTest(unittest.TestCase):
 
         c.set_value(my_value, where_defined)
 
-        self.assertFalse(c.is_expired())
+        assert not c.is_expired()
 
     def test_replaced_by_unexpired(self):
         c = ConfigOption(
@@ -151,8 +155,8 @@ class ConfigOptionTest(unittest.TestCase):
             expiration_date="2100-01-01",
         )
 
-        self.assertTrue(c.deprecated)
-        self.assertFalse(c.is_expired())
+        assert c.deprecated
+        assert not c.is_expired()
 
     def test_replaced_by_expired(self):
         c = ConfigOption(
@@ -162,5 +166,5 @@ class ConfigOptionTest(unittest.TestCase):
             expiration_date="2000-01-01",
         )
 
-        self.assertTrue(c.deprecated)
-        self.assertTrue(c.is_expired())
+        assert c.deprecated
+        assert c.is_expired()

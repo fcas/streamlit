@@ -1,0 +1,62 @@
+/**
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+import { FC, PropsWithChildren, useCallback, useRef } from "react"
+
+import { createPortal } from "react-dom"
+
+import { StyledDataFrameOverlay } from "~lib/styled-components"
+
+import { DATAFRAME_PORTAL_ID, FLOATING_OVERLAY_PORTAL_ID } from "./constants"
+import { PortalContext } from "./PortalContext"
+
+export const PortalProvider: FC<PropsWithChildren> = ({ children }) => {
+  const overlayRef = useRef<HTMLDivElement>(null)
+
+  const getRefElement = useCallback(() => {
+    return overlayRef.current
+  }, [])
+
+  return (
+    <PortalContext.Provider value={getRefElement}>
+      {children}
+      {createPortal(
+        <StyledDataFrameOverlay
+          data-react-aria-top-layer="true"
+          data-st-overlay-root="true"
+          data-testid="portal"
+          id={DATAFRAME_PORTAL_ID}
+          ref={overlayRef}
+        />,
+        document.body
+      )}
+      {/*
+       * Shared host for `@floating-ui/react` `FloatingPortal` mounts (e.g. the
+       * st.popover body). Tagged so React Aria's dialog does not mark it inert
+       * when the dialog is open — this is what makes widgets inside a
+       * popover-in-dialog interactable (fixes #16005). The host has no
+       * dimensions of its own; each floating child positions itself.
+       */}
+      {createPortal(
+        <div
+          data-react-aria-top-layer="true"
+          data-st-overlay-root="true"
+          id={FLOATING_OVERLAY_PORTAL_ID}
+        />,
+        document.body
+      )}
+    </PortalContext.Provider>
+  )
+}

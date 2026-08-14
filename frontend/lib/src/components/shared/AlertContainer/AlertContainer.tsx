@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,39 +14,12 @@
  * limitations under the License.
  */
 
-import React, { ReactElement, ReactNode } from "react"
+import { ReactElement, ReactNode } from "react"
 
-import { Notification, KIND } from "baseui/notification"
-import { StyledAlertContent } from "./styled-components"
-import { radii } from "@streamlit/lib/src/theme/primitives"
+import { StyledAlertContainer, StyledAlertContent } from "./styled-components"
+import { Kind } from "./types"
 
-export enum Kind {
-  ERROR = "error",
-  INFO = "info",
-  SUCCESS = "success",
-  WARNING = "warning",
-}
-
-function getNotificationKind(
-  kind: Kind
-):
-  | typeof KIND.negative
-  | typeof KIND.info
-  | typeof KIND.positive
-  | typeof KIND.warning {
-  switch (kind) {
-    case Kind.ERROR:
-      return KIND.negative
-    case Kind.INFO:
-      return KIND.info
-    case Kind.SUCCESS:
-      return KIND.positive
-    case Kind.WARNING:
-      return KIND.warning
-    default:
-      throw new Error(`Unexpected alert type: ${kind}`)
-  }
-}
+export { Kind }
 
 export interface AlertContainerProps {
   width?: number
@@ -55,7 +28,7 @@ export interface AlertContainerProps {
 }
 
 /**
- * Provides Base Styles for any Alert Type UI. Used in the following cases:
+ * Provides base styles for any Alert Type UI. Used in the following cases:
  *   * Alert is the Streamlit specific alert component that users can use with
  *     any Markdown. Users have API access to generate these.
  *   * ExceptionElement is a special type of alert that formats an exception
@@ -71,37 +44,16 @@ export default function AlertContainer({
 }: AlertContainerProps): ReactElement {
   const testid = kind.charAt(0).toUpperCase() + kind.slice(1)
   return (
-    <Notification
-      kind={getNotificationKind(kind)}
-      overrides={{
-        Body: {
-          style: {
-            marginTop: 0,
-            marginBottom: 0,
-            marginLeft: 0,
-            marginRight: 0,
-            width: width ? width.toString() : undefined,
-            border: 0,
-            borderTopRightRadius: radii.lg,
-            borderBottomRightRadius: radii.lg,
-            borderTopLeftRadius: radii.lg,
-            borderBottomLeftRadius: radii.lg,
-          },
-          props: {
-            "data-testid": "stNotification",
-          },
-        },
-        InnerContainer: {
-          style: {
-            width: "100%",
-            lineHeight: "1.5",
-          },
-        },
-      }}
+    <StyledAlertContainer
+      $kind={kind}
+      $width={width}
+      data-testid="stAlertContainer"
+      className="stAlertContainer"
+      role={kind === Kind.ERROR || kind === Kind.WARNING ? "alert" : "status"}
     >
-      <StyledAlertContent data-testid={`stNotificationContent${testid}`}>
+      <StyledAlertContent data-testid={`stAlertContent${testid}`}>
         {children}
       </StyledAlertContent>
-    </Notification>
+    </StyledAlertContainer>
   )
 }

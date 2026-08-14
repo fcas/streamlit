@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,248 +14,286 @@
  * limitations under the License.
  */
 
-import React from "react"
-import { TextArea as TextAreaProto } from "@streamlit/lib/src/proto"
-import { FormClearHelper } from "@streamlit/lib/src/components/widgets/Form"
 import {
-  WidgetStateManager,
-  Source,
-} from "@streamlit/lib/src/WidgetStateManager"
+  FC,
+  memo,
+  useCallback,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react"
 
-import { Textarea as UITextArea } from "baseui/textarea"
-import InputInstructions from "@streamlit/lib/src/components/shared/InputInstructions/InputInstructions"
+import { Element, TextArea as TextAreaProto } from "@streamlit/protobuf"
+
+import InputInstructions from "~lib/components/shared/InputInstructions/InputInstructions"
+import { WidgetLabel } from "~lib/components/widgets/BaseWidget/WidgetLabel"
+import { WidgetLabelHelpIcon } from "~lib/components/widgets/BaseWidget/WidgetLabelHelpIcon"
 import {
-  WidgetLabel,
-  StyledWidgetLabelHelp,
-} from "@streamlit/lib/src/components/widgets/BaseWidget"
-import TooltipIcon from "@streamlit/lib/src/components/shared/TooltipIcon"
-import { Placement } from "@streamlit/lib/src/components/shared/Tooltip"
+  useBasicWidgetState,
+  ValueWithSource,
+} from "~lib/hooks/useBasicWidgetState"
+import { useCalculatedDimensions } from "~lib/hooks/useCalculatedDimensions"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
+import useOnInputChange from "~lib/hooks/useOnInputChange"
+import useSubmitFormViaEnterKey from "~lib/hooks/useSubmitFormViaEnterKey"
+import { useTextInputAutoExpand } from "~lib/hooks/useTextInputAutoExpand"
+import useUpdateUiValue from "~lib/hooks/useUpdateUiValue"
+import { convertRemToPx } from "~lib/theme/utils"
+import { isInForm, labelVisibilityProtoValueToEnum } from "~lib/util/utils"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import { getTextAreaHeight } from "./heightUtils"
 import {
-  isInForm,
-  labelVisibilityProtoValueToEnum,
-} from "@streamlit/lib/src/util/utils"
-import { breakpoints } from "@streamlit/lib/src/theme/primitives"
-import { StyledTextAreaContainer } from "./styled-components"
-import uniqueId from "lodash/uniqueId"
+  StyledTextAreaContainer,
+  StyledTextAreaInput,
+  StyledTextAreaRoot,
+} from "./styled-components"
 
 export interface Props {
   disabled: boolean
   element: TextAreaProto
   widgetMgr: WidgetStateManager
-  width: number
   fragmentId?: string
+  // needed for height
+  outerElement: Element
 }
 
-interface State {
+type TextAreaValue = string | null
+
+const getStateFromWidgetMgr = (
+  widgetMgr: WidgetStateManager,
+  element: TextAreaProto
+): TextAreaValue | null => {
+  return widgetMgr.getStringValue(element) ?? null
+}
+
+const getDefaultStateFromProto = (element: TextAreaProto): TextAreaValue => {
+  return element.default ?? null
+}
+
+const getCurrStateFromProto = (element: TextAreaProto): TextAreaValue => {
+  return element.value ?? null
+}
+
+const updateWidgetMgrState = (
+  element: TextAreaProto,
+  widgetMgr: WidgetStateManager,
+  valueWithSource: ValueWithSource<TextAreaValue>,
+  fragmentId: string | undefined
+): void => {
+  widgetMgr.setStringValue(
+    element,
+    valueWithSource.value,
+    { fromUi: valueWithSource.fromUi },
+    fragmentId
+  )
+}
+
+const TextArea: FC<Props> = ({
+  disabled,
+  element,
+  widgetMgr,
+  fragmentId,
+  outerElement,
+}) => {
+  const id = useId()
+
+  const { width, elementRef } = useCalculatedDimensions()
+
   /**
    * True if the user-specified state.value has not yet been synced to the WidgetStateManager.
    */
-  dirty: boolean
+  const [dirty, setDirty] = useState(false)
+  /**
+   * Whether the area is currently focused.
+   */
+  const [focused, setFocused] = useState(false)
+
+  // Determine if we should use auto-expansion.
+  const isAutoHeight = outerElement.heightConfig?.useContent ?? false
+  // Disable resize if stretch height is enabled.
+  const isStretchHeight = outerElement.heightConfig?.useStretch ?? false
+
+  // For text area, we need to set the height on the input element and let
+  // that determine the height of the overall element so that resizing works.
+  const inputHeight = getTextAreaHeight(outerElement, element)
+
+  // Create ref for auto-expansion
+  const textareaRef = useRef<HTMLTextAreaElement>(null)
 
   /**
    * The value specified by the user via the UI. If the user didn't touch this
    * widget's UI, the default value is used.
    */
-  value: string | null
-}
+  const [uiValue, setUiValue] = useState<string | null>(
+    () => getStateFromWidgetMgr(widgetMgr, element) ?? null
+  )
 
-class TextArea extends React.PureComponent<Props, State> {
-  private readonly formClearHelper = new FormClearHelper()
+  const onFormCleared = useCallback(() => {
+    setUiValue(element.default ?? null)
+    setDirty(true)
+  }, [element])
 
-  private readonly id: string
-
-  public state: State = {
-    dirty: false,
-    value: this.initialValue,
-  }
-
-  get initialValue(): string | null {
-    // If WidgetStateManager knew a value for this widget, initialize to that.
-    // Otherwise, use the default value from the widget protobuf.
-    const storedValue = this.props.widgetMgr.getStringValue(this.props.element)
-    return storedValue ?? this.props.element.default ?? null
-  }
-
-  constructor(props: Props) {
-    super(props)
-    this.id = uniqueId("text_area_")
-  }
-
-  public componentDidMount(): void {
-    if (this.props.element.setValue) {
-      this.updateFromProtobuf()
-    } else {
-      this.commitWidgetValue({ fromUi: false })
-    }
-  }
-
-  public componentDidUpdate(): void {
-    this.maybeUpdateFromProtobuf()
-  }
-
-  public componentWillUnmount(): void {
-    this.formClearHelper.disconnect()
-  }
-
-  private maybeUpdateFromProtobuf(): void {
-    const { setValue } = this.props.element
-    if (setValue) {
-      this.updateFromProtobuf()
-    }
-  }
-
-  private updateFromProtobuf(): void {
-    const { value } = this.props.element
-    this.props.element.setValue = false
-    this.setState({ value: value ?? null }, () => {
-      this.commitWidgetValue({ fromUi: false })
-    })
-  }
-
-  /** Commit state.value to the WidgetStateManager. */
-  private commitWidgetValue = (source: Source): void => {
-    const { widgetMgr, element, fragmentId } = this.props
-    widgetMgr.setStringValue(element, this.state.value, source, fragmentId)
-    this.setState({ dirty: false })
-  }
-
-  /**
-   * If we're part of a clear_on_submit form, this will be called when our
-   * form is submitted. Restore our default value and update the WidgetManager.
-   */
-  private onFormCleared = (): void => {
-    this.setState(
-      (_, prevProps) => {
-        return { value: prevProps.element.default ?? null }
-      },
-      () => this.commitWidgetValue({ fromUi: true })
-    )
-  }
-
-  private onBlur = (): void => {
-    if (this.state.dirty) {
-      this.commitWidgetValue({ fromUi: true })
-    }
-  }
-
-  private onChange = (e: React.ChangeEvent<HTMLTextAreaElement>): void => {
-    const { value } = e.target
-    const { element } = this.props
-    const { maxChars } = element
-
-    if (maxChars !== 0 && value.length > maxChars) {
-      return
-    }
-
-    // mark it dirty but don't update its value in the WidgetMgr
-    // This means that individual keypresses won't trigger a script re-run.
-    this.setState({ dirty: true, value })
-  }
-
-  isEnterKeyPressed = (
-    event: React.KeyboardEvent<HTMLTextAreaElement>
-  ): boolean => {
-    const { keyCode, key } = event
-
-    // Using keyCode as well due to some different behaviors on Windows
-    // https://bugs.chromium.org/p/chromium/issues/detail?id=79407
-    return (
-      (key === "Enter" || keyCode === 13 || keyCode === 10) &&
-      // Do not send the sentence being composed when Enter is typed into the IME.
-      !(event.nativeEvent?.isComposing === true)
-    )
-  }
-
-  private onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>): void => {
-    const { metaKey, ctrlKey } = e
-    const { dirty } = this.state
-
-    if (this.isEnterKeyPressed(e) && (ctrlKey || metaKey) && dirty) {
-      e.preventDefault()
-
-      this.commitWidgetValue({ fromUi: true })
-      const { formId } = this.props.element
-      if (isInForm({ formId })) {
-        this.props.widgetMgr.submitForm(this.props.element.formId)
+  const queryParamBinding = element.queryParamKey
+    ? {
+        paramKey: element.queryParamKey,
+        valueType: "string_value" as const,
+        // Text area is clearable (empty string is a valid value)
+        clearable: true,
       }
+    : undefined
+
+  const [value, setValueWithSource] = useBasicWidgetState<
+    TextAreaValue,
+    TextAreaProto
+  >({
+    getStateFromWidgetMgr,
+    getDefaultStateFromProto,
+    getCurrStateFromProto,
+    updateWidgetMgrState,
+    element,
+    widgetMgr,
+    fragmentId,
+    formClearBehavior: "resetValueAndRunCallback",
+    onFormCleared,
+    queryParamBinding,
+  })
+
+  useUpdateUiValue(value, uiValue, setUiValue, dirty)
+
+  const theme = useEmotionTheme()
+
+  // Track if we've done the initial height calculation with a valid width.
+  // This prevents recalculating on every window resize, which would override manual user resizes.
+  const hasInitializedWithWidthRef = useRef(false)
+
+  const {
+    height: autoExpandHeight,
+    maxHeight: autoExpandMaxHeight,
+    updateScrollHeight,
+  } = useTextInputAutoExpand({
+    textareaRef,
+    // Recalculate height when placeholder or displayed value changes.
+    // When isAutoHeight is true, use uiValue to ensure height updates during typing and after blur.
+    // When isAutoHeight is false, the effect only needs to run when value changes (less frequent).
+    dependencies: [
+      element.placeholder,
+      ...(isAutoHeight ? [uiValue] : [value]),
+    ],
+  })
+
+  // Recalculate height once when width first becomes available (ResizeObserver is async).
+  // We don't include width in dependencies above to avoid overriding manual user resizes.
+  useLayoutEffect(() => {
+    if (!isAutoHeight) return
+    if (width > 0 && !hasInitializedWithWidthRef.current) {
+      hasInitializedWithWidthRef.current = true
+      updateScrollHeight()
     }
-  }
+  }, [isAutoHeight, width, updateScrollHeight])
 
-  public render(): React.ReactNode {
-    const { element, disabled, width, widgetMgr } = this.props
-    const { value, dirty } = this.state
-    const style = { width }
-    const { height, placeholder } = element
+  const commitWidgetValue = useCallback((): void => {
+    setDirty(false)
+    setValueWithSource({ value: uiValue, fromUi: true })
+  }, [uiValue, setValueWithSource])
 
-    // Manage our form-clear event handler.
-    this.formClearHelper.manageFormClearListener(
-      widgetMgr,
-      element.formId,
-      this.onFormCleared
-    )
+  const onBlur = useCallback(() => {
+    if (dirty) {
+      commitWidgetValue()
+    }
+    setFocused(false)
+  }, [dirty, commitWidgetValue])
 
-    return (
-      <div className="stTextArea" data-testid="stTextArea" style={style}>
-        <WidgetLabel
-          label={element.label}
-          disabled={disabled}
-          labelVisibility={labelVisibilityProtoValueToEnum(
-            element.labelVisibility?.value
-          )}
-          htmlFor={this.id}
-        >
-          {element.help && (
-            <StyledWidgetLabelHelp>
-              <TooltipIcon
-                content={element.help}
-                placement={Placement.TOP_RIGHT}
-              />
-            </StyledWidgetLabelHelp>
-          )}
-        </WidgetLabel>
-        <StyledTextAreaContainer>
-          <UITextArea
-            value={value ?? ""}
-            placeholder={placeholder}
-            onBlur={this.onBlur}
-            onChange={this.onChange}
-            onKeyDown={this.onKeyDown}
-            aria-label={element.label}
-            disabled={disabled}
-            id={this.id}
-            overrides={{
-              Input: {
-                style: {
-                  lineHeight: "1.4",
-                  height: height ? `${height}px` : "",
-                  minHeight: "95px",
-                  resize: "vertical",
-                  "::placeholder": {
-                    opacity: "0.7",
-                  },
-                  // Baseweb requires long-hand props, short-hand leads to weird bugs & warnings.
-                  paddingRight: "1rem",
-                  paddingLeft: "1rem",
-                  paddingBottom: "1rem",
-                  paddingTop: "1rem",
-                },
-              },
-            }}
-          />
-        </StyledTextAreaContainer>
-        {/* Hide the "Please enter to apply" text in small widget sizes */}
-        {width > breakpoints.hideWidgetDetails && (
-          <InputInstructions
-            dirty={dirty}
-            value={value ?? ""}
-            maxLength={element.maxChars}
-            type={"multiline"}
-            inForm={isInForm({ formId: element.formId })}
-          />
+  const onFocus = useCallback(() => {
+    setFocused(true)
+  }, [])
+
+  const additionalAction = useCallback(() => {
+    if (isAutoHeight) {
+      updateScrollHeight()
+    }
+  }, [isAutoHeight, updateScrollHeight])
+
+  const onChange = useOnInputChange({
+    formId: element.formId,
+    maxChars: element.maxChars,
+    setDirty,
+    setUiValue,
+    setValueWithSource,
+    additionalAction,
+  })
+
+  const onKeyDown = useSubmitFormViaEnterKey(
+    element.formId,
+    commitWidgetValue,
+    dirty,
+    widgetMgr,
+    fragmentId,
+    true
+  )
+
+  const { placeholder, formId } = element
+
+  // Show "Please enter" instructions if in a form & allowed, or not in form and state is dirty.
+  const allowEnterToSubmit = isInForm({ formId })
+    ? widgetMgr.allowFormEnterToSubmit(formId)
+    : dirty
+
+  // Hide input instructions for small widget sizes.
+  const shouldShowInstructions =
+    focused && width > convertRemToPx(theme.breakpoints.hideWidgetDetails)
+
+  return (
+    <StyledTextAreaContainer
+      className="stTextArea"
+      data-testid="stTextArea"
+      ref={elementRef}
+    >
+      <WidgetLabel
+        label={element.label}
+        disabled={disabled}
+        labelVisibility={labelVisibilityProtoValueToEnum(
+          element.labelVisibility?.value
         )}
-      </div>
-    )
-  }
+        htmlFor={id}
+      >
+        {element.help && (
+          <WidgetLabelHelpIcon content={element.help} label={element.label} />
+        )}
+      </WidgetLabel>
+
+      <StyledTextAreaRoot data-testid="stTextAreaRootElement">
+        <StyledTextAreaInput
+          ref={isAutoHeight ? textareaRef : undefined}
+          value={uiValue ?? ""}
+          placeholder={placeholder}
+          onBlur={onBlur}
+          onFocus={onFocus}
+          onChange={onChange}
+          onKeyDown={onKeyDown}
+          aria-label={element.label}
+          disabled={disabled}
+          id={id}
+          rows={3}
+          $height={isAutoHeight ? autoExpandHeight : inputHeight}
+          $maxHeight={isAutoHeight ? autoExpandMaxHeight : ""}
+          $resize={isStretchHeight ? "none" : "vertical"}
+        />
+      </StyledTextAreaRoot>
+
+      {shouldShowInstructions && (
+        <InputInstructions
+          dirty={dirty}
+          value={uiValue ?? ""}
+          maxLength={element.maxChars}
+          type={"multiline"}
+          inForm={isInForm({ formId })}
+          allowEnterToSubmit={allowEnterToSubmit}
+        />
+      )}
+    </StyledTextAreaContainer>
+  )
 }
 
-export default TextArea
+export default memo(TextArea)

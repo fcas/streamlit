@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,30 +14,39 @@
  * limitations under the License.
  */
 import { GridCell, GridCellKind } from "@glideapps/glide-data-grid"
-import moment, { Moment } from "moment"
-import timezoneMock from "timezone-mock"
+import { Field, makeVector, Utf8 } from "apache-arrow"
 
+import { DataFrameCellType } from "~lib/dataframes/arrowTypeUtils"
+
+import JsonColumn from "./JsonColumn"
 import {
-  getErrorCell,
-  isErrorCell,
-  getEmptyCell,
-  getTextCell,
-  toSafeArray,
-  toSafeString,
-  toSafeNumber,
-  formatNumber,
-  mergeColumnParameters,
-  isMissingValueCell,
+  arrayToCopyValue,
+  arrayValuesEqual,
   BaseColumnProps,
-  toSafeBoolean,
-  toGlideColumn,
-  toSafeDate,
   countDecimals,
-  truncateDecimals,
-  formatMoment,
+  getEmptyCell,
+  getErrorCell,
+  getLinkDisplayValueFromRegex,
+  getTextCell,
+  hasTooltip,
+  isEditableArrayValue,
+  isErrorCell,
+  isMaybeJson,
+  isMissingValueCell,
+  mergeColumnParameters,
   removeLineBreaks,
+  toGlideColumn,
+  toJsonString,
+  toSafeArray,
+  toSafeBoolean,
+  toSafeDate,
+  toSafeNumber,
+  toSafeString,
+  truncateDecimals,
+  valuesEqual,
 } from "./utils"
-import { TextColumn } from "./index"
+
+import { DateTimeColumn, ListColumn, NumberColumn, TextColumn } from "./index"
 
 const MOCK_TEXT_COLUMN_PROPS = {
   id: "column_1",
@@ -45,12 +54,20 @@ const MOCK_TEXT_COLUMN_PROPS = {
   title: "column_1",
   indexNumber: 0,
   arrowType: {
-    pandas_type: "unicode",
-    numpy_type: "object",
+    type: DataFrameCellType.DATA,
+    arrowField: new Field("test", new Utf8(), true),
+    pandasType: {
+      field_name: "test",
+      name: "test",
+      pandas_type: "unicode",
+      numpy_type: "object",
+      metadata: null,
+    },
   },
   isEditable: false,
   isHidden: false,
   isIndex: false,
+  isPinned: false,
   isStretched: false,
 } as BaseColumnProps
 
@@ -60,9 +77,11 @@ describe("getErrorCell", () => {
     expect(errorCell.kind).toEqual(GridCellKind.Text)
     expect(errorCell.readonly).toEqual(true)
     expect(errorCell.allowOverlay).toEqual(true)
-    expect(errorCell.displayData).toEqual("⚠️ Foo Error")
-    expect(errorCell.data).toEqual("⚠️ Foo Error\n\nLorem Ipsum Dolor\n")
+    expect(errorCell.displayData).toEqual("Foo Error")
+    expect(errorCell.data).toEqual("Foo Error")
+    expect(errorCell.errorDetails).toEqual("Lorem Ipsum Dolor")
     expect(errorCell.isError).toEqual(true)
+    expect(errorCell.style).toEqual("faded")
   })
 })
 
@@ -78,6 +97,84 @@ describe("isErrorCell", () => {
       allowOverlay: true,
     }
     expect(isErrorCell(textCell)).toEqual(false)
+  })
+})
+
+describe("valuesEqual", () => {
+  it("treats null and undefined as equal", () => {
+    const column = TextColumn(MOCK_TEXT_COLUMN_PROPS)
+
+    expect(valuesEqual(null, undefined, column)).toBe(true)
+    expect(valuesEqual(null, "", column)).toBe(false)
+  })
+
+  it("uses Object.is for default comparisons", () => {
+    const column = TextColumn(MOCK_TEXT_COLUMN_PROPS)
+
+    expect(valuesEqual("foo", "foo", column)).toBe(true)
+    expect(valuesEqual("foo", "bar", column)).toBe(false)
+    expect(valuesEqual(Number.NaN, Number.NaN, column)).toBe(true)
+  })
+
+  it("uses array equality for list columns", () => {
+    const column = ListColumn(MOCK_TEXT_COLUMN_PROPS)
+
+    expect(valuesEqual(["foo", "bar"], ["foo", "bar"], column)).toBe(true)
+    expect(valuesEqual(["foo", "bar"], ["bar", "foo"], column)).toBe(false)
+  })
+
+  it("uses JSON string equality for JSON columns", () => {
+    const column = JsonColumn(MOCK_TEXT_COLUMN_PROPS)
+
+    expect(valuesEqual({ foo: "bar" }, { foo: "bar" }, column)).toBe(true)
+    expect(valuesEqual({ foo: "bar" }, { foo: "baz" }, column)).toBe(false)
+  })
+
+  it("uses timestamp equality for datetime columns", () => {
+    const column = DateTimeColumn(MOCK_TEXT_COLUMN_PROPS)
+
+    expect(
+      valuesEqual("2024-01-01T00:00:00.000Z", "2024-01-01T00:00:00Z", column)
+    ).toBe(true)
+    expect(
+      valuesEqual("2024-01-01T00:00:00Z", "2024-01-02T00:00:00Z", column)
+    ).toBe(false)
+  })
+
+  it("uses numeric equality for number columns", () => {
+    const column = NumberColumn(MOCK_TEXT_COLUMN_PROPS)
+
+    expect(valuesEqual("5", 5, column)).toBe(true)
+    expect(valuesEqual("5", 6, column)).toBe(false)
+  })
+
+  it("falls back to identity comparison when a comparator throws", () => {
+    // JSON columns serialize via JSON.stringify, which throws on circular
+    // structures. The central valuesEqual should catch that and fall back to
+    // an identity check instead of propagating the error.
+    const column = JsonColumn(MOCK_TEXT_COLUMN_PROPS)
+
+    const circular: Record<string, unknown> = { foo: "bar" }
+    circular.self = circular
+
+    expect(valuesEqual(circular, circular, column)).toBe(true)
+    expect(valuesEqual(circular, { foo: "bar" }, column)).toBe(false)
+  })
+})
+
+describe("arrayValuesEqual", () => {
+  it.each([
+    [["a", "b"], ["a", "b"], true],
+    [[], [], true],
+    [["a", "b"], ["a", "c"], false],
+    [["a"], ["a", "b"], false],
+    // Non-array inputs are never considered equal
+    ["not-an-array", ["a"], false],
+    [["a"], "not-an-array", false],
+    [null, ["a"], false],
+    [["a"], undefined, false],
+  ])("compares %s and %s and returns %s", (a, b, expected) => {
+    expect(arrayValuesEqual(a, b)).toBe(expected)
   })
 })
 
@@ -120,6 +217,8 @@ describe("toSafeArray", () => {
     ["foo,bar,,", ["foo", "bar", "", ""]],
     // JSON Array syntax
     [`["foo","bar"]`, ["foo", "bar"]],
+    // Malformed JSON array falls back to the raw string
+    ["[foo]", ["[foo]"]],
     // non-string values
     [0, [0]],
     [1, [1]],
@@ -133,8 +232,60 @@ describe("toSafeArray", () => {
       [true, false],
       [true, false],
     ],
-  ])("converts %p to a valid array: %p", (input, expected) => {
+    // Plain objects are serialized into a single stringified element
+    [{ foo: "bar" }, ["[object Object]"]],
+  ])("converts %s to a valid array: %s", (input, expected) => {
     expect(toSafeArray(input)).toEqual(expected)
+  })
+
+  it("returns a stringified fallback when the value cannot be JSON serialized", () => {
+    const circular: Record<string, unknown> = {}
+    circular.self = circular
+
+    expect(toSafeArray(circular)).toEqual(["[object Object]"])
+  })
+})
+
+describe("isEditableArrayValue", () => {
+  it.each([
+    // strings
+    ["foo", true],
+    [new String("bar"), true],
+    // arrays
+    [["a", "b"], true],
+    [[new String("a"), new String("b")], true],
+    [[], true],
+    [["a", 1], false],
+    [[1, 2, 3], false],
+    // numbers/booleans/objects
+    [123, false],
+    [true, false],
+    [false, false],
+    [{ foo: "bar" }, false],
+    [null, false],
+    [undefined, false],
+    // Apache Arrow vectors
+    [makeVector(Int32Array.from([1, 2, 3])), false],
+  ])("interprets %s as editable array value: %s", (input, expected) => {
+    expect(isEditableArrayValue(input)).toBe(expected)
+  })
+})
+
+describe("arrayToCopyValue", () => {
+  it.each([
+    [null, ""],
+    [undefined, ""],
+    [[], ""],
+    [["a"], "a"],
+    [["a", "b"], "a,b"],
+    // commas inside values are replaced by spaces before joining
+    [["a,b"], "a b"],
+    [["a,b", "c,d"], "a b,c d"],
+    [[1, "a,b"], "1,a b"],
+    [["hello,world", 42, true], "hello world,42,true"],
+    [[{ foo: "bar" }], "[object Object]"],
+  ])("converts %s to copy string '%s'", (input, expected) => {
+    expect(arrayToCopyValue(input as unknown[])).toBe(expected)
   })
 })
 
@@ -159,7 +310,7 @@ describe("toSafeString", () => {
       },
       "[object Object]",
     ],
-  ])("converts %p to a valid string: %p", (input, expected) => {
+  ])("converts %s to a valid string: %s", (input, expected) => {
     expect(toSafeString(input)).toEqual(expected)
   })
 })
@@ -190,7 +341,7 @@ describe("toSafeBoolean", () => {
     [12345, undefined],
     [[1, 2], undefined],
     [0.1, undefined],
-  ])("converts %p to a boolean: %p", (input, expected) => {
+  ])("converts %s to a boolean: %s", (input, expected) => {
     expect(toSafeBoolean(input)).toEqual(expected)
   })
 })
@@ -226,134 +377,11 @@ describe("toSafeNumber", () => {
     [".1312314", 0.1312314],
     [true, 1],
     [false, 0],
-  ])("converts %p to a valid number: %p", (input, expected) => {
+    // Int32Array values are read from the first element
+    [Int32Array.from([42, 7]), 42],
+  ])("converts %s to a valid number: %s", (input, expected) => {
     expect(toSafeNumber(input)).toEqual(expected)
   })
-})
-
-describe("formatNumber", () => {
-  it.each([
-    [10, "10"],
-    [10.1, "10.1"],
-    [10.123, "10.123"],
-    [10.1234, "10.1234"],
-    // Rounds to 4 decimals
-    [10.12346, "10.1235"],
-  ])(
-    "formats %p to %p with default options (no trailing zeros)",
-    (value, expected) => {
-      expect(formatNumber(value)).toEqual(expected)
-    }
-  )
-
-  it.each([
-    [10, 0, "10"],
-    [10, 4, "10.0000"],
-    [10.123, 0, "10"],
-    [10.123, 1, "10.1"],
-    [10.123, 2, "10.12"],
-    [10.123, 3, "10.123"],
-    [10.123, 4, "10.1230"],
-    [10.123, 5, "10.12300"],
-    [0.123, 0, "0"],
-    [0.123, 1, "0.1"],
-  ])(
-    "formats %p to %p with %p decimals (keeps trailing zeros)",
-    (value, decimals, expected) => {
-      expect(formatNumber(value, undefined, decimals)).toEqual(expected)
-    }
-  )
-
-  it.each([
-    [0.5, "percent", "50.00%"],
-    [0.51236, "percent", "51.24%"],
-    [1.1, "percent", "110.00%"],
-    [0, "percent", "0.00%"],
-    [0.00001, "percent", "0.00%"],
-    [1000, "compact", "1K"],
-    [1100, "compact", "1.1K"],
-    [10, "compact", "10"],
-    [10.123, "compact", "10"],
-    [123456789, "compact", "123M"],
-    [1000, "scientific", "1E3"],
-    [123456789, "scientific", "1.235E8"],
-    [1000, "engineering", "1E3"],
-    [123456789, "engineering", "123.457E6"],
-    [10, "duration[ns]", "a few seconds"],
-    [1234567891234, "duration[ns]", "21 minutes"],
-    [10, "period[ms]", "1970-01-01 00:00:00.010"],
-    [10, "period[s]", "1970-01-01 00:00:10"],
-    [10, "period[min]", "1970-01-01 00:10"],
-    [10, "period[h]", "1970-01-01 10:00"],
-    [10, "period[D]", "1970-01-11"],
-    [10, "period[M]", "1970-11"],
-    [10, "period[Y]", "1980"],
-    [10, "period[Q]", "1972Q3"],
-    // sprintf format
-    [10.123, "%d", "10"],
-    [10.123, "%i", "10"],
-    [10.123, "%u", "10"],
-    [10.123, "%f", "10.123"],
-    [10.123, "%g", "10.123"],
-    [10, "$%.2f", "$10.00"],
-    [10.126, "$%.2f", "$10.13"],
-    [10.123, "%.2f€", "10.12€"],
-    [10.126, "($%.2f)", "($10.13)"],
-    [65, "%d years", "65 years"],
-    [1234567898765432, "%d ⭐", "1234567898765432 ⭐"],
-    [72.3, "%.1f%%", "72.3%"],
-    [-5.678, "%.1f", "-5.7"],
-    [0.123456, "%.4f", "0.1235"],
-    [0.123456, "%.4g", "0.1235"],
-    // Test boolean formatting:
-    [1, "%t", "true"],
-    [0, "%t", "false"],
-    // Test zero-padding for integers
-    [42, "%05d", "00042"],
-    // Test scientific notations:
-    [1234.5678, "%.2e", "1.23e+3"],
-    [0.000123456, "%.2e", "1.23e-4"],
-    // Test hexadecimal representation:
-    [255, "%x", "ff"],
-    [255, "%X", "FF"],
-    [4096, "%X", "1000"],
-    // Test octal representation:
-    [8, "%o", "10"],
-    [64, "%o", "100"],
-    // Test fixed width formatting:
-    [12345, "%8d", "   12345"],
-    [12.34, "%8.2f", "   12.34"],
-    [12345, "%'_8d", "___12345"],
-    // Test left-justified formatting:
-    [12345, "%-8d", "12345   "],
-    [12.34, "%-8.2f", "12.34   "],
-    // Test prefixing with plus sign:
-    [42, "%+d", "+42"],
-    [-42, "%+d", "-42"],
-  ])("formats %p with format %p to '%p'", (value, format, expected) => {
-    expect(formatNumber(value, format)).toEqual(expected)
-  })
-
-  it.each([
-    [10, "%d %d"],
-    [1234567.89, "%'_,.2f"],
-    [1234.5678, "%+.2E"],
-    [0.000123456, "%+.2E"],
-    [-0.000123456, "%+.2E"],
-    [255, "%#x"],
-    [4096, "%#X"],
-    [42, "% d"],
-    [1000, "%,.0f"],
-    [25000.25, "$%,.2f"],
-    [9876543210, "%,.0f"],
-  ])(
-    "cannot format %p using the invalid sprintf format %p",
-    (input: number, format: string) => {
-      expect(() => {
-        formatNumber(input, format)
-      }).toThrow()
-    }
-  )
 })
 
 describe("mergeColumnParameters", () => {
@@ -393,6 +421,7 @@ describe("toGlideColumn", () => {
       id: MOCK_TEXT_COLUMN_PROPS.id,
       title: MOCK_TEXT_COLUMN_PROPS.title,
       hasMenu: false,
+      menuIcon: "dots",
       themeOverride: MOCK_TEXT_COLUMN_PROPS.themeOverride,
       grow: undefined,
       width: undefined,
@@ -405,16 +434,16 @@ describe("toGlideColumn", () => {
       isStretched: true,
     })
 
-    expect(toGlideColumn(textColumn).grow).toEqual(3)
+    expect(toGlideColumn(textColumn).grow).toEqual(1)
 
-    // Create index column:
+    // Pinned columns should not use grow:
     const indexColumn = TextColumn({
       ...MOCK_TEXT_COLUMN_PROPS,
       isStretched: true,
-      isIndex: true,
+      isPinned: true,
     })
 
-    expect(toGlideColumn(indexColumn).grow).toEqual(1)
+    expect(toGlideColumn(indexColumn).grow).toEqual(undefined)
   })
 })
 
@@ -426,6 +455,8 @@ describe("toSafeDate", () => {
   it.each([
     // valid date object
     [new Date("2023-04-25"), new Date("2023-04-25")],
+    // invalid date object
+    [new Date("not-a-real-date"), undefined],
     // undefined value
     [undefined, null],
     // null value
@@ -478,7 +509,7 @@ describe("toSafeDate", () => {
     ["2023-04-25 10:30 AM", new Date("2023-04-25T10:30:00.000Z")],
     // valid Unix timestamp in seconds as a string
     ["1671951600", new Date("2022-12-25T07:00:00.000Z")],
-  ])("converts input %p to the correct date %p", (input, expectedOutput) => {
+  ])("converts input %s to the correct date %s", (input, expectedOutput) => {
     expect(toSafeDate(input)).toEqual(expectedOutput)
   })
 })
@@ -496,10 +527,10 @@ describe("countDecimals", () => {
     [0.0000000000000000001, 19],
     [-0.12345, 5],
     [123456789432, 0],
-    // eslint-disable-next-line  @typescript-eslint/no-loss-of-precision
+    // eslint-disable-next-line no-loss-of-precision
     [123456789876543212312313, 0],
     // It is expected that very large and small numbers won't work correctly:
-    // eslint-disable-next-line  @typescript-eslint/no-loss-of-precision
+    // eslint-disable-next-line no-loss-of-precision
     [1234567898765432.1, 0],
     [0.0000000000000000000001, 0],
     [1.234567890123456e-20, 20],
@@ -522,82 +553,256 @@ describe("truncateDecimals", () => {
     [42, 0, 42],
     [-42, 0, -42],
     [0.1 + 0.2, 2, 0.3],
+    [4.52, 2, 4.52],
+    [0.0099999, 2, 0.0],
+    // Non-finite values are returned unchanged
+    [Infinity, 2, Infinity],
+    [-Infinity, 2, -Infinity],
   ])(
     "truncates value %f to %i decimal places, resulting in %f",
     (value, decimals, expected) => {
       expect(truncateDecimals(value, decimals)).toBe(expected)
     }
   )
+
+  it("returns NaN unchanged", () => {
+    expect(truncateDecimals(NaN, 2)).toBeNaN()
+  })
 })
 
-describe("formatMoment", () => {
-  beforeAll(() => {
-    jest.useFakeTimers("modern")
-    jest.setSystemTime(new Date("2022-04-28T00:00:00Z"))
-    timezoneMock.register("UTC")
-  })
+it("removeLineBreaks should remove line breaks", () => {
+  expect(removeLineBreaks("\n")).toBe(" ")
+  expect(removeLineBreaks("\nhello\n\nworld")).toBe(" hello  world")
+})
 
-  afterAll(() => {
-    jest.useRealTimers()
-    timezoneMock.unregister()
-  })
-
+describe("getLinkDisplayValueFromRegex", () => {
   it.each([
     [
-      "YYYY-MM-DD HH:mm:ss z",
-      moment.utc("2023-04-27T10:20:30Z"),
-      "2023-04-27 10:20:30 UTC",
+      new RegExp("https://(.*?).streamlit.app"),
+      "https://example.streamlit.app",
+      "example",
     ],
     [
-      "YYYY-MM-DD HH:mm:ss z",
-      moment.utc("2023-04-27T10:20:30Z").tz("America/Los_Angeles"),
-      "2023-04-27 03:20:30 PDT",
+      new RegExp("https://(.*?).streamlit.app"),
+      "https://my-cool-app.streamlit.app",
+      "my-cool-app",
     ],
     [
-      "YYYY-MM-DD HH:mm:ss Z",
-      moment.utc("2023-04-27T10:20:30Z").tz("America/Los_Angeles"),
-      "2023-04-27 03:20:30 -07:00",
+      new RegExp("https://(.*?).streamlit.app"),
+      "https://example.streamlit.app?param=value",
+      "example",
     ],
     [
-      "YYYY-MM-DD HH:mm:ss Z",
-      moment.utc("2023-04-27T10:20:30Z").utcOffset("+04:00"),
-      "2023-04-27 14:20:30 +04:00",
+      new RegExp("https://(.*?).streamlit.app"),
+      "https://example.streamlit.app?param1=value1&param2=value2",
+      "example",
     ],
-    ["YYYY-MM-DD", moment.utc("2023-04-27T10:20:30Z"), "2023-04-27"],
+    [new RegExp("id=(.*?)&"), "https://example.com?id=123&type=user", "123"],
     [
-      "MMM Do, YYYY [at] h:mm A",
-      moment.utc("2023-04-27T15:45:00Z"),
-      "Apr 27th, 2023 at 3:45 PM",
+      new RegExp("[?&]user=(.*?)(?:&|$)"),
+      "https://example.com?page=1&user=john_doe&sort=desc",
+      "john_doe",
     ],
     [
-      "MMMM Do, YYYY Z",
-      moment.utc("2023-04-27T10:20:30Z").utcOffset("-02:30"),
-      "April 27th, 2023 -02:30",
+      new RegExp("https://(.*?).streamlit.app"),
+      "https://my%20cool%20app.streamlit.app",
+      "my cool app",
     ],
-    // Distance:
-    ["distance", moment.utc("2022-04-10T20:20:30Z"), "17 days ago"],
-    ["distance", moment.utc("2020-04-10T20:20:30Z"), "2 years ago"],
-    ["distance", moment.utc("2022-04-27T23:59:59Z"), "a few seconds ago"],
-    ["distance", moment.utc("2022-04-20T00:00:00Z"), "8 days ago"],
-    ["distance", moment.utc("2022-05-27T23:59:59Z"), "in a month"],
-    ["relative", moment.utc("2022-04-30T15:30:00Z"), "Saturday at 3:30 PM"],
-    // Relative:
     [
-      "relative",
-      moment.utc("2022-04-24T12:20:30Z"),
-      "Last Sunday at 12:20 PM",
+      new RegExp("https://(.*?).streamlit.app"),
+      "https://special%21chars%40app.streamlit.app",
+      "special!chars@app",
     ],
-    ["relative", moment.utc("2022-04-28T12:00:00Z"), "Today at 12:00 PM"],
-    ["relative", moment.utc("2022-04-29T12:00:00Z"), "Tomorrow at 12:00 PM"],
+    [
+      new RegExp("user=(.*?)(?:&|$)"),
+      "https://example.com?user=john%20doe%40email.com",
+      "john doe@email.com",
+    ],
+    [
+      new RegExp("name=(.*?)&"),
+      "https://example.com?name=%E2%9C%A8special%20user%E2%9C%A8&type=vip",
+      "✨special user✨",
+    ],
+    [
+      new RegExp("q=(.*?)&"),
+      "https://example.com?q=%D0%BF%D1%80%D0%B8%D0%B2%D0%B5%D1%82&lang=ru",
+      "привет",
+    ],
+    [
+      new RegExp("path/(.*?)/"),
+      "https://example.com/path/user%20name%20%26%20company/settings",
+      "user name & company",
+    ],
+    [
+      new RegExp("search/(.*?)\\?"),
+      "https://example.com/search/space%20%26%20time?page=1",
+      "space & time",
+    ],
+    [
+      new RegExp("https://(.*?).other.app"),
+      "https://example.streamlit.app",
+      "https://example.streamlit.app",
+    ],
+    [new RegExp("https://(.*?).streamlit.app"), null, ""],
+    [new RegExp("https://(.*?).streamlit.app"), undefined, ""],
+    [
+      new RegExp(".*meal=(.*)"),
+      "https://example.com/feedme?meal=fish+%26+chips%3A+%C2%A39",
+      "fish & chips: £9",
+    ],
   ])(
-    "uses %s format to format %p to %p",
-    (format: string, momentDate: Moment, expected: string) => {
-      expect(formatMoment(momentDate, format)).toBe(expected)
+    "extracts display value from %s with href %s to be %s",
+    (regex: RegExp, href: string | null | undefined, expected: string) => {
+      expect(getLinkDisplayValueFromRegex(regex, href)).toBe(expected)
     }
   )
 })
 
-test("removeLineBreaks should remove line breaks", () => {
-  expect(removeLineBreaks("\n")).toBe(" ")
-  expect(removeLineBreaks("\nhello\n\nworld")).toBe(" hello  world")
+describe("toJsonString", () => {
+  it.each([
+    // Simple values
+    ["hello", "hello"],
+    [123, "123"],
+    [true, "true"],
+    [false, "false"],
+    [null, ""],
+    [undefined, ""],
+    // Arrays
+    [[1, 2, 3], "[1,2,3]"],
+    [["a", "b", "c"], '["a","b","c"]'],
+    [[1, "a", true], '[1,"a",true]'],
+    // Objects
+    [{ a: 1, b: 2 }, '{"a":1,"b":2}'],
+    [{ name: "test", active: true }, '{"name":"test","active":true}'],
+    // Nested structures
+    [{ arr: [1, 2, { x: "y" }] }, '{"arr":[1,2,{"x":"y"}]}'],
+    // BigInt handling
+    [BigInt(123), "123"],
+    [{ big: BigInt(9007199254740991) }, '{"big":9007199254740991}'],
+    // Already stringified JSON
+    ['{"test":123}', '{"test":123}'],
+    // Circular reference (should use toSafeString fallback)
+    [
+      (() => {
+        const circular: Record<string, unknown> = { a: 1 }
+        circular.self = circular
+        return circular
+      })(),
+      "[object Object]",
+    ],
+  ])("converts %o to JSON string %s", (input: unknown, expected: string) => {
+    expect(toJsonString(input)).toBe(expected)
+  })
+})
+
+describe("hasTooltip", () => {
+  it("returns true for cells with non-empty tooltip", () => {
+    const cellWithTooltip = {
+      kind: GridCellKind.Text,
+      data: "test",
+      allowOverlay: true,
+      tooltip: "This is a tooltip",
+    }
+    expect(hasTooltip(cellWithTooltip)).toBe(true)
+  })
+
+  it("returns false for cells with empty tooltip", () => {
+    const cellWithEmptyTooltip = {
+      kind: GridCellKind.Text,
+      data: "test",
+      allowOverlay: true,
+      tooltip: "",
+    }
+    expect(hasTooltip(cellWithEmptyTooltip)).toBe(false)
+  })
+
+  it("returns false for cells without tooltip property", () => {
+    const cellWithoutTooltip = {
+      kind: GridCellKind.Text,
+      data: "test",
+      allowOverlay: true,
+    }
+    expect(hasTooltip(cellWithoutTooltip)).toBe(false)
+  })
+})
+
+describe("isMaybeJson", () => {
+  it.each([
+    ['{"key": "value"}', true],
+    ["{}", true],
+    ['{"nested": {"a": 1}}', true],
+    ["{invalid json}", true], // Still looks like JSON (starts with { ends with })
+  ])(
+    "returns true for string starting with { and ending with }: %p",
+    (input, expected) => {
+      expect(isMaybeJson(input)).toBe(expected)
+    }
+  )
+
+  it.each([
+    ["plain text", false],
+    ["[1, 2, 3]", false], // Arrays don't start with {
+    ["", false],
+    ["{ missing end", false],
+    ["missing start }", false],
+    [" {padded} ", false], // Has spaces around
+  ])(
+    "returns false for string not starting with { or not ending with }: %p",
+    input => {
+      expect(isMaybeJson(input)).toBeFalsy()
+    }
+  )
+
+  it("returns false for null and undefined values", () => {
+    expect(isMaybeJson(null)).toBe(false)
+    expect(isMaybeJson(undefined)).toBe(false)
+  })
+})
+
+describe("getTextCell with different parameters", () => {
+  it("creates a non-faded text cell", () => {
+    const textCell = getTextCell(false, false)
+    expect(textCell.style).toBe("normal")
+    expect(textCell.readonly).toBe(false)
+  })
+
+  it("creates a faded text cell", () => {
+    const textCell = getTextCell(true, true)
+    expect(textCell.style).toBe("faded")
+    expect(textCell.readonly).toBe(true)
+  })
+})
+
+describe("mergeColumnParameters edge cases", () => {
+  it("returns empty object when both params are null", () => {
+    const merged = mergeColumnParameters(null, null)
+    expect(merged).toEqual({})
+  })
+
+  it("returns userParams when defaultParams is undefined", () => {
+    const userParams = { foo: "bar" }
+    const merged = mergeColumnParameters(undefined, userParams)
+    expect(merged).toEqual(userParams)
+  })
+
+  it("returns defaultParams when userParams is undefined", () => {
+    const defaultParams = { foo: "bar" }
+    const merged = mergeColumnParameters(defaultParams, undefined)
+    expect(merged).toEqual(defaultParams)
+  })
+
+  it("deeply merges nested objects", () => {
+    const defaultParams = {
+      nested: { a: 1, b: 2 },
+      top: "value",
+    }
+    const userParams = {
+      nested: { b: 3, c: 4 },
+    }
+    const merged = mergeColumnParameters(defaultParams, userParams)
+    expect(merged).toEqual({
+      nested: { a: 1, b: 3, c: 4 },
+      top: "value",
+    })
+  })
 })

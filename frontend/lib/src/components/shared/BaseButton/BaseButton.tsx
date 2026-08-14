@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,52 +14,73 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
+import { forwardRef, ReactElement, Ref } from "react"
+
 import {
-  BaseButtonProps as BaseButtonPropsT,
   BaseButtonKind,
+  BaseButtonProps as BaseButtonPropsT,
   BaseButtonSize,
   StyledBorderlessIconButton,
-  StyledIconButton,
-  StyledLinkButton,
-  StyledMinimalButton,
-  StyledPrimaryButton,
-  StyledSecondaryButton,
-  StyledTertiaryButton,
-  StyledPrimaryFormSubmitButton,
-  StyledSecondaryFormSubmitButton,
+  StyledBorderlessIconButtonActive,
+  StyledElementToolbarButton,
+  StyledGhostButton,
   StyledHeaderButton,
   StyledHeaderNoPaddingButton,
-  StyledElementToolbarButton,
+  StyledMinimalButton,
+  StyledPillsButton,
+  StyledPillsButtonActive,
+  StyledPrimaryButton,
+  StyledPrimaryFormSubmitButton,
+  StyledSecondaryButton,
+  StyledSecondaryFormSubmitButton,
+  StyledSegmentedControlButton,
+  StyledSegmentedControlButtonActive,
+  StyledTertiaryButton,
+  StyledTertiaryFormSubmitButton,
 } from "./styled-components"
 
-function BaseButton({
-  kind,
-  size,
-  disabled,
-  onClick,
-  fluidWidth,
-  children,
-  autoFocus,
-}: BaseButtonPropsT): ReactElement {
+const BaseButton = forwardRef(function BaseButton(
+  props: Readonly<BaseButtonPropsT>,
+  ref: Ref<HTMLButtonElement>
+): ReactElement {
+  const {
+    kind,
+    size,
+    disabled,
+    onClick,
+    containerWidth,
+    children,
+    autoFocus,
+  } = props
+
   let ComponentType = StyledPrimaryButton
 
   if (kind === BaseButtonKind.SECONDARY) {
     ComponentType = StyledSecondaryButton
   } else if (kind === BaseButtonKind.TERTIARY) {
     ComponentType = StyledTertiaryButton
-  } else if (kind === BaseButtonKind.LINK) {
-    ComponentType = StyledLinkButton
-  } else if (kind === BaseButtonKind.ICON) {
-    ComponentType = StyledIconButton
+  } else if (kind === BaseButtonKind.GHOST) {
+    ComponentType = StyledGhostButton
+  } else if (kind === BaseButtonKind.PILLS) {
+    ComponentType = StyledPillsButton
+  } else if (kind === BaseButtonKind.PILLS_ACTIVE) {
+    ComponentType = StyledPillsButtonActive
+  } else if (kind === BaseButtonKind.SEGMENTED_CONTROL) {
+    ComponentType = StyledSegmentedControlButton
+  } else if (kind === BaseButtonKind.SEGMENTED_CONTROL_ACTIVE) {
+    ComponentType = StyledSegmentedControlButtonActive
   } else if (kind === BaseButtonKind.BORDERLESS_ICON) {
     ComponentType = StyledBorderlessIconButton
+  } else if (kind === BaseButtonKind.BORDERLESS_ICON_ACTIVE) {
+    ComponentType = StyledBorderlessIconButtonActive
   } else if (kind === BaseButtonKind.MINIMAL) {
     ComponentType = StyledMinimalButton
   } else if (kind === BaseButtonKind.PRIMARY_FORM_SUBMIT) {
     ComponentType = StyledPrimaryFormSubmitButton
   } else if (kind === BaseButtonKind.SECONDARY_FORM_SUBMIT) {
     ComponentType = StyledSecondaryFormSubmitButton
+  } else if (kind === BaseButtonKind.TERTIARY_FORM_SUBMIT) {
+    ComponentType = StyledTertiaryFormSubmitButton
   } else if (kind === BaseButtonKind.HEADER_BUTTON) {
     ComponentType = StyledHeaderButton
   } else if (kind === BaseButtonKind.HEADER_NO_PADDING) {
@@ -70,18 +91,22 @@ function BaseButton({
 
   return (
     <ComponentType
+      ref={ref}
       kind={kind}
-      size={size || BaseButtonSize.MEDIUM}
-      fluidWidth={fluidWidth || false}
+      size={size ?? BaseButtonSize.MEDIUM}
+      containerWidth={containerWidth || false}
       disabled={disabled || false}
       onClick={onClick || (() => {})}
       autoFocus={autoFocus || false}
-      data-testid={`baseButton-${kind}`}
+      data-testid={props["data-testid"] ?? `stBaseButton-${kind}`}
+      aria-label={props["aria-label"] ?? ""}
+      aria-haspopup={props["aria-haspopup"]}
+      aria-expanded={props["aria-expanded"]}
     >
       {children}
     </ComponentType>
   )
-}
+})
 export type BaseButtonProps = BaseButtonPropsT
 export { BaseButtonKind, BaseButtonSize }
 export default BaseButton

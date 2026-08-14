@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,10 @@
  * limitations under the License.
  */
 
-import React from "react"
-import { BaseProvider, LightTheme } from "baseui"
-import "@testing-library/jest-dom"
 import { screen } from "@testing-library/react"
-import { render } from "@streamlit/lib"
+import { BaseProvider, LightTheme } from "baseui"
+
+import { render } from "@streamlit/lib/testing"
 
 import UnsupportedBrowserDialog from "./UnsupportedBrowserDialog"
 
@@ -30,14 +29,14 @@ describe("UnsupportedBrowserDialog", () => {
       </BaseProvider>
     )
 
-    expect(screen.getByTestId("stModal")).toBeInTheDocument()
+    expect(screen.getByTestId("stDialog")).toBeInTheDocument()
     expect(
       screen.getByTestId("stUnsupportedBrowserDialog")
     ).toBeInTheDocument()
   })
 
   it("should render a header", () => {
-    const onClose = jest.fn()
+    const onClose = vi.fn()
     render(
       <BaseProvider theme={LightTheme}>
         <UnsupportedBrowserDialog onClose={onClose} />

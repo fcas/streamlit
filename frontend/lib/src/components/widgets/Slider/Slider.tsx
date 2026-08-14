@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,419 +14,705 @@
  * limitations under the License.
  */
 
-import React from "react"
-import pick from "lodash/pick"
-import { StyleProps, Slider as UISlider } from "baseui/slider"
-import { withTheme } from "@emotion/react"
-import { sprintf } from "sprintf-js"
-import { FormClearHelper } from "@streamlit/lib/src/components/widgets/Form"
 import {
-  WidgetStateManager,
-  Source,
-} from "@streamlit/lib/src/WidgetStateManager"
-import { Slider as SliderProto } from "@streamlit/lib/src/proto"
-import {
-  debounce,
-  labelVisibilityProtoValueToEnum,
-} from "@streamlit/lib/src/util/utils"
+  memo,
+  ReactElement,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react"
+
 import moment from "moment"
+
+import { Slider as SliderProto } from "@streamlit/protobuf"
+
+import { withCalculatedWidth } from "~lib/components/core/Layout/withCalculatedWidth"
+import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown/StreamlitMarkdown"
+import { WidgetLabel } from "~lib/components/widgets/BaseWidget/WidgetLabel"
+import { WidgetLabelHelpIcon } from "~lib/components/widgets/BaseWidget/WidgetLabelHelpIcon"
 import {
-  WidgetLabel,
-  StyledWidgetLabelHelp,
-} from "@streamlit/lib/src/components/widgets/BaseWidget"
-import TooltipIcon from "@streamlit/lib/src/components/shared/TooltipIcon"
-import { Placement } from "@streamlit/lib/src/components/shared/Tooltip"
-import { EmotionTheme } from "@streamlit/lib/src/theme"
+  useBasicWidgetState,
+  ValueWithSource,
+} from "~lib/hooks/useBasicWidgetState"
 import {
+  arrayComparator,
+  useExecuteWhenChanged,
+} from "~lib/hooks/useExecuteWhenChanged"
+import { formatMoment, MomentKind } from "~lib/util/formatMoment"
+import { formatNumber } from "~lib/util/formatNumber"
+import { labelVisibilityProtoValueToEnum } from "~lib/util/utils"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import {
+  StyledRASlider,
+  StyledSlider,
+  StyledSliderTickBar,
+  StyledSliderTrack,
+  StyledSliderTrackLine,
   StyledThumb,
   StyledThumbValue,
-  StyledTickBar,
-  StyledTickBarItem,
 } from "./styled-components"
 
-const DEBOUNCE_TIME_MS = 200
+interface SliderTickBarProps {
+  minLabel: string
+  maxLabel: string
+  isHovered: boolean
+  isDisabled: boolean
+}
+
+function SliderTickBar({
+  minLabel,
+  maxLabel,
+  isHovered,
+  isDisabled,
+}: SliderTickBarProps): ReactElement {
+  return (
+    <StyledSliderTickBar
+      data-testid="stSliderTickBar"
+      isHovered={isHovered}
+      isDisabled={isDisabled}
+    >
+      <StreamlitMarkdown
+        source={minLabel}
+        allowHTML={false}
+        inheritFont
+        isLabel
+      />
+      <StreamlitMarkdown
+        source={maxLabel}
+        allowHTML={false}
+        inheritFont
+        isLabel
+      />
+    </StyledSliderTickBar>
+  )
+}
 
 export interface Props {
   disabled: boolean
   element: SliderProto
-  theme: EmotionTheme
   widgetMgr: WidgetStateManager
   width: number
   fragmentId?: string
 }
 
-interface State {
-  /**
-   * The value specified by the user via the UI. If the user didn't touch this
-   * widget's UI, the default value is used.
-   */
-  value: number[]
+/**
+ * Check if this is a select_slider (options-based) rather than a numeric slider.
+ */
+function isSelectSlider(element: SliderProto): boolean {
+  return element.type === SliderProto.Type.SELECT_SLIDER
 }
 
-class Slider extends React.PureComponent<Props, State> {
-  private readonly formClearHelper = new FormClearHelper()
+/**
+ * Convert string values (formatted options) to indices for select_slider.
+ * Returns the indices in the options array that correspond to the string values.
+ */
+function stringValuesToIndices(
+  stringValues: string[],
+  options: string[],
+  defaultIndices: number[]
+): number[] {
+  return stringValues.map((str, i) => {
+    const index = options.indexOf(str)
+    // If not found, fall back to default index for this position
+    return index >= 0 ? index : (defaultIndices[i] ?? 0)
+  })
+}
 
-  public state: State
+/**
+ * Convert indices to string values (formatted options) for select_slider.
+ */
+function indicesToStringValues(
+  indices: number[],
+  options: string[]
+): string[] {
+  return indices.map(i => options[i] ?? "")
+}
 
-  private sliderRef = React.createRef<HTMLDivElement>()
+/** Normalize RA's onChange/onChangeEnd value (number | number[]) to number[]. */
+const toArray = (v: number | number[]): number[] =>
+  Array.isArray(v) ? v : [v]
 
-  private thumbRef: React.MutableRefObject<HTMLDivElement>[] = []
+function Slider({
+  disabled,
+  element,
+  widgetMgr,
+  fragmentId,
+}: Props): ReactElement {
+  const queryParamBinding = element.queryParamKey
+    ? {
+        paramKey: element.queryParamKey,
+        valueType: isSelectSlider(element)
+          ? ("string_array_value" as const)
+          : ("double_array_value" as const),
+        clearable: false,
+        urlFormat: "repeated" as const,
+        // select_slider stores indices internally but uses formatted option
+        // strings in URLs, so provide the default in URL-compatible format.
+        urlDefault: isSelectSlider(element)
+          ? indicesToStringValues(element.default, element.options)
+          : undefined,
+        // Date/time/datetime sliders format microsecond timestamps as ISO
+        // strings in URLs (e.g., ?date=2024-06-15 instead of raw micros).
+        dateType: isDateTimeType(element) ? getMomentKind(element) : undefined,
+      }
+    : undefined
 
-  private thumbValueRef: React.RefObject<HTMLDivElement>[] = []
+  const [value, setValueWithSource] = useBasicWidgetState<
+    number[],
+    SliderProto
+  >({
+    getStateFromWidgetMgr,
+    getDefaultStateFromProto,
+    getCurrStateFromProto,
+    updateWidgetMgrState,
+    element,
+    widgetMgr,
+    fragmentId,
+    formClearBehavior: "resetValueOnly",
+    queryParamBinding,
+  })
 
-  private readonly commitWidgetValueDebounced: (source: Source) => void
+  // We tie the UI to `uiValue` rather than `value` because `value` only
+  // updates when the user is done interacting with the slider. If we tied
+  // the UI to `value` then the UI would only update when the user is done
+  // interacting. So this keeps the UI smooth.
+  const [uiValue, setUiValue] = useState(value)
+  const [isHovered, setIsHovered] = useState(false)
+  const [isDragging, setIsDragging] = useState(false)
 
-  public constructor(props: Props) {
-    super(props)
-    this.commitWidgetValueDebounced = debounce(
-      DEBOUNCE_TIME_MS,
-      this.commitWidgetValue.bind(this)
-    )
-    this.state = { value: this.initialValue }
-  }
+  const handleMouseEnter = useCallback(() => setIsHovered(true), [])
+  const handleMouseLeave = useCallback(() => setIsHovered(false), [])
 
-  get initialValue(): number[] {
-    const storedValue = this.props.widgetMgr.getDoubleArrayValue(
-      this.props.element
-    )
-    return storedValue !== undefined ? storedValue : this.props.element.default
-  }
+  const sliderRef = useRef<HTMLDivElement | null>(null)
+  // Single refs holding arrays — RA thumbs are direct children of SliderTrack
+  const thumbsRef = useRef<(HTMLDivElement | null)[]>([])
+  const thumbValuesRef = useRef<(HTMLDivElement | null)[]>([])
 
-  public componentDidMount(): void {
-    // Check thumb value's alignment vs. slider container
-    // Delay the alignment to allow the page layout to complete
-    setTimeout(() => {
-      this.thumbValueAlignment()
-    }, 0)
+  const formattedValueArr = uiValue.map(v => formatValue(v, element))
+  const formattedMinValue = formatValue(element.min, element)
+  const formattedMaxValue = formatValue(element.max, element)
 
-    if (this.props.element.setValue) {
-      this.updateFromProtobuf()
-    } else {
-      this.commitWidgetValue({ fromUi: false })
-    }
-  }
+  // When resetting a form, `value` will change so we need to change `uiValue`
+  // to match.
+  useEffect(() => {
+    setUiValue(value) // eslint-disable-line react-hooks/no-deriving-state-in-effects -- Syncs widget manager value to local UI state on form reset
+  }, [value])
 
-  public componentDidUpdate(): void {
-    this.maybeUpdateFromProtobuf()
-  }
+  // For select_slider: when options change, recompute indices from WidgetStateManager.
+  // This handles the case where the selected string value exists in both old and new
+  // options but at different indices - the UI needs to update to show the correct position.
+  useExecuteWhenChanged(
+    () => {
+      if (!isSelectSlider(element)) return
 
-  public componentWillUnmount(): void {
-    this.formClearHelper.disconnect()
-  }
+      // Get current string values from widget manager and convert to new indices
+      const stringValues = widgetMgr.getStringArrayValue(element)
+      if (stringValues === undefined) return
 
-  private maybeUpdateFromProtobuf(): void {
-    const { setValue } = this.props.element
-    if (setValue) {
-      this.updateFromProtobuf()
-    }
-  }
+      const newIndices = stringValuesToIndices(
+        stringValues,
+        element.options,
+        element.default
+      )
+      setUiValue(newIndices)
+    },
+    [element.options],
+    (prev, curr) => arrayComparator(prev[0], curr[0])
+  )
 
-  private updateFromProtobuf(): void {
-    const { value } = this.props.element
-    this.props.element.setValue = false
-    this.setState({ value }, () => {
-      this.commitWidgetValue({ fromUi: false })
+  // onChange/onChangeEnd both receive (value: number | number[]) supporting both
+  // single-value and range sliders; we always use an array internally.
+  // Note: on keyboard interactions, React Aria fires onChange and onChangeEnd
+  // synchronously in the same event, so isDragging may be true→false within
+  // the same React batch.
+  const handleFinalChange = useCallback(
+    (newValue: number | number[]): void => {
+      setValueWithSource({ value: toArray(newValue), fromUi: true })
+      setIsDragging(false)
+    },
+    [setValueWithSource]
+  )
+
+  const handleChange = useCallback((newValue: number | number[]): void => {
+    setUiValue(toArray(newValue))
+    setIsDragging(true)
+  }, [])
+
+  useLayoutEffect(() => {
+    // React Aria's getThumbValueLabel always uses the Intl NumberFormatter, which
+    // cannot produce arbitrary strings (e.g. option names for select_slider or
+    // datetime labels). We update aria-valuetext on the hidden <input type="range">
+    // inside each thumb via DOM mutation after render.
+    thumbsRef.current.forEach((thumbEl, i) => {
+      if (!thumbEl) return
+      const input = thumbEl.querySelector<HTMLInputElement>(
+        'input[type="range"]'
+      )
+      if (input && formattedValueArr[i] !== undefined) {
+        input.setAttribute("aria-valuetext", formattedValueArr[i])
+      }
     })
-  }
 
-  /** Commit state.value to the WidgetStateManager. */
-  private commitWidgetValue = (source: Source): void => {
-    const { widgetMgr, element, fragmentId } = this.props
+    // If, after rendering, the thumb value is outside the container (too
+    // far left or too far right), bring it inside. Or if there are two
+    // thumbs and their values overlap, fix that.
+    fixLabelPositions(
+      sliderRef.current ?? null,
+      thumbsRef.current[0] ?? null,
+      thumbsRef.current[1] ?? null,
+      thumbValuesRef.current[0] ?? null,
+      thumbValuesRef.current[1] ?? null
+    )
+  })
+
+  return (
+    <StyledSlider
+      ref={sliderRef}
+      className="stSlider"
+      data-testid="stSlider"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
+      <WidgetLabel
+        label={element.label}
+        disabled={disabled}
+        labelVisibility={labelVisibilityProtoValueToEnum(
+          element.labelVisibility?.value
+        )}
+      >
+        {element.help && (
+          <WidgetLabelHelpIcon content={element.help} label={element.label} />
+        )}
+      </WidgetLabel>
+
+      <StyledRASlider
+        minValue={element.min}
+        maxValue={element.max}
+        step={element.step}
+        value={getValueAsArray(uiValue, element)}
+        onChange={handleChange}
+        onChangeEnd={handleFinalChange}
+        isDisabled={disabled}
+        aria-label={element.label}
+      >
+        <StyledSliderTrack>
+          {({ state }) => {
+            const isRange = state.values.length > 1
+            const fillStart = isRange ? state.getThumbPercent(0) * 100 : 0
+            const fillEnd = state.getThumbPercent(isRange ? 1 : 0) * 100
+
+            return (
+              <>
+                {/* Track line FIRST — lower z-index (earlier in DOM) so thumbs render on top */}
+                <StyledSliderTrackLine
+                  isDisabled={disabled}
+                  fillStart={fillStart}
+                  fillEnd={fillEnd}
+                />
+                {/* Thumbs AFTER track line — higher z-index (later in DOM) */}
+                {state.values.map((_, index) => (
+                  <StyledThumb
+                    // eslint-disable-next-line @eslint-react/no-array-index-key
+                    key={index}
+                    index={index}
+                    ref={el => {
+                      thumbsRef.current[index] = el
+                    }}
+                    aria-label={
+                      state.values.length > 1
+                        ? `${element.label} — ${index === 0 ? "start" : "end"}`
+                        : element.label
+                    }
+                  >
+                    <StyledThumbValue
+                      data-testid="stSliderThumbValue"
+                      disabled={disabled}
+                      ref={el => {
+                        thumbValuesRef.current[index] = el
+                      }}
+                    >
+                      <StreamlitMarkdown
+                        source={formattedValueArr[index] ?? ""}
+                        allowHTML={false}
+                        inheritFont
+                        isLabel
+                      />
+                    </StyledThumbValue>
+                  </StyledThumb>
+                ))}
+                {/* Tick bar inside StyledSliderTrack so its left:0/right:0 aligns with
+                    the inset track bounds (matching StyledRASlider's padding inset) */}
+                <SliderTickBar
+                  minLabel={formattedMinValue}
+                  maxLabel={formattedMaxValue}
+                  isHovered={isHovered || isDragging}
+                  isDisabled={disabled}
+                />
+              </>
+            )
+          }}
+        </StyledSliderTrack>
+      </StyledRASlider>
+    </StyledSlider>
+  )
+}
+
+function getStateFromWidgetMgr(
+  widgetMgr: WidgetStateManager,
+  element: SliderProto
+): number[] | undefined {
+  if (isSelectSlider(element)) {
+    // For select_slider, get string values and convert to indices
+    const stringValues = widgetMgr.getStringArrayValue(element)
+    // No value stored yet - normal case during initial render
+    if (stringValues === undefined) {
+      return undefined
+    }
+    return stringValuesToIndices(
+      stringValues,
+      element.options,
+      element.default
+    )
+  }
+  // For regular slider, get numeric values directly
+  return widgetMgr.getDoubleArrayValue(element)
+}
+
+function getDefaultStateFromProto(element: SliderProto): number[] {
+  return element.default
+}
+
+function getCurrStateFromProto(element: SliderProto): number[] {
+  if (isSelectSlider(element)) {
+    // For select_slider, read string values from rawValue and convert to indices
+    const rawValues = element.rawValue
+    if (rawValues && rawValues.length > 0) {
+      return stringValuesToIndices(rawValues, element.options, element.default)
+    }
+    // Fall back to default indices
+    return element.default
+  }
+  // For regular slider, use numeric value directly
+  return element.value
+}
+
+function updateWidgetMgrState(
+  element: SliderProto,
+  widgetMgr: WidgetStateManager,
+  vws: ValueWithSource<number[]>,
+  fragmentId: string | undefined
+): void {
+  if (isSelectSlider(element)) {
+    // For select_slider, convert indices to string values
+    const stringValues = indicesToStringValues(vws.value, element.options)
+    widgetMgr.setStringArrayValue(
+      element,
+      stringValues,
+      { fromUi: vws.fromUi },
+      fragmentId
+    )
+  } else {
+    // For regular slider, use numeric values directly
     widgetMgr.setDoubleArrayValue(
       element,
-      this.state.value,
-      source,
+      vws.value,
+      { fromUi: vws.fromUi },
       fragmentId
     )
   }
+}
 
-  /**
-   * If we're part of a clear_on_submit form, this will be called when our
-   * form is submitted. Restore our default value and update the WidgetManager.
-   */
-  private onFormCleared = (): void => {
-    this.setState(
-      (_, prevProps) => {
-        return { value: prevProps.element.default }
-      },
-      () => this.commitWidgetValue({ fromUi: true })
-    )
-  }
-
-  private handleChange = ({ value }: { value: number[] }): void => {
-    this.setState({ value }, () =>
-      this.commitWidgetValueDebounced({ fromUi: true })
-    )
-  }
-
-  /**
-   * Return the value of the slider. This will either be an array with
-   * one value (for a single value slider), or an array with two
-   * values (for a range slider).
-   */
-  private get value(): number[] {
-    const { min, max } = this.props.element
-    const { value } = this.state
-    let start = value[0]
-    let end = value.length > 1 ? value[1] : value[0]
-    // Adjust the value if it's out of bounds.
-    if (start > end) {
-      start = end
-    }
-    if (start < min) {
-      start = min
-    }
-    if (start > max) {
-      start = max
-    }
-    if (end < min) {
-      end = min
-    }
-    if (end > max) {
-      end = max
-    }
-    return value.length > 1 ? [start, end] : [start]
-  }
-
-  private isDateTimeType(): boolean {
-    const { dataType } = this.props.element
-    return (
-      dataType === SliderProto.DataType.DATETIME ||
-      dataType === SliderProto.DataType.DATE ||
-      dataType === SliderProto.DataType.TIME
-    )
-  }
-
-  private formatValue(value: number): string {
-    const { format, options } = this.props.element
-    if (this.isDateTimeType()) {
-      // Python datetime uses microseconds, but JS & Moment uses milliseconds
-      // The timestamp is always set to the UTC timezone, even so, the actual timezone
-      // for this timestamp in the backend could be different.
-      // However, the frontend component does not need to know about the actual timezone.
-      return moment.utc(value / 1000).format(format)
-    }
-
-    if (options.length > 0) {
-      return sprintf(format, options[value])
-    }
-
-    return sprintf(format, value)
-  }
-
-  private alignValueOnThumb(
-    slider: HTMLDivElement | null,
-    thumb: HTMLDivElement | null,
-    thumbValue: HTMLDivElement | null
-  ): void {
-    if (slider && thumb && thumbValue) {
-      const sliderPosition = slider.getBoundingClientRect()
-      const thumbPosition = thumb.getBoundingClientRect()
-      const thumbValuePosition = thumbValue.getBoundingClientRect()
-
-      const thumbMidpoint = thumbPosition.left + thumbPosition.width / 2
-      const thumbValueOverflowsLeft =
-        thumbMidpoint - thumbValuePosition.width / 2 < sliderPosition.left
-      const thumbValueOverflowsRight =
-        thumbMidpoint + thumbValuePosition.width / 2 > sliderPosition.right
-
-      thumbValue.style.left = thumbValueOverflowsLeft ? "0" : ""
-      thumbValue.style.right = thumbValueOverflowsRight ? "0" : ""
-    }
-  }
-
-  private thumbValueAlignment(): void {
-    const sliderDiv = this.sliderRef.current
-    const thumb1Div = this.thumbRef[0]?.current
-    const thumb2Div = this.thumbRef[1]?.current
-    const thumb1ValueDiv = this.thumbValueRef[0]?.current
-    const thumb2ValueDiv = this.thumbValueRef[1]?.current
-    // Minimum gap between thumb values (in px)
-    const labelGap = 16
-
-    // Handles label alignment over each thumb
-    this.alignValueOnThumb(sliderDiv, thumb1Div, thumb1ValueDiv)
-    this.alignValueOnThumb(sliderDiv, thumb2Div, thumb2ValueDiv)
-
-    // Checks & handles label spacing when two thumb values & they overlap
-    if (
-      sliderDiv &&
-      thumb1Div &&
-      thumb2Div &&
-      thumb1ValueDiv &&
-      thumb2ValueDiv
-    ) {
-      const slider = sliderDiv.getBoundingClientRect()
-      const thumb1 = thumb1Div.getBoundingClientRect()
-      const thumb2 = thumb2Div.getBoundingClientRect()
-      const thumb1Value = thumb1ValueDiv.getBoundingClientRect()
-      const thumb2Value = thumb2ValueDiv.getBoundingClientRect()
-
-      // Check if thumb values are overlapping or too close together
-      if (thumb1Value.right + labelGap > thumb2Value.left) {
-        // Check whether to shift 1st thumb value left or 2nd thumb value right
-        const moveLeft =
-          thumb2Value.left - labelGap - thumb1Value.width > slider.left
-
-        if (moveLeft) {
-          thumb1ValueDiv.style.right = `${
-            thumb2Value.width + labelGap - (thumb2.right - thumb1.right)
-          }px`
-        } else {
-          thumb2ValueDiv.style.left = `${
-            thumb1Value.width + labelGap - (thumb2.left - thumb1.left)
-          }px`
-        }
-      }
-    }
-  }
-
-  // eslint-disable-next-line react/display-name
-  private renderThumb = React.forwardRef<HTMLDivElement, StyleProps>(
-    (props: StyleProps, ref): JSX.Element => {
-      const { $value, $thumbIndex } = props
-      const thumbIndex = $thumbIndex || 0
-      this.thumbRef[thumbIndex] = ref as React.MutableRefObject<HTMLDivElement>
-      this.thumbValueRef[thumbIndex] ||= React.createRef<HTMLDivElement>()
-
-      const formattedValue = $value
-        ? this.formatValue($value[$thumbIndex as number])
-        : ""
-      const passThrough = pick(props, [
-        "role",
-        "style",
-        "aria-valuemax",
-        "aria-valuemin",
-        "aria-valuenow",
-        "tabIndex",
-        "onKeyUp",
-        "onKeyDown",
-        "onMouseEnter",
-        "onMouseLeave",
-        "draggable",
-      ])
-      const ariaValueText: Record<string, string> = {}
-
-      if (this.props.element.options.length > 0 || this.isDateTimeType()) {
-        ariaValueText["aria-valuetext"] = formattedValue
-      }
-
-      return (
-        <StyledThumb
-          {...passThrough}
-          disabled={props.$disabled === true}
-          ref={this.thumbRef[thumbIndex]}
-          aria-valuetext={formattedValue}
-          aria-label={this.props.element.label}
-        >
-          <StyledThumbValue
-            className="StyledThumbValue"
-            data-testid="stThumbValue"
-            disabled={props.$disabled === true}
-            ref={this.thumbValueRef[thumbIndex]}
-          >
-            {formattedValue}
-          </StyledThumbValue>
-        </StyledThumb>
-      )
-    }
+function isDateTimeType(element: SliderProto): boolean {
+  const { dataType } = element
+  return (
+    dataType === SliderProto.DataType.DATETIME ||
+    dataType === SliderProto.DataType.DATE ||
+    dataType === SliderProto.DataType.TIME
   )
+}
 
-  private renderTickBar = (): JSX.Element => {
-    const { disabled, element } = this.props
-    const { max, min } = element
+function getMomentKind(element: SliderProto): MomentKind {
+  const { dataType } = element
+  if (dataType === SliderProto.DataType.DATE) {
+    return "date"
+  }
+  if (dataType === SliderProto.DataType.TIME) {
+    return "time"
+  }
+  return "datetime"
+}
 
-    return (
-      <StyledTickBar data-testid="stTickBar">
-        <StyledTickBarItem disabled={disabled} data-testid="stTickBarMin">
-          {this.formatValue(min)}
-        </StyledTickBarItem>
-        <StyledTickBarItem disabled={disabled} data-testid="stTickBarMax">
-          {this.formatValue(max)}
-        </StyledTickBarItem>
-      </StyledTickBar>
-    )
+function formatValue(value: number, element: SliderProto): string {
+  const { format, options } = element
+
+  if (options.length > 0) {
+    // select slider does not support format strings, so we just return the option string.
+    return options[value] ?? ""
   }
 
-  public render(): React.ReactNode {
-    const { disabled, element, theme, width, widgetMgr } = this.props
-    const { colors, fonts, fontSizes, spacing } = theme
-    const style = { width }
+  if (isDateTimeType(element)) {
+    // Python datetime uses microseconds, but JS & Moment uses milliseconds
+    // The timestamp is always set to the UTC timezone, even so, the actual timezone
+    // for this timestamp in the backend could be different.
+    // However, the frontend component does not need to know about the actual timezone.
+    const momentDate = moment.utc(value / 1000)
+    return formatMoment(momentDate, format, getMomentKind(element))
+  }
 
-    // Manage our form-clear event handler.
-    this.formClearHelper.manageFormClearListener(
-      widgetMgr,
-      element.formId,
-      this.onFormCleared
-    )
+  return formatNumber(value, format)
+}
 
-    // Check the thumb value's alignment vs. slider container
-    this.thumbValueAlignment()
+/**
+ * Return the value of the slider. This will either be an array with
+ * one value (for a single value slider), or an array with two
+ * values (for a range slider).
+ */
+function getValueAsArray(value: number[], element: SliderProto): number[] {
+  const { min, max } = element
+  // Clamp start within [min, max], then clamp end within [start, max] to
+  // also enforce the start <= end invariant.
+  const start = Math.min(Math.max(value[0], min), max)
+  const end = Math.min(
+    Math.max(value.length > 1 ? value[1] : value[0], start),
+    max
+  )
+  return value.length > 1 ? [start, end] : [start]
+}
 
-    return (
-      <div
-        ref={this.sliderRef}
-        className="stSlider"
-        data-testid="stSlider"
-        style={style}
-      >
-        <WidgetLabel
-          label={element.label}
-          disabled={disabled}
-          labelVisibility={labelVisibilityProtoValueToEnum(
-            element.labelVisibility?.value
-          )}
-        >
-          {element.help && (
-            <StyledWidgetLabelHelp>
-              <TooltipIcon
-                content={element.help}
-                placement={Placement.TOP_RIGHT}
-              />
-            </StyledWidgetLabelHelp>
-          )}
-        </WidgetLabel>
-        <UISlider
-          min={element.min}
-          max={element.max}
-          step={element.step}
-          value={this.value}
-          onChange={this.handleChange}
-          disabled={disabled}
-          overrides={{
-            Root: {
-              style: {
-                paddingTop: spacing.twoThirdsSmFont,
-              },
-            },
-            Thumb: this.renderThumb,
-            Tick: {
-              style: {
-                fontFamily: fonts.monospace,
-                fontSize: fontSizes.sm,
-              },
-            },
-            Track: {
-              style: {
-                backgroundColor: "none !important",
-                paddingBottom: 0,
-                paddingLeft: 0,
-                paddingRight: 0,
-                paddingTop: spacing.twoThirdsSmFont,
-              },
-            },
-            InnerTrack: {
-              style: ({ $disabled }: StyleProps) => ({
-                height: "4px",
-                ...($disabled ? { background: colors.darkenedBgMix25 } : {}),
-              }),
-            },
-            TickBar: this.renderTickBar,
-          }}
-        />
-      </div>
+function fixLabelPositions(
+  sliderDiv: HTMLDivElement | null,
+  thumb1Div: HTMLDivElement | null,
+  thumb2Div: HTMLDivElement | null,
+  thumb1ValueDiv: HTMLDivElement | null,
+  thumb2ValueDiv: HTMLDivElement | null
+): void {
+  if (!sliderDiv || !thumb1Div || !thumb1ValueDiv) {
+    return
+  }
+
+  fixLabelOverflow(sliderDiv, thumb1Div, thumb1ValueDiv)
+
+  if (thumb2Div && thumb2ValueDiv) {
+    fixLabelOverflow(sliderDiv, thumb2Div, thumb2ValueDiv)
+
+    // If two thumbs.
+    fixLabelOverlap(
+      sliderDiv,
+      thumb1Div,
+      thumb2Div,
+      thumb1ValueDiv,
+      thumb2ValueDiv
     )
   }
 }
 
-export default withTheme(Slider)
+function fixLabelOverflow(
+  slider: HTMLDivElement,
+  thumb: HTMLDivElement,
+  thumbValue: HTMLDivElement
+): void {
+  // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
+  const sliderRect = slider.getBoundingClientRect()
+  // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
+  const thumbRect = thumb.getBoundingClientRect()
+  // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
+  const thumbValueRect = thumbValue.getBoundingClientRect()
+
+  const thumbRadius = thumbRect.width / 2
+  const thumbMidpoint = thumbRect.left + thumbRadius
+
+  // Round to integer pixels for the boundary checks.
+  const thumbValueOverflowsLeft =
+    Math.round(thumbMidpoint - thumbValueRect.width / 2) <
+    Math.round(sliderRect.left)
+  const thumbValueOverflowsRight =
+    Math.round(thumbMidpoint + thumbValueRect.width / 2) >
+    Math.round(sliderRect.right)
+
+  // React Aria's transform:translate(-50%,-50%) means getBoundingClientRect()
+  // returns visual (post-transform) coords, while CSS left/right on children
+  // use pre-transform space. thumbMidpoint equals the thumb's layout left, so
+  // we add thumbRadius to compensate (visual = layout − thumbRadius).
+  // The right-overflow R can be negative when the thumb is well inside the
+  // track; that's intentional — no ancestor clips overflow.
+  if (thumbValueOverflowsLeft) {
+    thumbValue.style.left = `${sliderRect.left - thumbMidpoint + thumbRadius}px`
+    thumbValue.style.right = ""
+  } else if (thumbValueOverflowsRight) {
+    thumbValue.style.left = ""
+    thumbValue.style.right = `${thumbMidpoint + thumbRadius - sliderRect.right}px`
+  } else {
+    thumbValue.style.left = ""
+    thumbValue.style.right = ""
+  }
+}
+
+/**
+ * Goals:
+ * - Keep the thumb values near their respective thumbs.
+ * - Keep thumb values within the bounds of the slider.
+ * - Avoid visual jank while moving the thumbs
+ */
+function fixLabelOverlap(
+  sliderDiv: HTMLDivElement,
+  thumb1Div: HTMLDivElement,
+  thumb2Div: HTMLDivElement,
+  thumb1ValueDiv: HTMLDivElement,
+  thumb2ValueDiv: HTMLDivElement
+): void {
+  const labelGap = 24
+
+  // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
+  const sliderRect = sliderDiv.getBoundingClientRect()
+  // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
+  const thumb1Rect = thumb1Div.getBoundingClientRect()
+  // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
+  const thumb2Rect = thumb2Div.getBoundingClientRect()
+  // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
+  const thumb1ValueRect = thumb1ValueDiv.getBoundingClientRect()
+  // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
+  const thumb2ValueRect = thumb2ValueDiv.getBoundingClientRect()
+
+  const sliderMidpoint = sliderRect.left + sliderRect.width / 2
+  const thumb1MidPoint = thumb1Rect.left + thumb1Rect.width / 2
+  const thumb2MidPoint = thumb2Rect.left + thumb2Rect.width / 2
+
+  const centeredThumb1ValueFitsLeft =
+    thumb1MidPoint - thumb1ValueRect.width / 2 >= sliderRect.left
+
+  const centeredThumb2ValueFitsRight =
+    thumb2MidPoint + thumb2ValueRect.width / 2 <= sliderRect.right
+
+  const leftAlignedThumb1ValueFitsLeft =
+    thumb1Rect.left - thumb1ValueRect.width >= sliderRect.left
+
+  const rightAlignedThumb2ValueFitsRight =
+    thumb2Rect.right + thumb2ValueRect.width <= sliderRect.right
+
+  const thumb1ValueOverhang = centeredThumb1ValueFitsLeft
+    ? thumb1ValueRect.width / 2
+    : thumb1ValueRect.width
+
+  const thumb2ValueOverhang = centeredThumb2ValueFitsRight
+    ? thumb2ValueRect.width / 2
+    : thumb2ValueRect.width
+
+  const thumb1ValueInnerEdge = thumb1MidPoint + thumb1ValueOverhang
+  const thumb2ValueInnerEdge = thumb2MidPoint - thumb2ValueOverhang
+  const thumbsAreFarApart =
+    thumb2ValueInnerEdge - thumb1ValueInnerEdge > labelGap
+
+  // If thumbs are far apart, just handle each separately.
+  //
+  // 1. Center values on their thumbs, like this:
+  //
+  //        [thumb1Value]       [thumb2Value]
+  // |--------[thumb1]-------------[thumb2]-------------------|
+  //
+  //
+  // 2. If one of the thumbs is so close to the edge that centering would cause
+  // the value to overflow past the edge, align the value away from the edge.
+  // (This is the normal fixLabelOverflow() behavior)
+  //
+  // For example, let's say thumb1 moved to the left:
+  //
+  //     [thumb1Value]          [thumb2Value]
+  // |---[thumb1]------------------[thumb2]-------------------|
+  //
+  //
+  if (thumbsAreFarApart) {
+    fixLabelOverflow(sliderDiv, thumb1Div, thumb1ValueDiv)
+    fixLabelOverflow(sliderDiv, thumb2Div, thumb2ValueDiv)
+    return
+  }
+
+  // If thumbs are close, try different things...
+
+  // 3. If thumbs are so close that centering would cause values to
+  // overlap, then place the values to the side of their thumbs, away from
+  // the opposing thumbs:
+  //
+  // For example, if starting from case #1 above we moved thumb1 to the
+  // right:
+  //
+  //      [thumb1Value]                    [thumb2Value]
+  // |-----------------[thumb1]----[thumb2]-------------------|
+  //
+  // Note: round all values to not have weird decimal pixels (that make our Snapshot tests flaky)
+  if (leftAlignedThumb1ValueFitsLeft && rightAlignedThumb2ValueFitsRight) {
+    // Align value1 to the left of its thumb.
+    thumb1ValueDiv.style.left = ""
+    thumb1ValueDiv.style.right = `${Math.round(thumb1Rect.width)}px`
+
+    // Align value2 to the right of its thumb.
+    thumb2ValueDiv.style.left = `${Math.round(thumb2Rect.width)}px`
+    thumb2ValueDiv.style.right = ""
+
+    return
+  }
+
+  // 4. If one of the thumbs is so close to the edge that doing the outward
+  // alignment from #3 would cause its value to overflow past the edge, then
+  // try centering the value. And place the other thumb's value right next to
+  // it, to avoid overlaps.
+  //
+  // For example, if we moved thumb1 and thumb2 to the left by the same
+  // amount:
+  //
+  //    [thumb1Value][thumb2Value]
+  // |----[thumb1]--[thumb2]----------------------------------|
+  //
+  //
+  // 5. If one of the thumbs is so close to the edge that doing the center
+  // alignment from #4 would cause its value to overflow past the edge, then
+  // align it with its thumb, pointing inward. And, like in #4, place the
+  // other thumb's value right next to it to avoid overlaps.
+  //
+  // For example, if we moved thumb1 to the left, and moved thumb2 even more:
+  //
+  //   [thumb1Value][thumb2Value]
+  // |-[thumb1]--[thumb2]-------------------------------------|
+  //
+
+  const jointThumbsAreOnLeftHalf = thumb1MidPoint < sliderMidpoint
+
+  if (jointThumbsAreOnLeftHalf) {
+    fixLabelOverflow(sliderDiv, thumb1Div, thumb1ValueDiv)
+
+    // Make thumb2Value appear to the right of thumb1Value.
+    // The `left` property is in thumb2's pre-transform coordinate space, so
+    // add thumb2Width/2 to compensate for React Aria's translate(-50%,-50%).
+    thumb2ValueDiv.style.left = `${Math.round(
+      thumb1MidPoint +
+        thumb1ValueOverhang +
+        labelGap -
+        thumb2MidPoint +
+        thumb2Rect.width / 2
+    )}px`
+    thumb2ValueDiv.style.right = ""
+  } else {
+    fixLabelOverflow(sliderDiv, thumb2Div, thumb2ValueDiv)
+
+    // Make thumb1Value appear to the left of thumb2Value.
+    // The `right` property is in thumb1's pre-transform coordinate space, so
+    // add thumb1Width/2 to compensate for React Aria's translate(-50%,-50%).
+    thumb1ValueDiv.style.left = ""
+    thumb1ValueDiv.style.right = `${Math.round(
+      thumb1MidPoint -
+        thumb2MidPoint +
+        thumb2ValueOverhang +
+        labelGap +
+        thumb1Rect.width / 2
+    )}px`
+  }
+}
+
+// Note: we shouldn't need `withCalculatedWidth` here, but there is some custom
+// ref measurement and style setting logic in this component used for fixing
+// overflows that is not properly within the React lifecycle. This leads to race
+// conditions in styles being applied outside of React's knowledge, which can
+// lead to visually incorrect labels in certain scenarios.
+export default withCalculatedWidth(memo(Slider))

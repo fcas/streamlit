@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,501 +15,801 @@
 import datetime
 import unittest
 
+import pytest
+
 from streamlit.elements.lib.column_types import (
+    AudioColumn,
     BarChartColumn,
+    ButtonColumn,
+    ButtonColumnResult,
     CheckboxColumn,
     Column,
     DateColumn,
     DatetimeColumn,
     ImageColumn,
+    JsonColumn,
     LineChartColumn,
     LinkColumn,
     ListColumn,
+    MarkdownColumn,
+    MultiselectColumn,
     NumberColumn,
     ProgressColumn,
     SelectboxColumn,
     TextColumn,
     TimeColumn,
+    VideoColumn,
+    _validate_chart_color,
 )
 from streamlit.elements.lib.dicttools import remove_none_values
+from streamlit.errors import StreamlitValueError
 
 
 class ColumnTypesTest(unittest.TestCase):
     def test_generic_column(self):
         """Test Column creation."""
 
-        self.assertEqual(
-            remove_none_values(Column()),
-            {},
-            "Should not have any properties defined.",
+        assert remove_none_values(Column()) == {}, (
+            "Should not have any properties defined."
         )
 
-        self.assertEqual(
-            remove_none_values(
-                Column(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                    disabled=False,
-                    required=True,
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "disabled": False,
-                "required": True,
-            },
-            "Should have all the properties defined.",
-        )
+        assert remove_none_values(
+            Column(
+                "Col1",
+                width="small",
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+        }, "Should have all the properties defined."
 
     def test_number_column(self):
         """Test NumberColumn creation."""
-        self.assertEqual(
-            remove_none_values(NumberColumn()),
-            {"type_config": {"type": "number"}},
-            "Should only have the type defined and nothing else.",
-        )
+        assert remove_none_values(NumberColumn()) == {
+            "type_config": {"type": "number"}
+        }, "Should only have the type defined and nothing else."
 
-        self.assertEqual(
-            remove_none_values(
-                NumberColumn(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                    disabled=False,
-                    required=True,
-                    default=50,
-                    min_value=0,
-                    max_value=100,
-                    step=1,
-                    format="%.2f",
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "disabled": False,
-                "required": True,
-                "default": 50,
-                "type_config": {
-                    "type": "number",
-                    "format": "%.2f",
-                    "max_value": 100,
-                    "min_value": 0,
-                    "step": 1,
-                },
+        assert remove_none_values(
+            NumberColumn(
+                "Col1",
+                width=100,
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+                default=50,
+                min_value=0,
+                max_value=100,
+                step=1,
+                format="%.2f",
+            )
+        ) == {
+            "label": "Col1",
+            "width": 100,
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+            "default": 50,
+            "type_config": {
+                "type": "number",
+                "format": "%.2f",
+                "max_value": 100,
+                "min_value": 0,
+                "step": 1,
             },
-            "Should have all the properties defined.",
-        )
+        }, "Should have all the properties defined."
 
     def test_text_column(self):
         """Test TextColumn creation."""
 
-        self.assertEqual(
-            remove_none_values(TextColumn()),
-            {"type_config": {"type": "text"}},
-            "Should only have the type defined and nothing else.",
+        assert remove_none_values(TextColumn()) == {"type_config": {"type": "text"}}, (
+            "Should only have the type defined and nothing else."
         )
 
-        self.assertEqual(
-            remove_none_values(
-                TextColumn(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                    disabled=False,
-                    required=True,
-                    default="default",
-                    max_chars=10,
-                    validate="^[a-zA-Z]+$",
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "disabled": False,
-                "required": True,
-                "default": "default",
-                "type_config": {
-                    "type": "text",
-                    "max_chars": 10,
-                    "validate": "^[a-zA-Z]+$",
-                },
-            },
-            "Should have all the properties defined.",
-        )
+        assert remove_none_values(
+            TextColumn(
+                "Col1",
+                width="small",
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+                default="default",
+                max_chars=10,
+                validate="^[a-zA-Z]+$",
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+            "default": "default",
+            "type_config": {"type": "text", "max_chars": 10, "validate": "^[a-zA-Z]+$"},
+        }, "Should have all the properties defined."
 
     def test_checkbox_column(self):
         """Test CheckboxColumn creation."""
 
-        self.assertEqual(
-            remove_none_values(CheckboxColumn()),
-            {"type_config": {"type": "checkbox"}},
-            "Should only have the type defined and nothing else.",
-        )
+        assert remove_none_values(CheckboxColumn()) == {
+            "type_config": {"type": "checkbox"}
+        }, "Should only have the type defined and nothing else."
 
-        self.assertEqual(
-            remove_none_values(
-                CheckboxColumn(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                    disabled=False,
-                    required=True,
-                    default=True,
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "disabled": False,
-                "required": True,
-                "default": True,
-                "type_config": {"type": "checkbox"},
-            },
-            "Should have all the properties defined.",
-        )
+        assert remove_none_values(
+            CheckboxColumn(
+                "Col1",
+                width="small",
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+                default=True,
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+            "default": True,
+            "type_config": {"type": "checkbox"},
+        }, "Should have all the properties defined."
 
     def test_selectbox_column(self):
         """Test SelectboxColumn creation."""
 
-        self.assertEqual(
-            remove_none_values(SelectboxColumn()),
-            {"type_config": {"type": "selectbox"}},
-            "Should only have the type defined and nothing else.",
-        )
+        assert remove_none_values(SelectboxColumn()) == {
+            "type_config": {"type": "selectbox"}
+        }, "Should only have the type defined and nothing else."
 
-        self.assertEqual(
-            remove_none_values(
-                SelectboxColumn(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                    disabled=False,
-                    required=True,
-                    default="a",
-                    options=["a", "b", "c"],
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "disabled": False,
-                "required": True,
-                "default": "a",
-                "type_config": {"type": "selectbox", "options": ["a", "b", "c"]},
-            },
-            "Should have all the properties defined.",
-        )
+        assert remove_none_values(
+            SelectboxColumn(
+                "Col1",
+                width="small",
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+                default="a",
+                options=["a", "b", "c"],
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+            "default": "a",
+            "type_config": {"type": "selectbox", "options": ["a", "b", "c"]},
+        }, "Should have all the properties defined."
+
+    def test_selectbox_column_with_format_func(self):
+        """Test SelectboxColumn creation with format_func applied to options."""
+
+        assert remove_none_values(
+            SelectboxColumn(options=["a", "b"], format_func=str.upper)
+        ) == {
+            "type_config": {
+                "type": "selectbox",
+                "options": [
+                    {"value": "a", "label": "A"},
+                    {"value": "b", "label": "B"},
+                ],
+            }
+        }, "Options should be transformed into value/label pairs via format_func."
 
     def test_datetime_column(self):
         """Test DatetimeColumn creation."""
 
-        self.assertEqual(
-            remove_none_values(DatetimeColumn()),
-            {"type_config": {"type": "datetime"}},
-            "Should only have the type defined and nothing else.",
-        )
+        assert remove_none_values(DatetimeColumn()) == {
+            "type_config": {"type": "datetime"}
+        }, "Should only have the type defined and nothing else."
 
-        self.assertEqual(
-            remove_none_values(
-                DatetimeColumn(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                    disabled=False,
-                    required=True,
-                    default=datetime.datetime(2021, 1, 1),
-                    min_value=datetime.datetime(2020, 1, 1),
-                    max_value=datetime.datetime(2022, 1, 2),
-                    step=datetime.timedelta(milliseconds=100),
-                    format="yyyy-MM-dd",
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "disabled": False,
-                "required": True,
-                "default": "2021-01-01T00:00:00",
-                "type_config": {
-                    "type": "datetime",
-                    "format": "yyyy-MM-dd",
-                    "max_value": "2022-01-02T00:00:00",
-                    "min_value": "2020-01-01T00:00:00",
-                    "step": 0.1,
-                },
+        assert remove_none_values(
+            DatetimeColumn(
+                "Col1",
+                width="small",
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+                default=datetime.datetime(2021, 1, 1),
+                min_value=datetime.datetime(2020, 1, 1),
+                max_value=datetime.datetime(2022, 1, 2),
+                step=datetime.timedelta(milliseconds=100),
+                format="yyyy-MM-dd",
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+            "default": "2021-01-01T00:00:00",
+            "type_config": {
+                "type": "datetime",
+                "format": "yyyy-MM-dd",
+                "max_value": "2022-01-02T00:00:00",
+                "min_value": "2020-01-01T00:00:00",
+                "step": 0.1,
             },
-            "Should have all the properties defined.",
-        )
+        }, "Should have all the properties defined."
 
     def test_time_column(self):
         """Test TimeColumn creation."""
 
-        self.assertEqual(
-            remove_none_values(TimeColumn()),
-            {"type_config": {"type": "time"}},
-            "Should only have the type defined and nothing else.",
+        assert remove_none_values(TimeColumn()) == {"type_config": {"type": "time"}}, (
+            "Should only have the type defined and nothing else."
         )
 
-        self.assertEqual(
-            remove_none_values(
-                TimeColumn(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                    disabled=False,
-                    required=True,
-                    default=datetime.time(12, 0),
-                    min_value=datetime.time(0, 0),
-                    max_value=datetime.time(23, 59),
-                    step=datetime.timedelta(milliseconds=100),
-                    format="HH:mm",
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "disabled": False,
-                "required": True,
-                "default": "12:00:00",
-                "type_config": {
-                    "type": "time",
-                    "format": "HH:mm",
-                    "max_value": "23:59:00",
-                    "min_value": "00:00:00",
-                    "step": 0.1,
-                },
+        assert remove_none_values(
+            TimeColumn(
+                "Col1",
+                width="small",
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+                default=datetime.time(12, 0),
+                min_value=datetime.time(0, 0),
+                max_value=datetime.time(23, 59),
+                step=datetime.timedelta(milliseconds=100),
+                format="HH:mm",
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+            "default": "12:00:00",
+            "type_config": {
+                "type": "time",
+                "format": "HH:mm",
+                "max_value": "23:59:00",
+                "min_value": "00:00:00",
+                "step": 0.1,
             },
-            "Should have all the properties defined.",
-        )
+        }, "Should have all the properties defined."
 
     def test_date_column(self):
         """Test DateColumn creation."""
 
-        self.assertEqual(
-            remove_none_values(DateColumn()),
-            {"type_config": {"type": "date"}},
-            "Should only have the type defined and nothing else.",
+        assert remove_none_values(DateColumn()) == {"type_config": {"type": "date"}}, (
+            "Should only have the type defined and nothing else."
         )
 
-        self.assertEqual(
-            remove_none_values(
-                DateColumn(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                    disabled=False,
-                    required=True,
-                    default=datetime.date(2021, 1, 1),
-                    min_value=datetime.date(2020, 1, 1),
-                    max_value=datetime.date(2022, 1, 2),
-                    step=1,
-                    format="yyyy-MM-dd",
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "disabled": False,
-                "required": True,
-                "default": "2021-01-01",
-                "type_config": {
-                    "type": "date",
-                    "format": "yyyy-MM-dd",
-                    "min_value": "2020-01-01",
-                    "max_value": "2022-01-02",
-                    "step": 1,
-                },
+        assert remove_none_values(
+            DateColumn(
+                "Col1",
+                width="small",
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+                default=datetime.date(2021, 1, 1),
+                min_value=datetime.date(2020, 1, 1),
+                max_value=datetime.date(2022, 1, 2),
+                step=1,
+                format="yyyy-MM-dd",
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+            "default": "2021-01-01",
+            "type_config": {
+                "type": "date",
+                "format": "yyyy-MM-dd",
+                "min_value": "2020-01-01",
+                "max_value": "2022-01-02",
+                "step": 1,
             },
-            "Should have all the properties defined.",
-        )
+        }, "Should have all the properties defined."
 
     def test_progress_column(self):
         """Test ProgressColumn creation."""
 
-        self.assertEqual(
-            remove_none_values(ProgressColumn()),
-            {"type_config": {"type": "progress"}},
-            "Should only have the type defined and nothing else.",
-        )
+        assert remove_none_values(ProgressColumn()) == {
+            "type_config": {"type": "progress"}
+        }, "Should only have the type defined and nothing else."
 
-        self.assertEqual(
-            remove_none_values(
-                ProgressColumn(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                    min_value=0,
-                    max_value=100,
-                    format="%.1f%%",
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "type_config": {
-                    "type": "progress",
-                    "format": "%.1f%%",
-                    "min_value": 0,
-                    "max_value": 100,
-                },
+        assert remove_none_values(
+            ProgressColumn(
+                "Col1",
+                width="small",
+                help="Help text",
+                pinned=True,
+                min_value=0,
+                max_value=100,
+                format="%.1f%%",
+                color="red",
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "pinned": True,
+            "type_config": {
+                "type": "progress",
+                "format": "%.1f%%",
+                "min_value": 0,
+                "max_value": 100,
+                "color": "red",
             },
-            "Should have all the properties defined.",
-        )
+        }, "Should have all the properties defined."
 
     def test_line_chart_column(self):
         """Test LineChartColumn creation."""
 
-        self.assertEqual(
-            remove_none_values(LineChartColumn()),
-            {"type_config": {"type": "line_chart"}},
-            "Should only have the type defined and nothing else.",
-        )
+        assert remove_none_values(LineChartColumn()) == {
+            "type_config": {"type": "line_chart"}
+        }, "Should only have the type defined and nothing else."
 
-        self.assertEqual(
-            remove_none_values(
-                LineChartColumn(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                    y_min=0,
-                    y_max=100,
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "type_config": {"type": "line_chart", "y_min": 0, "y_max": 100},
-            },
-            "Should have all the properties defined.",
-        )
+        assert remove_none_values(
+            LineChartColumn(
+                "Col1", width="small", help="Help text", pinned=True, y_min=0, y_max=100
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "pinned": True,
+            "type_config": {"type": "line_chart", "y_min": 0, "y_max": 100},
+        }, "Should have all the properties defined."
 
     def test_bar_chart_column(self):
         """Test BarChartColumn creation."""
 
-        self.assertEqual(
-            remove_none_values(BarChartColumn()),
-            {"type_config": {"type": "bar_chart"}},
-            "Should only have the type defined and nothing else.",
-        )
+        assert remove_none_values(BarChartColumn()) == {
+            "type_config": {"type": "bar_chart"}
+        }, "Should only have the type defined and nothing else."
 
-        self.assertEqual(
-            remove_none_values(
-                BarChartColumn(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                    y_min=0,
-                    y_max=100,
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "type_config": {"type": "bar_chart", "y_min": 0, "y_max": 100},
-            },
-            "Should have all the properties defined.",
-        )
+        assert remove_none_values(
+            BarChartColumn(
+                "Col1", width="small", help="Help text", pinned=True, y_min=0, y_max=100
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "pinned": True,
+            "type_config": {"type": "bar_chart", "y_min": 0, "y_max": 100},
+        }, "Should have all the properties defined."
 
     def test_link_column(self):
         """Test LinkColumn creation."""
 
-        self.assertEqual(
-            remove_none_values(LinkColumn()),
-            {"type_config": {"type": "link"}},
-            "Should only have the type defined and nothing else.",
+        assert remove_none_values(LinkColumn()) == {"type_config": {"type": "link"}}, (
+            "Should only have the type defined and nothing else."
         )
 
-        self.assertEqual(
-            remove_none_values(
-                LinkColumn(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                    disabled=False,
-                    required=True,
-                    default="https://streamlit.io/",
-                    max_chars=100,
-                    validate="^[a-zA-Z]+$",
-                    display_text="streamlit",
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "disabled": False,
-                "required": True,
-                "default": "https://streamlit.io/",
-                "type_config": {
-                    "type": "link",
-                    "max_chars": 100,
-                    "validate": "^[a-zA-Z]+$",
-                    "display_text": "streamlit",
-                },
+        assert remove_none_values(
+            LinkColumn(
+                "Col1",
+                width="small",
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+                default="https://streamlit.io/",
+                max_chars=100,
+                validate="^[a-zA-Z]+$",
+                display_text="streamlit",
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+            "default": "https://streamlit.io/",
+            "type_config": {
+                "type": "link",
+                "max_chars": 100,
+                "validate": "^[a-zA-Z]+$",
+                "display_text": "streamlit",
             },
-            "Should have all the properties defined.",
-        )
+        }, "Should have all the properties defined."
 
     def test_list_column(self):
         """Test ListColumn creation."""
 
-        self.assertEqual(
-            remove_none_values(ListColumn()),
-            {"type_config": {"type": "list"}},
-            "Should only have the type defined and nothing else.",
+        assert remove_none_values(ListColumn()) == {"type_config": {"type": "list"}}, (
+            "Should only have the type defined and nothing else."
         )
 
-        self.assertEqual(
-            remove_none_values(
-                ListColumn(
-                    "Col1",
-                    width="small",
-                    help="Help text",
-                )
-            ),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "type_config": {
-                    "type": "list",
-                },
-            },
-            "Should have all the properties defined.",
-        )
+        assert remove_none_values(
+            ListColumn(
+                "Col1",
+                width="small",
+                help="Help text",
+                pinned=True,
+                disabled=False,
+                required=True,
+                default=["a", "b", "c"],
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "pinned": True,
+            "disabled": False,
+            "required": True,
+            "default": ["a", "b", "c"],
+            "type_config": {"type": "list"},
+        }, "Should have all the properties defined."
 
     def test_image_column(self):
         """Test ImageColumn creation."""
 
-        self.assertEqual(
-            remove_none_values(ImageColumn()),
-            {"type_config": {"type": "image"}},
-            "Should only have the type defined and nothing else.",
+        assert remove_none_values(ImageColumn()) == {
+            "type_config": {"type": "image"}
+        }, "Should only have the type defined and nothing else."
+
+        assert remove_none_values(
+            ImageColumn("Col1", width="small", help="Help text", pinned=True)
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "pinned": True,
+            "type_config": {"type": "image"},
+        }, "Should have all the properties defined."
+
+    def test_audio_column(self):
+        """Test AudioColumn creation."""
+
+        assert remove_none_values(AudioColumn()) == {
+            "type_config": {"type": "audio"}
+        }, "Should only have the type defined and nothing else."
+
+        assert remove_none_values(
+            AudioColumn("Col1", width="small", help="Help text", pinned=True)
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "pinned": True,
+            "type_config": {"type": "audio"},
+        }, "Should have all the properties defined."
+
+    def test_video_column(self):
+        """Test VideoColumn creation."""
+
+        assert remove_none_values(VideoColumn()) == {
+            "type_config": {"type": "video"}
+        }, "Should only have the type defined and nothing else."
+
+        assert remove_none_values(
+            VideoColumn("Col1", width="small", help="Help text", pinned=True)
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "pinned": True,
+            "type_config": {"type": "video"},
+        }, "Should have all the properties defined."
+
+    def test_json_column(self):
+        """Test JsonColumn creation."""
+
+        assert remove_none_values(JsonColumn()) == {"type_config": {"type": "json"}}, (
+            "Should only have the type defined and nothing else."
         )
 
-        self.assertEqual(
-            remove_none_values(ImageColumn("Col1", width="small", help="Help text")),
-            {
-                "label": "Col1",
-                "width": "small",
-                "help": "Help text",
-                "type_config": {
-                    "type": "image",
-                },
+        assert remove_none_values(
+            JsonColumn("Col1", width="small", help="Help text", pinned=True)
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "pinned": True,
+            "type_config": {"type": "json"},
+        }, "Should have all the properties defined."
+
+    def test_multiselect_column(self):
+        """Test MultiselectColumn creation (basic)."""
+
+        assert remove_none_values(MultiselectColumn()) == {
+            "type_config": {"type": "multiselect"}
+        }, "Should only have the type defined and nothing else."
+
+    def test_multiselect_column_full(self):
+        """Test MultiselectColumn creation with common properties and simple options."""
+
+        assert remove_none_values(
+            MultiselectColumn(
+                "Col1",
+                width="small",
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+                default=["a", "b"],
+                options=["a", "b", "c"],
+                accept_new_options=True,
+            )
+        ) == {
+            "label": "Col1",
+            "width": "small",
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+            "default": ["a", "b"],
+            "type_config": {
+                "type": "multiselect",
+                "options": [
+                    {"value": "a"},
+                    {"value": "b"},
+                    {"value": "c"},
+                ],
+                "accept_new_options": True,
             },
-            "Should have all the properties defined.",
+        }, "Should have all the properties defined."
+
+    def test_multiselect_column_with_format_and_single_color(self):
+        """Test MultiselectColumn options transformed via format_func and colored uniformly."""
+
+        assert remove_none_values(
+            MultiselectColumn(
+                options=["exploration", "visualization", "llm"],
+                color="orange",
+                format_func=lambda x: x.capitalize(),
+            )
+        ) == {
+            "type_config": {
+                "type": "multiselect",
+                "options": [
+                    {"value": "exploration", "label": "Exploration", "color": "orange"},
+                    {
+                        "value": "visualization",
+                        "label": "Visualization",
+                        "color": "orange",
+                    },
+                    {"value": "llm", "label": "Llm", "color": "orange"},
+                ],
+            }
+        }, "Options should include formatted labels and a single repeated color."
+
+    def test_multiselect_column_with_color_iterable(self):
+        """Test MultiselectColumn color cycling when an iterable of colors is provided."""
+
+        assert remove_none_values(
+            MultiselectColumn(
+                options=["a", "b", "c", "d"],
+                color=["red", "blue"],
+            )
+        ) == {
+            "type_config": {
+                "type": "multiselect",
+                "options": [
+                    {"value": "a", "color": "red"},
+                    {"value": "b", "color": "blue"},
+                    {"value": "c", "color": "red"},
+                    {"value": "d", "color": "blue"},
+                ],
+            }
+        }, "Colors should cycle through the provided iterable."
+
+    def test_markdown_column(self):
+        """Test MarkdownColumn creation."""
+
+        assert remove_none_values(MarkdownColumn()) == {
+            "type_config": {"type": "markdown"}
+        }, "Should only have the type defined and nothing else."
+
+        assert remove_none_values(
+            MarkdownColumn(
+                "Col1",
+                width="large",
+                help="Help text",
+                disabled=False,
+                required=True,
+                pinned=True,
+                default="# Default",
+            )
+        ) == {
+            "label": "Col1",
+            "width": "large",
+            "help": "Help text",
+            "disabled": False,
+            "required": True,
+            "pinned": True,
+            "default": "# Default",
+            "type_config": {"type": "markdown"},
+        }, "Should have all the properties defined."
+
+
+@pytest.mark.parametrize(
+    "color",
+    [
+        # Supported named colors
+        "auto",
+        "auto-inverse",
+        "red",
+        "blue",
+        "green",
+        "yellow",
+        "violet",
+        "orange",
+        "gray",
+        "grey",
+        "primary",
+        # CSS-like colors accepted by is_css_color_like
+        "#fff",
+        "#ffff",
+        "#ffffff",
+        "#ffffffff",
+        "rgb(255, 0, 0)",
+        "rgba(0, 0, 0, 0.5)",
+    ],
+)
+def test__validate_chart_color_valid(color: str) -> None:
+    """Validate that supported names and CSS-like colors do not raise."""
+    _validate_chart_color(color)
+
+
+@pytest.mark.parametrize(
+    "color",
+    [
+        "purple",
+        "hsl(0,0%,0%)",
+        "#12",
+        "#12345",
+        "#1234567",
+        "auto-invers",
+        "",
+        " ",
+        "not-a-color",
+        ":material/open_in_new:",
+    ],
+)
+def test__validate_chart_color_invalid(color: str) -> None:
+    """Validate that unsupported names and non CSS-like strings raise StreamlitValueError."""
+    with pytest.raises(StreamlitValueError):
+        _validate_chart_color(color)
+
+
+@pytest.mark.parametrize(
+    "alignment",
+    ["left", "center", "right"],
+)
+def test_column_alignment(alignment: str) -> None:
+    """Test that alignment parameter is correctly set on columns that support it."""
+    # Test generic Column
+    result = Column(alignment=alignment)
+    assert result["alignment"] == alignment
+
+    # Test typed columns that support alignment
+    assert TextColumn(alignment=alignment)["alignment"] == alignment
+    assert NumberColumn(alignment=alignment)["alignment"] == alignment
+    assert CheckboxColumn(alignment=alignment)["alignment"] == alignment
+    assert DateColumn(alignment=alignment)["alignment"] == alignment
+    assert TimeColumn(alignment=alignment)["alignment"] == alignment
+    assert DatetimeColumn(alignment=alignment)["alignment"] == alignment
+    assert LinkColumn(alignment=alignment)["alignment"] == alignment
+    assert ImageColumn(alignment=alignment)["alignment"] == alignment
+    assert AudioColumn(alignment=alignment)["alignment"] == alignment
+    assert VideoColumn(alignment=alignment)["alignment"] == alignment
+    assert JsonColumn(alignment=alignment)["alignment"] == alignment
+    assert MarkdownColumn(alignment=alignment)["alignment"] == alignment
+
+
+def test_column_alignment_none_by_default() -> None:
+    """Test that alignment is None by default and not included in output."""
+    # When alignment is None (default), it should not appear in the result
+    result = remove_none_values(Column())
+    assert "alignment" not in result
+
+    result = remove_none_values(TextColumn())
+    assert "alignment" not in result
+
+
+def test_button_column_basic() -> None:
+    """Test ButtonColumn creation with default parameters."""
+
+    result = remove_none_values(ButtonColumn())
+    assert result == {
+        "disabled": True,
+        "type_config": {"type": "button", "button_type": "secondary"},
+    }, "Should have disabled=True and type_config with button type."
+
+
+def test_button_column_full() -> None:
+    """Test ButtonColumn creation with all common parameters."""
+
+    result = remove_none_values(
+        ButtonColumn(
+            "Actions",
+            width="small",
+            help="Click to perform action",
+            pinned=True,
+            alignment="center",
+            type="primary",
         )
+    )
+    assert result == {
+        "label": "Actions",
+        "width": "small",
+        "help": "Click to perform action",
+        "pinned": True,
+        "alignment": "center",
+        "disabled": True,
+        "type_config": {"type": "button", "button_type": "primary"},
+    }, "Should have all properties defined."
+
+
+def test_button_column_with_key_returns_wrapper() -> None:
+    """Test ButtonColumn returns ButtonColumnResult when key is provided."""
+
+    def my_callback():
+        pass
+
+    result = ButtonColumn(
+        "Click",
+        type="tertiary",
+        on_click=my_callback,
+        args=(1, 2),
+        kwargs={"a": "b"},
+        key="test_key",
+    )
+
+    assert isinstance(result, ButtonColumnResult), (
+        "Should return ButtonColumnResult when key is provided."
+    )
+    assert result.key == "test_key"
+    assert result.on_click is my_callback
+    assert result.args == (1, 2)
+    assert result.kwargs == {"a": "b"}
+    assert result.config["type_config"]["button_type"] == "tertiary"
+
+
+def test_button_column_without_key_returns_config() -> None:
+    """Test ButtonColumn returns ColumnConfig (dict) when no key is provided."""
+
+    result = ButtonColumn("Click", type="primary")
+
+    assert not isinstance(result, ButtonColumnResult), (
+        "Should return ColumnConfig dict when no key is provided."
+    )
+    assert isinstance(result, dict)
+    assert result["type_config"]["type"] == "button"
+
+
+@pytest.mark.parametrize(
+    "kwargs",
+    [
+        {"on_click": lambda: None},
+        {"args": (1, 2)},
+        {"kwargs": {"foo": "bar"}},
+    ],
+    ids=["on_click", "args", "kwargs"],
+)
+def test_button_column_raises_error_for_callback_without_key(
+    kwargs: dict[str, object],
+) -> None:
+    """Test ButtonColumn raises error when callbacks provided without key."""
+    from streamlit.errors import StreamlitAPIException
+
+    with pytest.raises(StreamlitAPIException, match=r"key.*parameter is required"):
+        ButtonColumn("Click", **kwargs)

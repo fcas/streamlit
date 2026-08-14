@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,26 +17,28 @@
 import styled from "@emotion/styled"
 
 interface StyledGraphVizChartProps {
-  isFullScreen: boolean
+  shouldUseFullWidth: boolean
+  shouldUseFullHeight: boolean
 }
 
 export const StyledGraphVizChart = styled.div<StyledGraphVizChartProps>(
-  ({ theme, isFullScreen }) => ({
+  ({ theme, shouldUseFullWidth, shouldUseFullHeight }) => ({
     "& *": {
       fontFamily: theme.genericFonts.bodyFont,
       // Font sizes inside the SVG element are getting huge for some reason.
       // Hacking together a number by eyeballing it:
-      // 12px in the SVG looks like 1rem outside, so 9.6px ~= 0.8rem.
-      fontSize: "9.6px",
+      // 12px in the SVG looks like 1rem outside.
+      fontSize: `calc(${theme.fontSizes.twoSm} * 0.8)`,
     },
 
     // Ensure SVG is allowed the full width/height in full screen mode
     "& svg": {
       maxWidth: "100%",
-      width: isFullScreen ? "100%" : "auto",
-      height: isFullScreen ? "100%" : "auto",
+      width: shouldUseFullWidth ? "100%" : "auto",
+      height: shouldUseFullHeight ? "100%" : "auto",
+      borderRadius: theme.radii.default,
     },
-    width: isFullScreen ? "100%" : "auto",
-    height: isFullScreen ? "100%" : "auto",
+    width: shouldUseFullWidth ? "100%" : "auto",
+    height: shouldUseFullHeight ? "100%" : "auto",
   })
 )

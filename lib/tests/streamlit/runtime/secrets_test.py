@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,20 +14,41 @@
 
 """st.secrets unit tests."""
 
+# ruff: noqa: SIM112
+
+from __future__ import annotations
+
+import contextlib
 import os
-import sys
 import tempfile
+import threading
 import unittest
+from collections.abc import Iterator, Mapping, MutableMapping
 from collections.abc import Mapping as MappingABC
 from collections.abc import MutableMapping as MutableMappingABC
-from typing import Mapping, MutableMapping
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock, mock_open, patch
 
+import pytest
+from blinker import Signal
 from parameterized import parameterized
-from toml import TomlDecodeError
+from typing_extensions import Self
 
-from streamlit.runtime.secrets import SECRETS_FILE_LOCS, AttrDict, Secrets
+import streamlit as st
+from streamlit import config
+from streamlit.errors import StreamlitSecretNotFoundError
+from streamlit.runtime.secrets import (
+    AttrDict,
+    SecretErrorMessages,
+    Secrets,
+    _convert_to_dict,
+)
+from tests import testutil
+from tests.delta_generator_test_case import DeltaGeneratorTestCase
 from tests.exception_capturing_thread import call_on_threads
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 MOCK_TOML = """
 # Everything in this section will be available as an environment variable
@@ -42,6 +63,74 @@ email="eng@streamlit.io"
 MOCK_SECRETS_FILE_LOC = "/mock/secrets.toml"
 
 
+class TestSecretErrorMessages(unittest.TestCase):
+    def test_changing_message(self):
+        messages = SecretErrorMessages()
+        assert (
+            messages.get_missing_attr_message("attr")
+            == 'st.secrets has no attribute "attr". Did you forget to add it to secrets.toml, '
+            "mount it to secret directory, or the app settings on Streamlit Cloud? More info: "
+            "https://docs.streamlit.io/deploy/streamlit-community-cloud/deploy-your-app/secrets-management"
+        )
+
+        messages.set_missing_attr_message(
+            lambda attr: "Missing attribute message",
+        )
+
+        assert messages.get_missing_attr_message([""]) == "Missing attribute message"
+
+    def test_set_and_get_missing_key_message(self) -> None:
+        """Verify set_missing_key_message and get_missing_key_message work correctly."""
+        messages = SecretErrorMessages()
+        messages.set_missing_key_message(lambda key: f"Custom missing key: {key}")
+        assert (
+            messages.get_missing_key_message("my_key") == "Custom missing key: my_key"
+        )
+
+    def test_set_and_get_no_secrets_found_message(self) -> None:
+        """Verify set_no_secrets_found_message and get_no_secrets_found_message work correctly."""
+        messages = SecretErrorMessages()
+        messages.set_no_secrets_found_message(
+            lambda paths: f"No secrets at: {', '.join(paths)}"
+        )
+        assert (
+            messages.get_no_secrets_found_message(["/path/a", "/path/b"])
+            == "No secrets at: /path/a, /path/b"
+        )
+
+    def test_set_and_get_error_parsing_file_at_path_message(self) -> None:
+        """Verify set_error_parsing_file_at_path_message works correctly."""
+        messages = SecretErrorMessages()
+        messages.set_error_parsing_file_at_path_message(
+            lambda path, ex: f"Parse error at {path}: {ex}"
+        )
+        exc = ValueError("invalid toml")
+        assert (
+            messages.get_error_parsing_file_at_path_message("/secrets.toml", exc)
+            == "Parse error at /secrets.toml: invalid toml"
+        )
+
+    def test_set_and_get_subfolder_path_is_not_a_folder_message(self) -> None:
+        """Verify set_subfolder_path_is_not_a_folder_message works correctly."""
+        messages = SecretErrorMessages()
+        messages.set_subfolder_path_is_not_a_folder_message(
+            lambda path: f"Not a folder: {path}"
+        )
+        assert (
+            messages.get_subfolder_path_is_not_a_folder_message("/some/path")
+            == "Not a folder: /some/path"
+        )
+
+    def test_set_and_get_invalid_secret_path_message(self) -> None:
+        """Verify set_invalid_secret_path_message works correctly."""
+        messages = SecretErrorMessages()
+        messages.set_invalid_secret_path_message(lambda path: f"Invalid path: {path}")
+        assert (
+            messages.get_invalid_secret_path_message("/bad/path")
+            == "Invalid path: /bad/path"
+        )
+
+
 class SecretsTest(unittest.TestCase):
     """Tests for st.secrets with a single secrets.toml file"""
 
@@ -51,7 +140,7 @@ class SecretsTest(unittest.TestCase):
         self._prev_environ = dict(os.environ)
         # Run tests on our own Secrets instance to reduce global state
         # mutations.
-        self.secrets = Secrets([MOCK_SECRETS_FILE_LOC])
+        self.secrets = Secrets()
 
     def tearDown(self) -> None:
         os.environ.clear()
@@ -59,16 +148,17 @@ class SecretsTest(unittest.TestCase):
 
     @patch("streamlit.watcher.path_watcher.watch_file")
     @patch("builtins.open", new_callable=mock_open, read_data=MOCK_TOML)
+    @patch("streamlit.config.get_option", return_value=[MOCK_SECRETS_FILE_LOC])
     def test_access_secrets(self, *mocks):
-        self.assertEqual(self.secrets["db_username"], "Jane")
-        self.assertEqual(self.secrets["subsection"]["email"], "eng@streamlit.io")
-        self.assertEqual(self.secrets["subsection"].email, "eng@streamlit.io")
+        assert self.secrets["db_username"] == "Jane"
+        assert self.secrets["subsection"]["email"] == "eng@streamlit.io"
+        assert self.secrets["subsection"].email == "eng@streamlit.io"
 
     @parameterized.expand(
         [
             [
                 False,
-                "Secrets(file_paths=['/mock/secrets.toml'])",
+                "Secrets",
             ],
             [
                 True,
@@ -81,121 +171,94 @@ class SecretsTest(unittest.TestCase):
     )
     @patch("streamlit.watcher.path_watcher.watch_file")
     @patch("builtins.open", new_callable=mock_open, read_data=MOCK_TOML)
+    @patch("streamlit.config.get_option", return_value=[MOCK_SECRETS_FILE_LOC])
     def test_repr_secrets(self, runtime_exists, secrets_repr, *mocks):
         with patch("streamlit.runtime.exists", return_value=runtime_exists):
-            self.assertEqual(repr(self.secrets), secrets_repr)
+            assert repr(self.secrets) == secrets_repr
 
     @patch("streamlit.watcher.path_watcher.watch_file")
     @patch("builtins.open", new_callable=mock_open, read_data=MOCK_TOML)
+    @patch("streamlit.config.get_option", return_value=[MOCK_SECRETS_FILE_LOC])
     def test_access_secrets_via_attribute(self, *mocks):
-        self.assertEqual(self.secrets.db_username, "Jane")
-        self.assertEqual(self.secrets.subsection["email"], "eng@streamlit.io")
-        self.assertEqual(self.secrets.subsection.email, "eng@streamlit.io")
-
-    def test_secrets_file_location(self):
-        """Verify that we're looking for secrets.toml in the right place."""
-        if "win32" not in sys.platform:
-            # conftest.py sets the HOME envvar to "/mock/home/folder".
-            expected_global_path = "/mock/home/folder/.streamlit/secrets.toml"
-        else:
-            # On windows systems, HOME does not work so we look in the user's directory instead.
-            expected_global_path = os.path.join(
-                os.path.expanduser("~"), ".streamlit", "secrets.toml"
-            )
-        self.assertEqual(
-            [
-                expected_global_path,
-                os.path.abspath("./.streamlit/secrets.toml"),
-            ],
-            SECRETS_FILE_LOCS,
-        )
+        assert self.secrets.db_username == "Jane"
+        assert self.secrets.subsection["email"] == "eng@streamlit.io"
+        assert self.secrets.subsection.email == "eng@streamlit.io"
 
     @patch("builtins.open", new_callable=mock_open, read_data=MOCK_TOML)
     def test_os_environ(self, _):
         """os.environ gets patched when we load our secrets.toml"""
         # We haven't loaded secrets yet
-        self.assertEqual(os.environ.get("db_username"), None)
+        assert os.environ.get("db_username") is None
 
         self.secrets.load_if_toml_exists()
-        self.assertEqual(os.environ["db_username"], "Jane")
-        self.assertEqual(os.environ["db_password"], "12345qwerty")
+        assert os.environ["db_username"] == "Jane"
+        assert os.environ["db_password"] == "12345qwerty"
 
         # Subsections do not get loaded into os.environ
-        self.assertEqual(os.environ.get("subsection"), None)
+        assert os.environ.get("subsection") is None
 
     @patch("builtins.open", new_callable=mock_open, read_data=MOCK_TOML)
     def test_load_if_toml_exists_returns_true_if_parse_succeeds(self, _):
-        self.assertTrue(self.secrets.load_if_toml_exists())
+        assert self.secrets.load_if_toml_exists()
 
     def test_load_if_toml_exists_returns_false_if_parse_fails(self):
-        self.assertFalse(self.secrets.load_if_toml_exists())
+        assert not self.secrets.load_if_toml_exists()
 
-    @patch("streamlit.error")
-    def test_missing_toml_error(self, mock_st_error):
-        """Secrets access raises an error, and calls st.error, if
-        secrets.toml is missing.
-        """
+    @patch("streamlit.config.get_option", return_value=[MOCK_SECRETS_FILE_LOC])
+    def test_missing_toml_error(self, _):
+        """Secrets access raises an error if secrets.toml is missing."""
         with patch("builtins.open", mock_open()) as mock_file:
             mock_file.side_effect = FileNotFoundError()
 
-            with self.assertRaises(FileNotFoundError):
+            with pytest.raises(StreamlitSecretNotFoundError):
                 self.secrets.get("no_such_secret", None)
 
-        mock_st_error.assert_called_once_with(
-            f"No secrets files found. Valid paths for a secrets.toml file are: {MOCK_SECRETS_FILE_LOC}"
-        )
-
     @patch("builtins.open", new_callable=mock_open, read_data="invalid_toml")
-    @patch("streamlit.error")
-    def test_malformed_toml_error(self, mock_st_error, _):
-        """Secrets access raises an error, and calls st.error, if
-        secrets.toml is malformed.
-        """
-        with self.assertRaises(TomlDecodeError):
+    @patch("streamlit.config.get_option", return_value=[MOCK_SECRETS_FILE_LOC])
+    def test_malformed_toml_error(self, mock_get_option, _):
+        """Secrets access raises an error if secrets.toml is malformed."""
+        with pytest.raises(StreamlitSecretNotFoundError):
             self.secrets.get("no_such_secret", None)
-
-        mock_st_error.assert_called_once_with(
-            f"Error parsing secrets file at /mock/secrets.toml"
-        )
 
     @patch("streamlit.watcher.path_watcher.watch_file")
     @patch("builtins.open", new_callable=mock_open, read_data=MOCK_TOML)
     def test_getattr_nonexistent(self, *mocks):
         """Verify that access to missing attribute raises  AttributeError."""
-        with self.assertRaises(AttributeError):
-            self.secrets.nonexistent_secret
+        with pytest.raises(AttributeError):
+            self.secrets.nonexistent_secret  # noqa: B018
 
-        with self.assertRaises(AttributeError):
-            self.secrets.subsection.nonexistent_secret
+        with pytest.raises(AttributeError):
+            self.secrets.subsection.nonexistent_secret  # noqa: B018
 
     @patch("streamlit.watcher.path_watcher.watch_file")
     @patch("builtins.open", new_callable=mock_open, read_data=MOCK_TOML)
     def test_getattr_raises_exception_on_attr_dict(self, *mocks):
         """Verify that assignment to nested secrets raises TypeError."""
-        with self.assertRaises(TypeError):
+        with pytest.raises(TypeError):
             self.secrets.subsection["new_secret"] = "123"
 
-        with self.assertRaises(TypeError):
+        with pytest.raises(TypeError):
             self.secrets.subsection.new_secret = "123"
 
     @patch("streamlit.watcher.path_watcher.watch_file")
     @patch("builtins.open", new_callable=mock_open, read_data=MOCK_TOML)
     def test_getitem_nonexistent(self, *mocks):
         """Verify that access to missing key via dict notation raises KeyError."""
-        with self.assertRaises(KeyError):
+        with pytest.raises(KeyError):
             self.secrets["nonexistent_secret"]
 
-        with self.assertRaises(KeyError):
+        with pytest.raises(KeyError):
             self.secrets["subsection"]["nonexistent_secret"]
 
     @patch("streamlit.watcher.path_watcher.watch_file")
-    def test_reload_secrets_when_file_changes(self, mock_watch_file):
+    @patch("streamlit.config.get_option", return_value=[MOCK_SECRETS_FILE_LOC])
+    def test_reload_secrets_when_file_changes(self, mock_get_option, mock_watch_file):
         """When secrets.toml is loaded, the secrets file gets watched."""
         with patch("builtins.open", new_callable=mock_open, read_data=MOCK_TOML):
-            self.assertEqual("Jane", self.secrets["db_username"])
-            self.assertEqual("12345qwerty", self.secrets["db_password"])
-            self.assertEqual("Jane", os.environ["db_username"])
-            self.assertEqual("12345qwerty", os.environ["db_password"])
+            assert self.secrets["db_username"] == "Jane"
+            assert self.secrets["db_password"] == "12345qwerty"
+            assert os.environ["db_username"] == "Jane"
+            assert os.environ["db_password"] == "12345qwerty"
 
         # watch_file should have been called on the "secrets.toml" file with
         # the "poll" watcher_type. ("poll" is used here - rather than whatever
@@ -203,7 +266,7 @@ class SecretsTest(unittest.TestCase):
         # a virtual filesystem that watchdog is unable to fire events for.)
         mock_watch_file.assert_called_once_with(
             MOCK_SECRETS_FILE_LOC,
-            self.secrets._on_secrets_file_changed,
+            self.secrets._on_secrets_changed,
             watcher_type="poll",
         )
 
@@ -216,23 +279,61 @@ class SecretsTest(unittest.TestCase):
             # Trigger a secrets file reload, ensure the secrets dict
             # gets repopulated as expected, and ensure that os.environ is
             # also updated properly.
-            self.secrets._on_secrets_file_changed(MOCK_SECRETS_FILE_LOC)
+            self.secrets._on_secrets_changed(MOCK_SECRETS_FILE_LOC)
 
             # A change in `secrets.toml` should emit a signal.
             self.secrets.file_change_listener.send.assert_called_once()
 
-            self.assertEqual("Joan", self.secrets["db_username"])
-            self.assertIsNone(self.secrets.get("db_password"))
-            self.assertEqual("Joan", os.environ["db_username"])
-            self.assertIsNone(os.environ.get("db_password"))
+            assert self.secrets["db_username"] == "Joan"
+            assert self.secrets.get("db_password") is None
+            assert os.environ["db_username"] == "Joan"
+            assert os.environ.get("db_password") is None
+
+    @patch("streamlit.watcher.path_watcher.watch_file")
+    @patch("builtins.open", new_callable=mock_open, read_data=MOCK_TOML)
+    def test_internal_attribute_assignment_allowed(self, *mocks):
+        """Verify that internal attribute assignment is allowed."""
+        # Test setting each allowed internal attribute
+        self.secrets._secrets = {}
+        assert self.secrets._secrets == {}
+
+        # Create and test RLock
+        lock = threading.RLock()
+        self.secrets._lock = lock
+        assert self.secrets._lock == lock
+        # Verify it's actually a lock by trying to acquire it
+        assert self.secrets._lock.acquire(blocking=False)
+        self.secrets._lock.release()
+
+        self.secrets._file_watchers_installed = True
+        assert self.secrets._file_watchers_installed
+
+        self.secrets._suppress_print_error_on_exception = True
+        assert self.secrets._suppress_print_error_on_exception
+
+        self.secrets.file_change_listener = Signal()
+        assert isinstance(self.secrets.file_change_listener, Signal)
+
+        # Test that load_if_toml_exists can be assigned
+        original_method = self.secrets.load_if_toml_exists
+        self.secrets.load_if_toml_exists = lambda: True
+        assert self.secrets.load_if_toml_exists != original_method
+
+    @patch("streamlit.watcher.path_watcher.watch_file")
+    @patch("builtins.open", new_callable=mock_open, read_data=MOCK_TOML)
+    def test_attribute_assignment_raises_type_error(self, *mocks):
+        """Verify that attribute assignment raises TypeError."""
+        with pytest.raises(TypeError) as cm:
+            self.secrets.new_secret = "123"
+        assert str(cm.value) == "Secrets does not support attribute assignment."
 
 
 class MultipleSecretsFilesTest(unittest.TestCase):
     """Tests for st.secrets with multiple secrets.toml files."""
 
     def setUp(self) -> None:
-        self._fd1, self._path1 = tempfile.mkstemp()
-        self._fd2, self._path2 = tempfile.mkstemp()
+        self._fd1, self._path1 = tempfile.mkstemp(".toml")
+        self._fd2, self._path2 = tempfile.mkstemp(".toml")
 
         # st.secrets modifies os.environ, so we save it here and
         # restore in tearDown.
@@ -244,30 +345,28 @@ class MultipleSecretsFilesTest(unittest.TestCase):
 
         # close the file descriptors (which is required on windows before removing the file)
         for fd in (self._fd1, self._fd2):
-            try:
+            with contextlib.suppress(OSError):
                 os.close(fd)
-            except OSError:
-                pass
 
         os.remove(self._path1)
         os.remove(self._path2)
 
-    @patch("streamlit.error")
-    def test_no_secrets_files_explodes(self, mock_st_error):
+    def test_no_secrets_files_explodes(self):
         """Validate that an error is thrown if none of the given secrets.toml files exist."""
 
         secrets_file_locations = [
             "/mock1/secrets.toml",
             "/mock2/secrets.toml",
         ]
-        secrets = Secrets(secrets_file_locations)
-
-        with self.assertRaises(FileNotFoundError):
-            secrets.get("no_such_secret", None)
-
-        mock_st_error.assert_called_once_with(
-            f"No secrets files found. Valid paths for a secrets.toml file are: /mock1/secrets.toml, /mock2/secrets.toml"
+        mock_get_option = testutil.build_mock_config_get_option(
+            {"secrets.files": secrets_file_locations}
         )
+
+        with patch("streamlit.config.get_option", new=mock_get_option):
+            secrets = Secrets()
+
+            with pytest.raises(StreamlitSecretNotFoundError):
+                secrets.get("no_such_secret", None)
 
     @patch("streamlit.runtime.secrets._LOGGER")
     def test_only_one_secrets_file_fine(self, patched_logger):
@@ -278,10 +377,15 @@ class MultipleSecretsFilesTest(unittest.TestCase):
             self._path1,
             "/mock2/secrets.toml",
         ]
-        secrets = Secrets(secrets_file_locations)
+        mock_get_option = testutil.build_mock_config_get_option(
+            {"secrets.files": secrets_file_locations}
+        )
 
-        self.assertEqual(secrets.db_username, "Jane")
-        patched_logger.info.assert_not_called()
+        with patch("streamlit.config.get_option", new=mock_get_option):
+            secrets = Secrets()
+
+            assert secrets.db_username == "Jane"
+            patched_logger.info.assert_not_called()
 
     @patch("streamlit.runtime.secrets._LOGGER")
     def test_secret_overwriting(self, patched_logger):
@@ -307,26 +411,26 @@ email2="eng2@streamlit.io"
             self._path1,
             self._path2,
         ]
-        secrets = Secrets(secrets_file_locations)
-
-        # secrets.db_username is only defined in the first secrets.toml file, so it
-        # remains unchanged.
-        self.assertEqual(secrets.db_username, "Jane")
-
-        # secrets.db_password should be overwritten because it's set to a different
-        # value in our second secrets.toml file.
-        self.assertEqual(secrets.db_password, "54321dvorak")
-
-        # secrets.hi only appears in our second secrets.toml file.
-        self.assertEqual(secrets.hi, "I'm new")
-
-        # Secrets subsections are overwritten entirely rather than being merged.
-        self.assertEqual(secrets.subsection, {"email2": "eng2@streamlit.io"})
-
-        patched_logger.info.assert_called_once_with(
-            f"Secrets found in multiple locations: {self._path1}, {self._path2}. "
-            "When multiple secret.toml files exist, local secrets will take precedence over global secrets."
+        mock_get_option = testutil.build_mock_config_get_option(
+            {"secrets.files": secrets_file_locations}
         )
+
+        with patch("streamlit.config.get_option", new=mock_get_option):
+            secrets = Secrets()
+
+            # secrets.db_username is only defined in the first secrets.toml file, so it
+            # remains unchanged.
+            assert secrets.db_username == "Jane"
+
+            # secrets.db_password should be overwritten because it's set to a different
+            # value in our second secrets.toml file.
+            assert secrets.db_password == "54321dvorak"
+
+            # secrets.hi only appears in our second secrets.toml file.
+            assert secrets.hi == "I'm new"
+
+            # Secrets subsections are overwritten entirely rather than being merged.
+            assert secrets.subsection == {"email2": "eng2@streamlit.io"}
 
 
 class SecretsThreadingTests(unittest.TestCase):
@@ -337,7 +441,7 @@ class SecretsThreadingTests(unittest.TestCase):
         # st.secrets modifies os.environ, so we save it here and
         # restore in tearDown.
         self._prev_environ = dict(os.environ)
-        self.secrets = Secrets(MOCK_SECRETS_FILE_LOC)
+        self.secrets = Secrets()
 
     def tearDown(self) -> None:
         os.environ.clear()
@@ -349,9 +453,9 @@ class SecretsThreadingTests(unittest.TestCase):
         """Accessing secrets is thread-safe."""
 
         def access_secrets(_: int) -> None:
-            self.assertEqual(self.secrets["db_username"], "Jane")
-            self.assertEqual(self.secrets["subsection"]["email"], "eng@streamlit.io")
-            self.assertEqual(self.secrets["subsection"].email, "eng@streamlit.io")
+            assert self.secrets["db_username"] == "Jane"
+            assert self.secrets["subsection"]["email"] == "eng@streamlit.io"
+            assert self.secrets["subsection"].email == "eng@streamlit.io"
 
         call_on_threads(access_secrets, num_threads=self.NUM_THREADS)
 
@@ -363,20 +467,87 @@ class SecretsThreadingTests(unittest.TestCase):
         def reload_secrets(_: int) -> None:
             # Reset secrets, and then access a secret to reparse.
             self.secrets._reset()
-            self.assertEqual(self.secrets["db_username"], "Jane")
+            assert self.secrets["db_username"] == "Jane"
 
         call_on_threads(reload_secrets, num_threads=self.NUM_THREADS)
+
+
+class SecretsDirectoryTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.temp_dir_path = self.temp_dir.name
+        os.makedirs(os.path.join(self.temp_dir_path, "example_login"))
+        with open(
+            os.path.join(self.temp_dir_path, "example_login", "username"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write("example_username")
+        with open(
+            os.path.join(self.temp_dir_path, "example_login", "password"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write("example_password")
+        os.makedirs(os.path.join(self.temp_dir_path, "example_token"))
+        with open(
+            os.path.join(self.temp_dir_path, "example_token", "token"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write("token123")
+
+        self.secrets = Secrets()
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    @patch("streamlit.watcher.path_watcher.watch_dir")
+    def test_access_secrets(self, mock_watch_dir):
+        mock_get_option = testutil.build_mock_config_get_option(
+            {"secrets.files": [self.temp_dir_path]}
+        )
+
+        with patch("streamlit.config.get_option", new=mock_get_option):
+            assert self.secrets["example_login"]["username"] == "example_username"
+            assert self.secrets["example_login"]["password"] == "example_password"
+            assert self.secrets["example_token"] == "token123"
+
+            mock_watch_dir.assert_called_once_with(
+                self.temp_dir_path,
+                self.secrets._on_secrets_changed,
+                watcher_type="poll",
+            )
+
+    @patch("streamlit.watcher.path_watcher.watch_dir", MagicMock())
+    def test_secrets_reload(self):
+        with open(
+            os.path.join(self.temp_dir_path, "example_login", "password"),
+            "w",
+            encoding="utf-8",
+        ) as f:
+            f.write("example_password2")
+
+        mock_get_option = testutil.build_mock_config_get_option(
+            {"secrets.files": [self.temp_dir_path]}
+        )
+
+        with patch("streamlit.config.get_option", new=mock_get_option):
+            self.secrets._on_secrets_changed(self.temp_dir_path)
+            assert self.secrets["example_login"]["username"] == "example_username"
+            assert self.secrets["example_login"]["password"] == "example_password2"
+            assert self.secrets["example_token"] == "token123"
 
 
 class AttrDictTest(unittest.TestCase):
     def test_attr_dict_is_mapping_but_not_built_in_dict(self):
         """Verify that AttrDict implements Mapping, but not built-in Dict"""
         attr_dict = AttrDict({"x": {"y": "z"}})
-        self.assertIsInstance(attr_dict.x, Mapping)
-        self.assertIsInstance(attr_dict.x, MappingABC)
-        self.assertNotIsInstance(attr_dict.x, MutableMapping)
-        self.assertNotIsInstance(attr_dict.x, MutableMappingABC)
-        self.assertNotIsInstance(attr_dict.x, dict)
+        assert isinstance(attr_dict.x, Mapping)
+        assert isinstance(attr_dict.x, MappingABC)
+        assert not isinstance(attr_dict.x, MutableMapping)
+        assert not isinstance(attr_dict.x, MutableMappingABC)
+        assert not isinstance(attr_dict.x, dict)
 
     def test_attr_dict_to_dict(self):
         d = {"x": {"y": "z"}}
@@ -389,3 +560,585 @@ class AttrDictTest(unittest.TestCase):
         attr_dict.to_dict()["x"]["y"] = "zed"
         assert attr_dict.x.y == "z"
         assert d["x"]["y"] == "z"
+
+
+class SecretsFallbackTest(DeltaGeneratorTestCase):
+    """Test that secrets falls back gracefully in various error scenarios."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_environ = dict(os.environ)
+        st.secrets._reset()
+
+        # Keep track of the original config
+        self._orig_secrets_files = config.get_option("secrets.files")
+
+        # Define mock paths we'll use
+        self.mock_path = "/mock/path/secrets.toml"
+
+    def tearDown(self) -> None:
+        super().tearDown()
+        os.environ.clear()
+        os.environ.update(self._orig_environ)
+        st.secrets._reset()
+
+        # Restore the original config
+        config._set_option("secrets.files", self._orig_secrets_files, "test")
+
+    def test_nonexistent_file_fallback_no_error(self):
+        """Test fallback when no secrets file exists."""
+        # Point to a non-existent path
+        config._set_option(
+            "secrets.files", ["/definitely/not/a/real/path/secrets.toml"], "test"
+        )
+
+        # Test the fallback pattern
+        self._run_token_fallback_test()
+
+    @patch("os.path.exists", return_value=True)  # Make it think the file exists
+    @patch(
+        "builtins.open",
+        new_callable=mock_open,
+        read_data="""
+        # This TOML file has secrets but not the one we're looking for
+        db_username = "Jane"
+        db_password = "12345qwerty"
+
+        [subsection]
+        email = "eng@streamlit.io"
+        """,
+    )
+    def test_missing_key_fallback_no_error(self, mock_open, mock_exists):
+        """Test fallback when the secrets file exists but doesn't have the target key."""
+        # Point to our mock path
+        config._set_option("secrets.files", [self.mock_path], "test")
+
+        # Test the fallback pattern
+        self._run_token_fallback_test()
+
+    @patch("os.path.exists", return_value=True)  # Make it think the file exists
+    @patch(
+        "builtins.open",
+        new_callable=mock_open,
+        read_data="This is not valid TOML syntax",
+    )
+    def test_invalid_toml_fallback_no_error(self, mock_open, mock_exists):
+        """Test fallback when the secrets file has invalid TOML syntax."""
+        # Point to our mock path
+        config._set_option("secrets.files", [self.mock_path], "test")
+
+        # Test the fallback pattern
+        self._run_token_fallback_test()
+
+    def _run_token_fallback_test(self):
+        """Helper that runs the token fallback pattern and verifies UI behavior."""
+        # The key we'll try to access that doesn't exist
+        TARGET_KEY = "TOKEN"
+
+        # Run the pattern from the example
+        token = None
+
+        try:
+            if TARGET_KEY in st.secrets:
+                token = st.secrets[TARGET_KEY]
+        except StreamlitSecretNotFoundError:
+            pass
+
+        if not token:
+            token = st.text_input("Pass in your token!", type="password")
+
+        # Check that a text_input was created (this confirms the fallback worked)
+        text_input_proto = self.get_delta_from_queue().new_element.text_input
+        assert text_input_proto.label == "Pass in your token!"
+
+        # In the protocol buffer, password type is represented by enum value 1
+        assert text_input_proto.type == 1  # 1 corresponds to "password" type
+
+        # Verify no error messages were sent to the UI
+        deltas = self.get_all_deltas_from_queue()
+
+        # Check for error messages in a way that's compatible with the Delta structure
+        for delta in deltas:
+            # Check if this is an error message delta
+            if delta.HasField("new_element"):
+                element = delta.new_element
+                # Check if the element has an exception field
+                assert not element.HasField("exception")
+                # Also check for markdown elements that might contain error messages
+                if element.HasField("markdown"):
+                    markdown_text = element.markdown.body
+                    assert "Error" not in markdown_text
+                    assert "error" not in markdown_text
+
+
+@pytest.fixture
+def restore_os_environ() -> Iterator[None]:
+    """Save and restore ``os.environ`` for tests that load secrets."""
+    prev = dict(os.environ)
+    yield None
+    os.environ.clear()
+    os.environ.update(prev)
+
+
+@pytest.fixture
+def mock_loaded_secrets(restore_os_environ) -> Iterator[Secrets]:
+    """``Secrets`` loaded from ``MOCK_TOML`` with file I/O and config patched."""
+    with (
+        patch("streamlit.watcher.path_watcher.watch_file"),
+        patch("builtins.open", new_callable=mock_open, read_data=MOCK_TOML),
+        patch("streamlit.config.get_option", return_value=[MOCK_SECRETS_FILE_LOC]),
+    ):
+        yield Secrets()
+
+
+@pytest.mark.parametrize(
+    ("obj", "expected"),
+    [
+        (AttrDict({"a": 1, "b": "two"}), {"a": 1, "b": "two"}),
+        (
+            {"nested": AttrDict({"x": 1})},
+            {"nested": {"x": 1}},
+        ),
+        ({"plain": 1}, {"plain": 1}),
+    ],
+)
+def test_convert_to_dict(
+    obj: Mapping[str, Any] | AttrDict, expected: dict[str, Any]
+) -> None:
+    """``_convert_to_dict`` unwraps ``AttrDict`` and plain ``Mapping`` values."""
+    assert _convert_to_dict(obj) == expected
+
+
+def test_attr_dict_repr() -> None:
+    """``AttrDict.__repr__`` mirrors the wrapped nested mapping."""
+    data = {"k": "v", "n": {"inner": 1}}
+    attr_dict = AttrDict(data)
+    assert repr(attr_dict) == repr(data)
+    assert len(attr_dict) == 2
+
+
+# --- Tests for _validate_secrets_value ---
+
+
+class TestValidateSecretsValue:
+    """Tests for the _validate_secrets_value function."""
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            pytest.param("string", id="str"),
+            pytest.param(42, id="int"),
+            pytest.param(3.14, id="float"),
+            pytest.param(True, id="bool_true"),
+            pytest.param(False, id="bool_false"),
+            pytest.param(["id", "access"], id="list"),
+            pytest.param([], id="empty_list"),
+            pytest.param(
+                {"auth": {"expose_tokens": ["id", "access"]}}, id="nested_list"
+            ),
+            pytest.param(
+                {"sections": [{"name": "primary", "enabled": True}]},
+                id="list_of_dicts",
+            ),
+            pytest.param({"level1": {"level2": {"value": "deep"}}}, id="nested_dict"),
+            pytest.param(
+                {"mixed": {"str": "a", "int": 1, "float": 2.5, "bool": True}},
+                id="mixed_nested",
+            ),
+        ],
+    )
+    def test_valid_types_pass_validation(self, value: object) -> None:
+        """Valid scalar, list, and nested dict types pass validation."""
+        from streamlit.runtime.secrets import _validate_secrets_value
+
+        # Should not raise
+        _validate_secrets_value(value, "key")
+
+    @pytest.mark.parametrize(
+        ("value", "expected_match"),
+        [
+            pytest.param(None, "Unsupported type 'NoneType'", id="none"),
+            pytest.param(("a", "b"), "Unsupported type 'tuple'", id="tuple"),
+        ],
+    )
+    def test_invalid_types_raise_typeerror(
+        self, value: object, expected_match: str
+    ) -> None:
+        """Invalid types raise TypeError with descriptive message."""
+        from streamlit.runtime.secrets import _validate_secrets_value
+
+        with pytest.raises(TypeError, match=expected_match):
+            _validate_secrets_value(value, "key")
+
+    def test_invalid_nested_list_value_includes_path(self) -> None:
+        """Nested invalid list values include the indexed path in the error message."""
+        from streamlit.runtime.secrets import _validate_secrets_value
+
+        with pytest.raises(TypeError, match=r"at 'key\.outer\.inner\[2\]'"):
+            _validate_secrets_value({"outer": {"inner": [1, "ok", None]}}, "key")
+
+    def test_invalid_custom_object(self) -> None:
+        """Custom objects raise TypeError."""
+        from datetime import datetime
+
+        from streamlit.runtime.secrets import _validate_secrets_value
+
+        with pytest.raises(TypeError, match="Unsupported type 'datetime'"):
+            _validate_secrets_value(datetime.now(), "key")
+
+    def test_non_string_dict_key_raises_typeerror(self) -> None:
+        """Non-string dictionary keys raise TypeError."""
+        from streamlit.runtime.secrets import _validate_secrets_value
+
+        with pytest.raises(TypeError, match=r"Dictionary keys.*must be strings.*int"):
+            _validate_secrets_value({1: "value"}, "")
+
+    def test_non_string_nested_dict_key_includes_path(self) -> None:
+        """Non-string nested dictionary keys include the path in the error message."""
+        from streamlit.runtime.secrets import _validate_secrets_value
+
+        with pytest.raises(TypeError, match=r"in 'outer'"):
+            _validate_secrets_value({"outer": {2: "nested_value"}}, "")
+
+
+# --- Tests for Secrets.merge_programmatic_secrets ---
+
+
+class TestMergeProgrammaticSecrets:
+    """Tests for the Secrets.merge_programmatic_secrets method."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_secrets(self, restore_os_environ: None) -> Iterator[None]:
+        """Ensure os.environ is restored after each test.
+
+        This fixture depends on restore_os_environ to save/restore os.environ.
+        Tests in this class create fresh Secrets() instances, so no singleton
+        reset is needed - the fixture's role is purely environment cleanup.
+        """
+        return
+
+    def test_merge_into_empty_secrets(self) -> None:
+        """Merging into empty secrets store works correctly."""
+        secrets = Secrets()
+        secrets.merge_programmatic_secrets({"api_key": "secret123"})
+
+        assert secrets["api_key"] == "secret123"
+
+    def test_merge_shallow_override(self) -> None:
+        """Programmatic secrets shallow-override file-based secrets at top level."""
+        secrets = Secrets()
+        secrets._secrets = {"auth": {"user": "file_user", "pass": "file_pass"}}
+
+        secrets.merge_programmatic_secrets({"auth": {"client_id": "prog_id"}})
+
+        # The entire "auth" section is replaced (shallow merge)
+        assert secrets["auth"]["client_id"] == "prog_id"
+        assert "user" not in secrets["auth"]
+
+    def test_merge_preserves_other_keys(self) -> None:
+        """Merging preserves keys not in programmatic secrets."""
+        secrets = Secrets()
+        secrets._secrets = {"existing": "value", "keep": {"nested": True}}
+
+        secrets.merge_programmatic_secrets({"new": "added"})
+
+        assert secrets["existing"] == "value"
+        assert secrets["keep"]["nested"] is True
+        assert secrets["new"] == "added"
+
+    @pytest.mark.parametrize(
+        ("key", "value", "expected_environ"),
+        [
+            pytest.param("str_key", "string_value", "string_value", id="str"),
+            pytest.param("int_key", 42, "42", id="int"),
+            pytest.param("float_key", 3.14, "3.14", id="float"),
+        ],
+    )
+    def test_merge_promotes_scalars_to_environ(
+        self, key: str, value: str | int | float, expected_environ: str
+    ) -> None:
+        """Top-level str/int/float values are promoted to os.environ."""
+        secrets = Secrets()
+        secrets.merge_programmatic_secrets({key: value})
+
+        assert os.environ[key] == expected_environ
+
+    def test_merge_does_not_promote_dicts_lists_or_bools(self) -> None:
+        """Dict, list, and bool values are not promoted to os.environ."""
+        secrets = Secrets()
+        secrets.merge_programmatic_secrets(
+            {
+                "dict_key": {"nested": "value"},
+                "list_key": ["id", "access"],
+                "bool_key": True,
+            }
+        )
+
+        assert "dict_key" not in os.environ
+        assert "list_key" not in os.environ
+        assert "bool_key" not in os.environ
+
+    def test_merge_accepts_list_values(self) -> None:
+        """Programmatic secrets support list values like TOML arrays."""
+        secrets = Secrets()
+
+        secrets.merge_programmatic_secrets(
+            {"auth": {"expose_tokens": ["id", "access"]}}
+        )
+
+        assert secrets["auth"]["expose_tokens"] == ["id", "access"]
+
+    def test_merge_accepts_list_of_dicts(self) -> None:
+        """Lists of dicts round-trip through the store like TOML arrays of tables."""
+        secrets = Secrets()
+
+        secrets.merge_programmatic_secrets(
+            {"sections": [{"name": "primary", "enabled": True}]}
+        )
+
+        assert secrets["sections"][0]["name"] == "primary"
+        assert secrets["sections"][0]["enabled"] is True
+
+    def test_merge_replaces_environ_on_override(self) -> None:
+        """When overriding a key, the environ value is updated."""
+        secrets = Secrets()
+        secrets._secrets = {"key": "old_value"}
+        os.environ["key"] = "old_value"
+
+        secrets.merge_programmatic_secrets({"key": "new_value"})
+
+        assert os.environ["key"] == "new_value"
+
+    def test_merge_removes_environ_when_int_overridden_with_dict(self) -> None:
+        """When an int/float env var is overridden with dict/bool, it's removed."""
+        secrets = Secrets()
+        # Set up initial int secret that was promoted to environ
+        secrets._secrets = {"port": 5432}
+        os.environ["port"] = "5432"
+
+        # Override with a dict (which should NOT be promoted to environ)
+        secrets.merge_programmatic_secrets({"port": {"host": "localhost"}})
+
+        # The old int env var should be removed
+        assert "port" not in os.environ
+
+    def test_merge_validates_types(self) -> None:
+        """Merging invalid types raises TypeError."""
+        secrets = Secrets()
+
+        with pytest.raises(TypeError, match="Unsupported type 'set'"):
+            secrets.merge_programmatic_secrets({"bad": {"unsupported"}})  # type: ignore[dict-item]
+
+    def test_merge_validates_top_level_keys_are_strings(self) -> None:
+        """Merging with non-string top-level keys raises TypeError."""
+        secrets = Secrets()
+
+        with pytest.raises(
+            TypeError, match=r"Dictionary keys in secrets must be strings.*at top level"
+        ):
+            secrets.merge_programmatic_secrets({123: "value"})  # type: ignore[dict-item]
+
+    def test_merge_thread_safety(self) -> None:
+        """Merging is thread-safe with concurrent reads."""
+        secrets = Secrets()
+        secrets._secrets = {"counter": 0}
+        errors: list[Exception] = []
+
+        def reader() -> None:
+            try:
+                for _ in range(100):
+                    _ = secrets["counter"]
+            except Exception as e:
+                errors.append(e)
+
+        def writer() -> None:
+            try:
+                for i in range(100):
+                    secrets.merge_programmatic_secrets({"counter": i})
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=reader) for _ in range(3)]
+        threads.append(threading.Thread(target=writer))
+
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert not errors, f"Thread errors: {errors}"
+
+    def test_programmatic_secrets_survive_file_reload(self, tmp_path: Path) -> None:
+        """Programmatic secrets are re-applied after file-change reload."""
+        # Create a secrets.toml file
+        toml_file = tmp_path / "secrets.toml"
+        toml_file.write_text('file_key = "file_value"', encoding="utf-8")
+
+        mock_get_option = testutil.build_mock_config_get_option(
+            {"secrets.files": [str(toml_file)]}
+        )
+
+        with patch("streamlit.config.get_option", new=mock_get_option):
+            with patch("streamlit.watcher.path_watcher.watch_file"):
+                secrets = Secrets()
+
+                # Parse the file first to load file-based secrets
+                secrets.load_if_toml_exists()
+
+                # Merge programmatic secrets
+                secrets.merge_programmatic_secrets(
+                    {"prog_key": "prog_value", "prog_int": 42}
+                )
+
+                # Verify both file and programmatic secrets are present
+                assert secrets["file_key"] == "file_value"
+                assert secrets["prog_key"] == "prog_value"
+                assert os.environ.get("prog_int") == "42"
+
+                # Simulate file change (which triggers _on_secrets_changed)
+                toml_file.write_text('file_key = "new_file_value"', encoding="utf-8")
+                secrets._on_secrets_changed(str(toml_file))
+
+                # After reload, file-based secrets should be updated
+                assert secrets["file_key"] == "new_file_value"
+
+                # Programmatic secrets should survive the reload
+                assert secrets["prog_key"] == "prog_value"
+                # Environment variables should also be re-applied
+                assert os.environ.get("prog_int") == "42"
+
+
+def test_parse_directory_raises_when_top_level_entry_is_not_folder(
+    tmp_path: Path,
+) -> None:
+    """A file directly under the secrets directory must raise ``StreamlitSecretNotFoundError``."""
+    secret_root = tmp_path / "secret_root"
+    secret_root.mkdir()
+    bad_path = secret_root / "not_a_folder"
+    bad_path.write_text("oops", encoding="utf-8")
+    good = secret_root / "ok"
+    good.mkdir()
+    (good / "f").write_text("v", encoding="utf-8")
+
+    secrets = Secrets()
+    with pytest.raises(StreamlitSecretNotFoundError) as excinfo:
+        secrets._parse_directory(str(secret_root))
+
+    assert str(bad_path) in str(excinfo.value)
+    assert "not a folder" in str(excinfo.value).lower()
+
+
+def test_parse_directory_skips_nested_subdirectory(tmp_path: Path) -> None:
+    """Nested directories inside a secret subfolder are ignored."""
+    secret_root = tmp_path / "secret_root"
+    secret_root.mkdir()
+    sub = secret_root / "my_secret"
+    sub.mkdir()
+    (sub / "token").write_text("abc", encoding="utf-8")
+    nested = sub / "ignored_nested"
+    nested.mkdir()
+    (nested / "extra.txt").write_text("should_not_appear", encoding="utf-8")
+
+    secrets = Secrets()
+    mapping, found = secrets._parse_directory(str(secret_root))
+
+    assert found is True
+    assert mapping == {"my_secret": "abc"}
+
+
+def test_parse_file_path_rejects_non_toml_non_directory(tmp_path: Path) -> None:
+    """A path that is neither ``.toml`` nor a directory is invalid."""
+    plain_file = tmp_path / "secrets.dat"
+    plain_file.write_text("x", encoding="utf-8")
+
+    secrets = Secrets()
+    with pytest.raises(StreamlitSecretNotFoundError) as excinfo:
+        secrets._parse_file_path(str(plain_file))
+
+    assert str(plain_file) in str(excinfo.value)
+    assert "not a .toml file or a directory" in str(excinfo.value)
+
+
+def test_parse_double_checked_lock_returns_cached_secrets() -> None:
+    """If ``_secrets`` is set while waiting for the lock, skip loading from disk again."""
+    secrets = Secrets()
+
+    real_lock = secrets._lock
+    worker_waiting = threading.Event()
+
+    class _NotifyingLock:
+        """Thin wrapper around an RLock that signals when a second acquire blocks."""
+
+        def __enter__(self) -> Self:
+            worker_waiting.set()
+            real_lock.acquire()
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            real_lock.release()
+
+    secrets._lock = _NotifyingLock()  # type: ignore[assignment]
+
+    real_lock.acquire()
+    worker = threading.Thread(target=secrets._parse)
+    worker.start()
+    worker_waiting.wait(timeout=5.0)
+    secrets._secrets = {"preloaded": "yes"}
+    real_lock.release()
+    worker.join(timeout=5.0)
+    assert not worker.is_alive()
+
+    assert secrets._parse() == {"preloaded": "yes"}
+
+
+def test_to_dict_converts_nested_secrets(mock_loaded_secrets: Secrets) -> None:
+    """``Secrets.to_dict()`` returns plain dicts, including for nested mappings."""
+    assert mock_loaded_secrets.to_dict() == {
+        "db_username": "Jane",
+        "db_password": "12345qwerty",
+        "subsection": {"email": "eng@streamlit.io"},
+    }
+
+
+def test_has_key_on_secrets(mock_loaded_secrets: Secrets) -> None:
+    """``has_key`` reflects parsed secret names."""
+    assert mock_loaded_secrets.has_key("db_username") is True
+    assert mock_loaded_secrets.has_key("missing") is False
+
+
+def test_keys_on_secrets(mock_loaded_secrets: Secrets) -> None:
+    """``keys`` returns a view of top-level secret keys."""
+    assert len(mock_loaded_secrets) == 3
+    assert set(mock_loaded_secrets.keys()) == {
+        "db_username",
+        "db_password",
+        "subsection",
+    }
+
+
+def test_values_on_secrets(mock_loaded_secrets: Secrets) -> None:
+    """``values`` returns a view of parsed secret values."""
+    values = list(mock_loaded_secrets.values())
+    assert "Jane" in values
+    assert "12345qwerty" in values
+    assert any(isinstance(v, Mapping) for v in values)
+
+
+def test_items_on_secrets(mock_loaded_secrets: Secrets) -> None:
+    """``items`` yields key-value pairs from the parsed store."""
+    assert dict(mock_loaded_secrets.items())["db_username"] == "Jane"
+
+
+def test_contains_on_secrets(mock_loaded_secrets: Secrets) -> None:
+    """``__contains__`` checks membership against parsed secrets."""
+    assert "db_username" in mock_loaded_secrets
+    assert "nope" not in mock_loaded_secrets
+
+
+def test_iter_on_secrets(mock_loaded_secrets: Secrets) -> None:
+    """``__iter__`` iterates top-level secret keys."""
+    assert set(iter(mock_loaded_secrets)) == {
+        "db_username",
+        "db_password",
+        "subsection",
+    }

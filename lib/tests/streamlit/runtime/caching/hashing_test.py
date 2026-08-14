@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,9 @@
 # limitations under the License.
 
 """st.memo/singleton hashing tests."""
+
+from __future__ import annotations
+
 import datetime
 import functools
 import hashlib
@@ -26,53 +29,162 @@ import uuid
 from dataclasses import dataclass
 from enum import Enum, auto
 from io import BytesIO, StringIO
+from typing import TYPE_CHECKING, Any, cast
+from unittest import mock
 from unittest.mock import MagicMock, Mock
 
-import cffi
-import dateutil.tz
 import numpy as np
-import pandas
 import pandas as pd
-import tzlocal
+import pytest
 from parameterized import parameterized
 from PIL import Image
 
+from streamlit import config
 from streamlit.proto.Common_pb2 import FileURLs
 from streamlit.runtime.caching import cache_data, cache_resource
 from streamlit.runtime.caching.cache_errors import UnhashableTypeError
 from streamlit.runtime.caching.cache_type import CacheType
 from streamlit.runtime.caching.hashing import (
+    _LOGGER,
+    _MAX_SAMPLE_SEED,
+    _NP_SAMPLE_SIZE,
     _NP_SIZE_LARGE,
     _PANDAS_ROWS_LARGE,
     UserHashError,
+    _CacheFuncHasher,
+    _HashStack,
+    _HashStacks,
+    _sample_seed,
+    _warned_sample_seeds,
     update_hash,
 )
 from streamlit.runtime.uploaded_file_manager import UploadedFile, UploadedFileRec
 from streamlit.type_util import is_type
-from streamlit.util import HASHLIB_KWARGS
+from tests.testutil import patch_config_options
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    import numpy.typing as npt
 
 get_main_script_director = MagicMock(return_value=os.getcwd())
 
 
 def get_hash(value, hash_funcs=None, cache_type=None):
-    hasher = hashlib.new("md5", **HASHLIB_KWARGS)
+    hasher = hashlib.new("md5", usedforsecurity=False)
     update_hash(
         value, hasher, cache_type=cache_type or MagicMock(), hash_funcs=hash_funcs
     )
     return hasher.digest()
 
 
+def prepare_polars_data():
+    try:
+        import polars as pl
+
+        return [
+            (pl.DataFrame({"foo": [12]}), pl.DataFrame({"foo": [12]}), True),
+            (pl.DataFrame({"foo": [12]}), pl.DataFrame({"foo": [42]}), False),
+            (
+                pl.DataFrame(data={"A": [1, 2, 3], "B": [2, 3, 4]}),
+                pl.DataFrame(data={"A": [1, 2, 3], "B": [2, 3, 4]}),
+                True,
+            ),
+            # Extra column
+            (
+                pl.DataFrame(data={"A": [1, 2, 3], "B": [2, 3, 4]}),
+                pl.DataFrame(data={"A": [1, 2, 3], "B": [2, 3, 4], "C": [1, 2, 3]}),
+                False,
+            ),
+            # Different values
+            (
+                pl.DataFrame(data={"A": [1, 2, 3], "B": [2, 3, 4]}),
+                pl.DataFrame(data={"A": [1, 2, 3], "B": [2, 3, 5]}),
+                False,
+            ),
+            # Different order
+            (
+                pl.DataFrame(data={"A": [1, 2, 3], "B": [2, 3, 4]}),
+                pl.DataFrame(data={"B": [1, 2, 3], "A": [2, 3, 4]}),
+                False,
+            ),
+            # Missing column
+            (
+                pl.DataFrame(data={"A": [1, 2, 3], "B": [2, 3, 4]}),
+                pl.DataFrame(data={"A": [1, 2, 3]}),
+                False,
+            ),
+            # Different sort
+            (
+                pl.DataFrame(data={"A": [1, 2, 3], "B": [2, 3, 4]}).sort(
+                    by=["A"], descending=False
+                ),
+                pl.DataFrame(data={"A": [1, 2, 3], "B": [2, 3, 4]}).sort(
+                    by=["B"], descending=True
+                ),
+                False,
+            ),
+            # Different headers
+            (
+                pd.DataFrame(data={"A": [1, 2, 3], "C": [2, 3, 4]}),
+                pd.DataFrame(data={"A": [1, 2, 3], "B": [2, 3, 4]}),
+                False,
+            ),
+            # Reordered columns
+            (
+                pd.DataFrame(data={"A": [1, 2, 3], "C": [2, 3, 4]}),
+                pd.DataFrame(data={"C": [2, 3, 4], "A": [1, 2, 3]}),
+                False,
+            ),
+            # Slightly different dtypes
+            (
+                pd.DataFrame(
+                    data={"A": [1, 2, 3], "C": pd.array([1, 2, 3], dtype="UInt64")}
+                ),
+                pd.DataFrame(
+                    data={"A": [1, 2, 3], "C": pd.array([1, 2, 3], dtype="Int64")}
+                ),
+                False,
+            ),
+        ]
+    except ImportError:
+        return []
+
+
 class HashTest(unittest.TestCase):
+    def test_bytes(self):
+        """Test that bytes objects hash consistently."""
+        assert get_hash(b"hello") == get_hash(b"hello")
+        assert get_hash(b"hello") != get_hash(b"world")
+
+    def test_bytearray(self):
+        """Test that bytearray objects hash consistently.
+
+        bytearray is unhashable and cannot be memoized, but should still
+        be hashed correctly via conversion to bytes.
+        """
+        ba1 = bytearray(b"hello")
+        ba2 = bytearray(b"hello")
+        ba3 = bytearray(b"world")
+
+        assert get_hash(ba1) == get_hash(ba2)
+        assert get_hash(ba1) != get_hash(ba3)
+
+        # Verify bytearray and bytes with same content produce same hash
+        # (after type prefix is added)
+        # Note: Due to type prefix, they won't be exactly equal
+        assert get_hash(ba1) != get_hash(b"hello")
+
     def test_string(self):
-        self.assertEqual(get_hash("hello"), get_hash("hello"))
-        self.assertNotEqual(get_hash("hello"), get_hash("hellö"))
+        assert get_hash("hello") == get_hash("hello")
+        assert get_hash("hello") != get_hash("hellö")
 
     def test_int(self):
-        self.assertEqual(get_hash(145757624235), get_hash(145757624235))
-        self.assertNotEqual(get_hash(10), get_hash(11))
-        self.assertNotEqual(get_hash(-1), get_hash(1))
-        self.assertNotEqual(get_hash(2**7), get_hash(2**7 - 1))
-        self.assertNotEqual(get_hash(2**7), get_hash(2**7 + 1))
+        assert get_hash(145757624235) == get_hash(145757624235)
+        assert get_hash(10) != get_hash(11)
+        assert get_hash(-1) != get_hash(1)
+        assert get_hash(2**7) != get_hash(2**7 - 1)
+        assert get_hash(2**7) != get_hash(2**7 + 1)
 
     def test_uuid(self):
         uuid1 = uuid.uuid4()
@@ -86,33 +198,25 @@ class HashTest(unittest.TestCase):
         uuid3_copy = uuid.UUID(uuid3.hex)
         uuid4 = uuid.uuid5(uuid.NAMESPACE_DNS, "snowflake.com")
 
-        self.assertEqual(get_hash(uuid1), get_hash(uuid1_copy))
-        self.assertNotEqual(id(uuid1), id(uuid1_copy))
-        self.assertNotEqual(get_hash(uuid1), get_hash(uuid2))
+        assert get_hash(uuid1) == get_hash(uuid1_copy)
+        assert id(uuid1) != id(uuid1_copy)
+        assert get_hash(uuid1) != get_hash(uuid2)
 
-        self.assertEqual(get_hash(uuid3), get_hash(uuid3_copy))
-        self.assertNotEqual(id(uuid3), id(uuid3_copy))
-        self.assertNotEqual(get_hash(uuid3), get_hash(uuid4))
+        assert get_hash(uuid3) == get_hash(uuid3_copy)
+        assert id(uuid3) != id(uuid3_copy)
+        assert get_hash(uuid3) != get_hash(uuid4)
 
     def test_datetime_naive(self):
         naive_datetime1 = datetime.datetime(2007, 12, 23, 15, 45, 55)
         naive_datetime1_copy = datetime.datetime(2007, 12, 23, 15, 45, 55)
         naive_datetime3 = datetime.datetime(2011, 12, 21, 15, 45, 55)
 
-        self.assertEqual(get_hash(naive_datetime1), get_hash(naive_datetime1_copy))
-        self.assertNotEqual(id(naive_datetime1), id(naive_datetime1_copy))
-        self.assertNotEqual(get_hash(naive_datetime1), get_hash(naive_datetime3))
+        assert get_hash(naive_datetime1) == get_hash(naive_datetime1_copy)
+        assert id(naive_datetime1) != id(naive_datetime1_copy)
+        assert get_hash(naive_datetime1) != get_hash(naive_datetime3)
 
-    @parameterized.expand(
-        [
-            datetime.timezone.utc,
-            tzlocal.get_localzone(),
-            dateutil.tz.gettz("America/Los_Angeles"),
-            dateutil.tz.gettz("Europe/Berlin"),
-            dateutil.tz.UTC,
-        ]
-    )
-    def test_datetime_aware(self, tz_info):
+    def test_datetime_aware(self):
+        tz_info = datetime.timezone.utc
         aware_datetime1 = datetime.datetime(2007, 12, 23, 15, 45, 55, tzinfo=tz_info)
         aware_datetime1_copy = datetime.datetime(
             2007, 12, 23, 15, 45, 55, tzinfo=tz_info
@@ -123,10 +227,10 @@ class HashTest(unittest.TestCase):
         # but without timezone info. They should have different hashes.
         naive_datetime1 = datetime.datetime(2007, 12, 23, 15, 45, 55)
 
-        self.assertEqual(get_hash(aware_datetime1), get_hash(aware_datetime1_copy))
-        self.assertNotEqual(id(aware_datetime1), id(aware_datetime1_copy))
-        self.assertNotEqual(get_hash(aware_datetime1), get_hash(aware_datetime2))
-        self.assertNotEqual(get_hash(aware_datetime1), get_hash(naive_datetime1))
+        assert get_hash(aware_datetime1) == get_hash(aware_datetime1_copy)
+        assert id(aware_datetime1) != id(aware_datetime1_copy)
+        assert get_hash(aware_datetime1) != get_hash(aware_datetime2)
+        assert get_hash(aware_datetime1) != get_hash(naive_datetime1)
 
     @parameterized.expand(
         [
@@ -138,32 +242,32 @@ class HashTest(unittest.TestCase):
         ]
     )
     def test_pandas_timestamp(self, tz_info):
-        timestamp1 = pandas.Timestamp("2017-01-01T12", tz=tz_info)
-        timestamp1_copy = pandas.Timestamp("2017-01-01T12", tz=tz_info)
-        timestamp2 = pandas.Timestamp("2019-01-01T12", tz=tz_info)
+        timestamp1 = pd.Timestamp("2017-01-01T12", tz=tz_info)
+        timestamp1_copy = pd.Timestamp("2017-01-01T12", tz=tz_info)
+        timestamp2 = pd.Timestamp("2019-01-01T12", tz=tz_info)
 
-        self.assertEqual(get_hash(timestamp1), get_hash(timestamp1_copy))
-        self.assertNotEqual(id(timestamp1), id(timestamp1_copy))
-        self.assertNotEqual(get_hash(timestamp1), get_hash(timestamp2))
+        assert get_hash(timestamp1) == get_hash(timestamp1_copy)
+        assert id(timestamp1) != id(timestamp1_copy)
+        assert get_hash(timestamp1) != get_hash(timestamp2)
 
     def test_mocks_do_not_result_in_infinite_recursion(self):
         try:
             get_hash(Mock())
             get_hash(MagicMock())
-        except BaseException:
+        except Exception:
             self.fail("get_hash raised an exception")
 
     def test_list(self):
-        self.assertEqual(get_hash([1, 2]), get_hash([1, 2]))
-        self.assertNotEqual(get_hash([1, 2]), get_hash([2, 2]))
-        self.assertNotEqual(get_hash([1]), get_hash(1))
+        assert get_hash([1, 2]) == get_hash([1, 2])
+        assert get_hash([1, 2]) != get_hash([2, 2])
+        assert get_hash([1]) != get_hash(1)
 
         # test that we can hash self-referencing lists
         a = [1, 2, 3]
         a.append(a)
         b = [1, 2, 3]
         b.append(b)
-        self.assertEqual(get_hash(a), get_hash(b))
+        assert get_hash(a) == get_hash(b)
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -180,25 +284,24 @@ class HashTest(unittest.TestCase):
         def foo(x):
             return x
 
-        self.assertEqual(foo(1), foo(1))
+        assert foo(1) == foo(1)
         # Note: We're able to break the recursive cycle caused by the identity
         # hash func but it causes all cycles to hash to the same thing.
         # https://github.com/streamlit/streamlit/issues/1659
-        # self.assertNotEqual(foo(2), foo(1))
 
     def test_tuple(self):
-        self.assertEqual(get_hash((1, 2)), get_hash((1, 2)))
-        self.assertNotEqual(get_hash((1, 2)), get_hash((2, 2)))
-        self.assertNotEqual(get_hash((1,)), get_hash(1))
-        self.assertNotEqual(get_hash((1,)), get_hash([1]))
+        assert get_hash((1, 2)) == get_hash((1, 2))
+        assert get_hash((1, 2)) != get_hash((2, 2))
+        assert get_hash((1,)) != get_hash(1)
+        assert get_hash((1,)) != get_hash([1])
 
     def test_mappingproxy(self):
         a = types.MappingProxyType({"a": 1})
         b = types.MappingProxyType({"a": 1})
         c = types.MappingProxyType({"c": 1})
 
-        self.assertEqual(get_hash(a), get_hash(b))
-        self.assertNotEqual(get_hash(a), get_hash(c))
+        assert get_hash(a) == get_hash(b)
+        assert get_hash(a) != get_hash(c)
 
     def test_dict_items(self):
         a = types.MappingProxyType({"a": 1}).items()
@@ -206,8 +309,8 @@ class HashTest(unittest.TestCase):
         c = types.MappingProxyType({"c": 1}).items()
 
         assert is_type(a, "builtins.dict_items")
-        self.assertEqual(get_hash(a), get_hash(b))
-        self.assertNotEqual(get_hash(a), get_hash(c))
+        assert get_hash(a) == get_hash(b)
+        assert get_hash(a) != get_hash(c)
 
     def test_getset_descriptor(self):
         class A:
@@ -220,59 +323,64 @@ class HashTest(unittest.TestCase):
         b = B.__dict__["__dict__"]
         assert is_type(a, "builtins.getset_descriptor")
 
-        self.assertEqual(get_hash(a), get_hash(a))
-        self.assertNotEqual(get_hash(a), get_hash(b))
+        assert get_hash(a) == get_hash(a)
+        assert get_hash(a) != get_hash(b)
 
     def test_dict(self):
-        self.assertEqual(get_hash({1: 1}), get_hash({1: 1}))
-        self.assertNotEqual(get_hash({1: 1}), get_hash({1: 2}))
-        self.assertNotEqual(get_hash({1: 1}), get_hash([(1, 1)]))
+        assert get_hash({1: 1}) == get_hash({1: 1})
+        assert get_hash({1: 1}) != get_hash({1: 2})
+        assert get_hash({1: 1}) != get_hash([(1, 1)])
 
         dict_gen = {1: (x for x in range(1))}
-        with self.assertRaises(UnhashableTypeError):
+        with pytest.raises(UnhashableTypeError):
             get_hash(dict_gen)
 
     def test_self_reference_dict(self):
         d1 = {"cat": "hat"}
         d2 = {"things": [1, 2]}
 
-        self.assertEqual(get_hash(d1), get_hash(d1))
-        self.assertNotEqual(get_hash(d1), get_hash(d2))
+        assert get_hash(d1) == get_hash(d1)
+        assert get_hash(d1) != get_hash(d2)
 
         # test that we can hash self-referencing dictionaries
         d2 = {"book": d1}
-        self.assertNotEqual(get_hash(d2), get_hash(d1))
+        assert get_hash(d2) != get_hash(d1)
 
     def test_float(self):
-        self.assertEqual(get_hash(0.1), get_hash(0.1))
-        self.assertNotEqual(get_hash(23.5234), get_hash(23.5235))
+        assert get_hash(0.1) == get_hash(0.1)
+        assert get_hash(23.5234) != get_hash(23.5235)
 
     def test_bool(self):
-        self.assertEqual(get_hash(True), get_hash(True))
-        self.assertNotEqual(get_hash(True), get_hash(False))
+        assert get_hash(True) == get_hash(True)
+        assert get_hash(True) != get_hash(False)
 
     def test_none(self):
-        self.assertEqual(get_hash(None), get_hash(None))
-        self.assertNotEqual(get_hash(None), get_hash(False))
+        assert get_hash(None) == get_hash(None)
+        assert get_hash(None) != get_hash(False)
 
     def test_builtins(self):
-        self.assertEqual(get_hash(abs), get_hash(abs))
-        self.assertNotEqual(get_hash(abs), get_hash(type))
+        assert get_hash(abs) == get_hash(abs)
+        assert get_hash(abs) != get_hash(type)
 
     def test_regex(self):
-        p2 = re.compile(".*")
-        p1 = re.compile(".*")
-        p3 = re.compile(".*", re.I)
-        self.assertEqual(get_hash(p1), get_hash(p2))
-        self.assertNotEqual(get_hash(p1), get_hash(p3))
+        p2 = re.compile(r".*")
+        p1 = re.compile(r".*")
+        p3 = re.compile(r".*", re.IGNORECASE)
+        assert get_hash(p1) == get_hash(p2)
+        assert get_hash(p1) != get_hash(p3)
 
     def test_pandas_large_dataframe(self):
         df1 = pd.DataFrame(np.zeros((_PANDAS_ROWS_LARGE, 4)), columns=list("ABCD"))
         df2 = pd.DataFrame(np.ones((_PANDAS_ROWS_LARGE, 4)), columns=list("ABCD"))
         df3 = pd.DataFrame(np.zeros((_PANDAS_ROWS_LARGE, 4)), columns=list("ABCD"))
 
-        self.assertEqual(get_hash(df1), get_hash(df3))
-        self.assertNotEqual(get_hash(df1), get_hash(df2))
+        assert get_hash(df1) == get_hash(df3)
+        assert get_hash(df1) != get_hash(df2)
+
+    @pytest.mark.usefixtures("benchmark")
+    def test_pandas_large_dataframe_performance(self):
+        df1 = pd.DataFrame(np.zeros((_PANDAS_ROWS_LARGE, 4)), columns=list("ABCD"))
+        self.benchmark(lambda: get_hash(df1))
 
     @parameterized.expand(
         [
@@ -349,39 +457,86 @@ class HashTest(unittest.TestCase):
     )
     def test_pandas_dataframe(self, df1, df2, expected):
         result = get_hash(df1) == get_hash(df2)
-        self.assertEqual(result, expected)
+        assert result == expected
 
     def test_pandas_series(self):
         series1 = pd.Series([1, 2])
         series2 = pd.Series([1, 3])
         series3 = pd.Series([1, 2])
 
-        self.assertEqual(get_hash(series1), get_hash(series3))
-        self.assertNotEqual(get_hash(series1), get_hash(series2))
+        assert get_hash(series1) == get_hash(series3)
+        assert get_hash(series1) != get_hash(series2)
 
         series4 = pd.Series(range(_PANDAS_ROWS_LARGE))
         series5 = pd.Series(range(_PANDAS_ROWS_LARGE))
 
-        self.assertEqual(get_hash(series4), get_hash(series5))
+        assert get_hash(series4) == get_hash(series5)
+
+    @pytest.mark.require_integration
+    def test_polars_series(self):
+        import polars as pl
+
+        series1 = pl.Series([1, 2])
+        series2 = pl.Series([1, 3])
+        series3 = pl.Series([1, 2])
+
+        assert get_hash(series1) == get_hash(series3)
+        assert get_hash(series1) != get_hash(series2)
+
+        series4 = pl.Series(range(_PANDAS_ROWS_LARGE))
+        series5 = pl.Series(range(_PANDAS_ROWS_LARGE))
+
+        assert get_hash(series4) == get_hash(series5)
+
+    @pytest.mark.require_integration
+    @parameterized.expand(prepare_polars_data(), skip_on_empty=True)
+    def test_polars_dataframe(self, df1, df2, expected):
+        result = get_hash(df1) == get_hash(df2)
+        assert result == expected
+
+    @pytest.mark.require_integration
+    def test_polars_large_dataframe(self):
+        import polars as pl
+
+        df1 = pl.DataFrame(np.zeros((_PANDAS_ROWS_LARGE, 4)), schema=list("abcd"))
+        df2 = pl.DataFrame(np.ones((_PANDAS_ROWS_LARGE, 4)), schema=list("abcd"))
+        df3 = pl.DataFrame(np.zeros((_PANDAS_ROWS_LARGE, 4)), schema=list("abcd"))
+
+        assert get_hash(df1) == get_hash(df3)
+        assert get_hash(df1) != get_hash(df2)
+
+    @pytest.mark.usefixtures("benchmark")
+    def test_polars_large_dataframe_performance(self):
+        # We put the try/except here to avoid the test failing if polars is not
+        # installed rather than marking it as `require_integration`,
+        # because it should participate in the benchmarking.
+        try:
+            import polars as pl
+
+            df1 = pl.DataFrame(np.zeros((_PANDAS_ROWS_LARGE, 4)), schema=list("abcd"))
+            self.benchmark(lambda: get_hash(df1))
+        except ImportError:
+            # Skip if polars is not installed.
+            pass
 
     def test_pandas_series_similar_dtypes(self):
         series1 = pd.Series([1, 2], dtype="UInt64")
         series2 = pd.Series([1, 2], dtype="Int64")
 
-        self.assertNotEqual(get_hash(series1), get_hash(series2))
+        assert get_hash(series1) != get_hash(series2)
 
     def test_numpy(self):
         np1 = np.zeros(10)
         np2 = np.zeros(11)
         np3 = np.zeros(10)
 
-        self.assertEqual(get_hash(np1), get_hash(np3))
-        self.assertNotEqual(get_hash(np1), get_hash(np2))
+        assert get_hash(np1) == get_hash(np3)
+        assert get_hash(np1) != get_hash(np2)
 
         np4 = np.zeros(_NP_SIZE_LARGE)
         np5 = np.zeros(_NP_SIZE_LARGE)
 
-        self.assertEqual(get_hash(np4), get_hash(np5))
+        assert get_hash(np4) == get_hash(np5)
 
     def test_numpy_similar_dtypes(self):
         np1 = np.ones(10, dtype="u8")
@@ -390,16 +545,16 @@ class HashTest(unittest.TestCase):
         np3 = np.ones(10, dtype=[("a", "u8"), ("b", "i8")])
         np4 = np.ones(10, dtype=[("a", "i8"), ("b", "u8")])
 
-        self.assertNotEqual(get_hash(np1), get_hash(np2))
-        self.assertNotEqual(get_hash(np3), get_hash(np4))
+        assert get_hash(np1) != get_hash(np2)
+        assert get_hash(np3) != get_hash(np4)
 
     def test_PIL_image(self):
         im1 = Image.new("RGB", (50, 50), (220, 20, 60))
         im2 = Image.new("RGB", (50, 50), (30, 144, 255))
         im3 = Image.new("RGB", (50, 50), (220, 20, 60))
 
-        self.assertEqual(get_hash(im1), get_hash(im3))
-        self.assertNotEqual(get_hash(im1), get_hash(im2))
+        assert get_hash(im1) == get_hash(im3)
+        assert get_hash(im1) != get_hash(im2)
 
         # Check for big PIL images, they converted to numpy array with size
         # bigger than _NP_SIZE_LARGE
@@ -409,10 +564,38 @@ class HashTest(unittest.TestCase):
         im6 = Image.new("RGB", (1000, 1000), (101, 21, 61))
 
         im4_np_array = np.frombuffer(im4.tobytes(), dtype="uint8")
-        self.assertGreater(im4_np_array.size, _NP_SIZE_LARGE)
+        assert im4_np_array.size > _NP_SIZE_LARGE
 
-        self.assertEqual(get_hash(im4), get_hash(im5))
-        self.assertNotEqual(get_hash(im5), get_hash(im6))
+        assert get_hash(im4) == get_hash(im5)
+        assert get_hash(im5) != get_hash(im6)
+
+    @pytest.mark.require_integration
+    def test_pydantic_model(self):
+        """Test that Pydantic models are properly hashed.
+
+        Verifies that:
+        - The same model instance hashes consistently
+        - Two identical model instances produce the same hash
+        - Models with different field values produce different hashes
+        - Different model classes with the same field values produce different hashes
+        """
+        import pydantic
+
+        class Foo(pydantic.BaseModel):
+            name: str
+
+        class Bar(pydantic.BaseModel):
+            name: str
+
+        m1 = Foo(name="fake_name1")
+        m1_again = Foo(name="fake_name1")
+        m2 = Foo(name="fake_name2")
+        m3 = Bar(name="fake_name1")
+
+        assert get_hash(m1) == get_hash(m1)
+        assert get_hash(m1) == get_hash(m1_again)
+        assert get_hash(m1) != get_hash(m2)
+        assert get_hash(m1) != get_hash(m3)
 
     @parameterized.expand(
         [
@@ -425,13 +608,13 @@ class HashTest(unittest.TestCase):
         io2 = io_type(io_data2)
         io3 = io_type(io_data3)
 
-        self.assertEqual(get_hash(io1), get_hash(io3))
-        self.assertNotEqual(get_hash(io1), get_hash(io2))
+        assert get_hash(io1) == get_hash(io3)
+        assert get_hash(io1) != get_hash(io2)
 
         # Changing the stream position should change the hash
         io1.seek(1)
         io3.seek(0)
-        self.assertNotEqual(get_hash(io1), get_hash(io3))
+        assert get_hash(io1) != get_hash(io3)
 
     def test_uploaded_file_io(self):
         rec1 = UploadedFileRec("file1", "name", "type", b"123")
@@ -447,49 +630,49 @@ class HashTest(unittest.TestCase):
             rec3, FileURLs(file_id=rec3.file_id, upload_url="u3", delete_url="u3")
         )
 
-        self.assertEqual(get_hash(io1), get_hash(io3))
-        self.assertNotEqual(get_hash(io1), get_hash(io2))
+        assert get_hash(io1) == get_hash(io3)
+        assert get_hash(io1) != get_hash(io2)
 
         # Changing the stream position should change the hash
         io1.seek(1)
         io3.seek(0)
-        self.assertNotEqual(get_hash(io1), get_hash(io3))
+        assert get_hash(io1) != get_hash(io3)
 
     def test_partial(self):
         p1 = functools.partial(int, base=2)
         p2 = functools.partial(int, base=3)
         p3 = functools.partial(int, base=2)
 
-        self.assertEqual(get_hash(p1), get_hash(p3))
-        self.assertNotEqual(get_hash(p1), get_hash(p2))
+        assert get_hash(p1) == get_hash(p3)
+        assert get_hash(p1) != get_hash(p2)
 
     def test_files(self):
         temp1 = tempfile.NamedTemporaryFile()
         temp2 = tempfile.NamedTemporaryFile()
 
-        with open(__file__, "r") as f:
-            with open(__file__, "r") as g:
-                self.assertEqual(get_hash(f), get_hash(g))
+        with open(__file__, encoding="utf-8") as f:
+            with open(__file__, encoding="utf-8") as g:
+                assert get_hash(f) == get_hash(g)
 
-            self.assertNotEqual(get_hash(f), get_hash(temp1))
+            assert get_hash(f) != get_hash(temp1)
 
-        self.assertEqual(get_hash(temp1), get_hash(temp1))
-        self.assertNotEqual(get_hash(temp1), get_hash(temp2))
+        assert get_hash(temp1) == get_hash(temp1)
+        assert get_hash(temp1) != get_hash(temp2)
 
     def test_file_position(self):
-        with open(__file__, "r") as f:
+        with open(__file__, encoding="utf-8") as f:
             h1 = get_hash(f)
-            self.assertEqual(h1, get_hash(f))
+            assert h1 == get_hash(f)
             f.readline()
-            self.assertNotEqual(h1, get_hash(f))
+            assert h1 != get_hash(f)
             f.seek(0)
-            self.assertEqual(h1, get_hash(f))
+            assert h1 == get_hash(f)
 
     def test_magic_mock(self):
         """MagicMocks never hash to the same thing."""
         # (This also tests that MagicMock can hash at all, without blowing the
         # stack due to an infinite recursion.)
-        self.assertNotEqual(get_hash(MagicMock()), get_hash(MagicMock()))
+        assert get_hash(MagicMock()) != get_hash(MagicMock())
 
     def test_dataclass(self):
         @dataclass(frozen=True, eq=True)
@@ -509,10 +692,10 @@ class HashTest(unittest.TestCase):
             ENUM_2 = auto()
 
         # Hash values should be stable
-        self.assertEqual(get_hash(EnumClass.ENUM_1), get_hash(EnumClass.ENUM_1))
+        assert get_hash(EnumClass.ENUM_1) == get_hash(EnumClass.ENUM_1)
 
         # Different enum values should produce different hashes
-        self.assertNotEqual(get_hash(EnumClass.ENUM_1), get_hash(EnumClass.ENUM_2))
+        assert get_hash(EnumClass.ENUM_1) != get_hash(EnumClass.ENUM_2)
 
     def test_different_enums(self):
         """Different enum classes should have different hashes, even when the enum
@@ -527,45 +710,63 @@ class HashTest(unittest.TestCase):
         enum_a = EnumClassA.ENUM_1
         enum_b = EnumClassB.ENUM_1
 
-        self.assertNotEqual(get_hash(enum_a), get_hash(enum_b))
+        assert get_hash(enum_a) != get_hash(enum_b)
+
+    def test_reduce_not_hashable(self):
+        class A:
+            def __init__(self):
+                self.x = [1, 2, 3]
+
+        with pytest.raises(UnhashableTypeError):
+            get_hash(A().__reduce__())
+
+    def test_reduce_fallback(self):
+        """Test that objects with __reduce__ method can be hashed using the fallback mechanism."""
+
+        class CustomClass:
+            def __init__(self, value):
+                self.value = value
+
+            def __reduce__(self):
+                return (CustomClass, (self.value,))
+
+        obj1 = CustomClass(42)
+        obj2 = CustomClass(42)
+        obj3 = CustomClass(43)
+
+        # Same objects should hash to the same value
+        assert get_hash(obj1) == get_hash(obj2)
+
+        # Different objects should hash to different values
+        assert get_hash(obj1) != get_hash(obj3)
+
+        # Test with a more complex object
+        class ComplexClass:
+            def __init__(self, name, items):
+                self.name = name
+                self.items = items
+
+            def __reduce__(self):
+                return (ComplexClass, (self.name, self.items))
+
+        complex_obj1 = ComplexClass("test", [1, 2, 3])
+        complex_obj2 = ComplexClass("test", [1, 2, 3])
+        complex_obj3 = ComplexClass("test", [1, 2, 4])
+
+        assert get_hash(complex_obj1) == get_hash(complex_obj2)
+        assert get_hash(complex_obj1) != get_hash(complex_obj3)
 
 
 class NotHashableTest(unittest.TestCase):
-    """Tests for various unhashable types. Many of these types *are*
-    hashable by @st.cache's hasher, and we're explicitly removing support for
-    them.
-    """
-
-    def _build_cffi(self, name):
-        ffibuilder = cffi.FFI()
-        ffibuilder.set_source(
-            "cffi_bin._%s" % name,
-            r"""
-                static int %s(int x)
-                {
-                    return x + "A";
-                }
-            """
-            % name,
-        )
-
-        ffibuilder.cdef("int %s(int);" % name)
-        ffibuilder.compile(verbose=True)
-
-    def test_compiled_ffi_not_hashable(self):
-        self._build_cffi("foo")
-        from cffi_bin._foo import ffi as foo
-
-        with self.assertRaises(UnhashableTypeError):
-            get_hash(foo)
+    """Tests for various unhashable types."""
 
     def test_lambdas_not_hashable(self):
-        with self.assertRaises(UnhashableTypeError):
+        with pytest.raises(UnhashableTypeError):
             get_hash(lambda x: x.lower())
 
     def test_generator_not_hashable(self):
-        with self.assertRaises(UnhashableTypeError):
-            get_hash((x for x in range(1)))
+        with pytest.raises(UnhashableTypeError):
+            get_hash(x for x in range(1))
 
     def test_hash_funcs_acceptable_keys(self):
         """Test that hashes are equivalent when hash_func key is supplied both as a
@@ -573,16 +774,15 @@ class NotHashableTest(unittest.TestCase):
         """
         test_generator = (x for x in range(1))
 
-        with self.assertRaises(UnhashableTypeError):
+        with pytest.raises(UnhashableTypeError):
             get_hash(test_generator)
 
-        self.assertEqual(
-            get_hash(test_generator, hash_funcs={types.GeneratorType: id}),
-            get_hash(test_generator, hash_funcs={"builtins.generator": id}),
-        )
+        assert get_hash(
+            test_generator, hash_funcs={types.GeneratorType: id}
+        ) == get_hash(test_generator, hash_funcs={"builtins.generator": id})
 
     def test_hash_funcs_error(self):
-        with self.assertRaises(UserHashError) as ctx:
+        with pytest.raises(UserHashError) as ctx:
             get_hash(1, cache_type=CacheType.DATA, hash_funcs={int: lambda x: "a" + x})
 
         expected_message = """can only concatenate str (not "int") to str
@@ -602,7 +802,7 @@ Object of type builtins.int: 1
 
 If you think this is actually a Streamlit bug, please
 [file a bug report here](https://github.com/streamlit/streamlit/issues/new/choose)."""
-        self.assertEqual(str(ctx.exception), expected_message)
+        assert str(ctx.value) == expected_message
 
     def test_non_hashable(self):
         """Test user provided hash functions."""
@@ -610,34 +810,32 @@ If you think this is actually a Streamlit bug, please
         g = (x for x in range(1))
 
         # Unhashable object raises an error
-        with self.assertRaises(UnhashableTypeError):
+        with pytest.raises(UnhashableTypeError):
             get_hash(g)
 
         id_hash_func = {types.GeneratorType: id}
 
-        self.assertEqual(
-            get_hash(g, hash_funcs=id_hash_func),
-            get_hash(g, hash_funcs=id_hash_func),
+        assert get_hash(g, hash_funcs=id_hash_func) == get_hash(
+            g, hash_funcs=id_hash_func
         )
 
         unique_hash_func = {types.GeneratorType: lambda x: time.time()}
 
-        self.assertNotEqual(
-            get_hash(g, hash_funcs=unique_hash_func),
-            get_hash(g, hash_funcs=unique_hash_func),
+        assert get_hash(g, hash_funcs=unique_hash_func) != get_hash(
+            g, hash_funcs=unique_hash_func
         )
 
     def test_override_streamlit_hash_func(self):
         """Test that a user provided hash function has priority over a streamlit one."""
 
         hash_funcs = {int: lambda x: "hello"}
-        self.assertNotEqual(get_hash(1), get_hash(1, hash_funcs=hash_funcs))
+        assert get_hash(1) != get_hash(1, hash_funcs=hash_funcs)
 
     def test_function_not_hashable(self):
         def foo():
             pass
 
-        with self.assertRaises(UnhashableTypeError):
+        with pytest.raises(UnhashableTypeError):
             get_hash(foo)
 
     def test_reduce_not_hashable(self):
@@ -645,5 +843,559 @@ If you think this is actually a Streamlit bug, please
             def __init__(self):
                 self.x = [1, 2, 3]
 
-        with self.assertRaises(UnhashableTypeError):
+        with pytest.raises(UnhashableTypeError):
             get_hash(A().__reduce__())
+
+
+def test_user_hash_error_uses_generic_function_desc_without_hash_source_name() -> None:
+    """UserHashError cites a generic function when hash_source has no ``__name__``."""
+
+    class CallableWithoutName:
+        def __call__(self, x: int) -> int:
+            return x
+
+    hash_source = CallableWithoutName()
+    hasher = hashlib.new("md5", usedforsecurity=False)
+    with pytest.raises(UserHashError) as exc_info:
+        update_hash(
+            1,
+            hasher,
+            cache_type=CacheType.DATA,
+            hash_source=cast("Callable[..., Any]", hash_source),
+            hash_funcs={int: lambda x: "a" + x},  # type: ignore[operator]
+        )
+    msg = str(exc_info.value)
+    assert "decorator of\na function." in msg
+
+
+def test_user_hash_error_names_hash_source_when_it_has_dunder_name() -> None:
+    """UserHashError includes the hash_source callable name when ``__name__`` exists."""
+
+    def user_cached_fn() -> None:
+        return None
+
+    hasher = hashlib.new("md5", usedforsecurity=False)
+    with pytest.raises(UserHashError) as exc_info:
+        update_hash(
+            1,
+            hasher,
+            cache_type=CacheType.DATA,
+            hash_source=user_cached_fn,
+            hash_funcs={int: lambda x: "a" + x},  # type: ignore[operator]
+        )
+    assert "`user_cached_fn()`" in str(exc_info.value)
+
+
+def test_user_hash_error_mentions_cache_resource_decorator() -> None:
+    """UserHashError names ``@st.cache_resource`` when that cache type is used."""
+    hasher = hashlib.new("md5", usedforsecurity=False)
+    with pytest.raises(UserHashError) as exc_info:
+        update_hash(
+            1,
+            hasher,
+            cache_type=CacheType.RESOURCE,
+            hash_funcs={int: lambda x: "a" + x},  # type: ignore[operator]
+        )
+    assert "`@st.cache_resource`" in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    ("make_obj", "prefix"),
+    [
+        (lambda: _HashStack(), "_HashStack("),
+        (lambda: _HashStacks(), "_HashStacks("),
+        (lambda: _CacheFuncHasher(CacheType.DATA), "_CacheFuncHasher("),
+    ],
+    ids=["hash_stack", "hash_stacks", "cache_func_hasher"],
+)
+def test_hash_repr_helpers_use_compact_prefix(
+    make_obj: Callable[[], Any], prefix: str
+) -> None:
+    """Internal hash helpers use the shared compact ``__repr__`` style."""
+    assert repr(make_obj()).startswith(prefix)
+
+
+def test_hash_stack_pretty_print_handles_str_conversion_error() -> None:
+    """``pretty_print`` tolerates values whose string conversion raises."""
+
+    class BadStr:
+        def __str__(self) -> str:
+            raise RuntimeError("intentional str failure")
+
+    stack = _HashStack()
+    stack.push(BadStr())
+    try:
+        text = stack.pretty_print()
+    finally:
+        stack.pop()
+    assert "<Unable to convert item to string>" in text
+
+
+def test_pandas_series_hash_pickle_fallback_on_type_error() -> None:
+    """Series that ``hash_pandas_object`` cannot hash fall back to pickling."""
+    series = pd.Series([[1, 2], [3, 4]])
+    with mock.patch.object(_LOGGER, "warning") as mock_warning:
+        digest = get_hash(series)
+
+    assert digest == get_hash(series)
+    assert digest != get_hash(pd.Series([[1, 2], [3, 5]]))
+
+    mock_warning.assert_called_once()
+    # The traceback must not be attached anymore (``exc_info`` was removed).
+    assert "exc_info" not in mock_warning.call_args.kwargs
+    logged_message = mock_warning.call_args.args[0] % mock_warning.call_args.args[1:]
+    assert "failed for a pandas Series" in logged_message
+    assert "falling back to pickling the object" in logged_message
+    assert "unhashable type: 'list'" in logged_message
+
+
+def test_pandas_dataframe_hash_pickle_fallback_on_type_error() -> None:
+    """DataFrame that ``hash_pandas_object`` cannot hash fall back to pickling."""
+    df = pd.DataFrame({"col": [[1], [2]]})
+    with mock.patch.object(_LOGGER, "warning") as mock_warning:
+        digest = get_hash(df)
+
+    assert digest == get_hash(df)
+    assert digest != get_hash(pd.DataFrame({"col": [[1], [3]]}))
+
+    mock_warning.assert_called_once()
+    # The traceback must not be attached anymore (``exc_info`` was removed).
+    assert "exc_info" not in mock_warning.call_args.kwargs
+    logged_message = mock_warning.call_args.args[0] % mock_warning.call_args.args[1:]
+    assert "failed for a pandas DataFrame" in logged_message
+    assert "falling back to pickling the object" in logged_message
+    assert "unhashable type: 'list'" in logged_message
+
+
+def test_numpy_ufunc_hashes_by_encoded_name() -> None:
+    """NumPy ufuncs hash via their ``__name__`` bytes."""
+    assert get_hash(np.add) == get_hash(np.add)
+    assert get_hash(np.add) != get_hash(np.subtract)
+
+
+def test_module_hashes_via_module_name() -> None:
+    """Modules hash consistently using the module's ``__name__`` string."""
+    assert get_hash(re) == get_hash(re)
+    assert get_hash(re) != get_hash(datetime)
+
+
+@pytest.mark.require_integration
+@pytest.mark.parametrize(
+    ("make_obj", "method_name", "expected_obj_type"),
+    [
+        (lambda pl: pl.Series([1, 2, 3]), "hash", "polars Series"),
+        (lambda pl: pl.DataFrame({"a": [1, 2]}), "hash_rows", "polars DataFrame"),
+    ],
+    ids=["series", "dataframe"],
+)
+def test_polars_pickle_fallback_when_hash_raises_typeerror(
+    make_obj: Callable[..., Any],
+    method_name: str,
+    expected_obj_type: str,
+) -> None:
+    """Polars objects fall back to pickle when native hashing raises ``TypeError``."""
+    import polars as pl
+
+    obj = make_obj(pl)
+    cls = type(obj)
+    with (
+        mock.patch.object(cls, method_name, side_effect=TypeError("forced")),
+        mock.patch.object(_LOGGER, "warning") as mock_warning,
+    ):
+        digest = get_hash(obj)
+    with mock.patch.object(cls, method_name, side_effect=TypeError("forced")):
+        assert get_hash(obj) == digest
+
+    mock_warning.assert_called_once()
+    # The traceback must not be attached anymore (``exc_info`` was removed).
+    assert "exc_info" not in mock_warning.call_args.kwargs
+    logged_message = mock_warning.call_args.args[0] % mock_warning.call_args.args[1:]
+    assert "falling back to pickling the object" in logged_message
+    assert f"failed for a {expected_obj_type}" in logged_message
+    assert "forced" in logged_message
+
+
+@pytest.mark.require_integration
+def test_pydantic_model_unhashable_when_model_dump_json_fails() -> None:
+    """Pydantic models that cannot serialize to JSON raise ``UnhashableTypeError``."""
+    import pydantic
+
+    class Model(pydantic.BaseModel):
+        x: int
+
+    instance = Model(x=1)
+    with mock.patch.object(
+        Model,
+        "model_dump_json",
+        side_effect=TypeError("cannot serialize"),
+    ):
+        with pytest.raises(UnhashableTypeError) as exc_info:
+            get_hash(instance)
+    assert "unhashable members" in str(exc_info.value).lower()
+
+
+def test_PIL_pmode_palette_collision_prevention() -> None:
+    """P-mode PIL images with different palettes produce different hashes.
+
+    Regression test for GitHub issue #14622: tobytes() on palette-indexed (P-mode)
+    PIL images returns only palette indices, not the color table. Two images with
+    identical index arrays but different palettes would collide without this fix.
+    """
+    # Create two P-mode images with identical pixel indices but different palettes
+    im1 = Image.new("P", (10, 10), 0)
+    im2 = Image.new("P", (10, 10), 0)
+
+    # Set different palettes (768 values for 256 RGB colors)
+    palette1 = [i % 256 for i in range(768)]
+    palette2 = [(i + 128) % 256 for i in range(768)]
+
+    im1.putpalette(palette1)
+    im2.putpalette(palette2)
+
+    # Confirm the vulnerability trigger: tobytes() is equal for both images
+    assert im1.tobytes() == im2.tobytes()
+
+    # But the hashes should differ because we now include the palette
+    assert get_hash(im1) != get_hash(im2)
+
+
+# Tests for the ``runner.cacheHashSeed`` config option (GitHub issue #14622).
+#
+# Large pandas/polars/numpy objects are hashed from a fixed random sample, so two
+# large objects differing only outside the sampled positions share a cache key.
+# The seed selects which positions are sampled, letting an app that has hit such a
+# collision move off it. It does not make hashing exact.
+
+
+def _large_pandas_dataframe() -> pd.DataFrame:
+    return pd.DataFrame({"a": np.arange(_PANDAS_ROWS_LARGE)})
+
+
+def _large_pandas_series() -> pd.Series:
+    return pd.Series(np.arange(_PANDAS_ROWS_LARGE))
+
+
+def _large_numpy_array() -> npt.NDArray[Any]:
+    return np.arange(_NP_SIZE_LARGE)
+
+
+def _large_polars_dataframe() -> Any:
+    import polars as pl
+
+    return pl.DataFrame({"a": range(_PANDAS_ROWS_LARGE)})
+
+
+def _large_polars_series() -> Any:
+    import polars as pl
+
+    return pl.Series(range(_PANDAS_ROWS_LARGE))
+
+
+def test_cache_hash_seed_defaults_to_zero() -> None:
+    """The default must keep the historical sample positions."""
+    assert config.get_option("runner.cacheHashSeed") == 0
+    assert _sample_seed() == 0
+
+
+@pytest.mark.parametrize("value", [7, "7"], ids=["int", "numeric_string"])
+def test_cache_hash_seed_accepts_any_whole_number_representation(
+    value: object,
+) -> None:
+    """``cacheHashSeed = 7`` and ``cacheHashSeed = "7"`` must mean the same thing.
+
+    ``config.get_option`` returns the raw parsed value rather than coercing it to
+    the declared type, so an unquoted TOML value arrives as an int and a quoted
+    one as a str.
+    """
+    with patch_config_options({"runner.cacheHashSeed": value}):
+        assert _sample_seed() == 7
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param("not-a-number", id="text"),
+        pytest.param("", id="empty"),
+        pytest.param(None, id="none"),
+        # `bool` is an `int` subclass, so `int(True)` is 1 rather than an error.
+        # TOML writes these as `cacheHashSeed = true` / `false`.
+        pytest.param(True, id="bool_true"),
+        pytest.param(False, id="bool_false"),
+        # `int(float("inf"))` raises OverflowError, which is not a ValueError.
+        # TOML writes these as `cacheHashSeed = inf` / `-inf` / `nan`.
+        pytest.param(float("inf"), id="inf"),
+        pytest.param(float("-inf"), id="negative_inf"),
+        pytest.param(float("nan"), id="nan"),
+    ],
+)
+def test_cache_hash_seed_falls_back_to_zero_for_unusable_values(
+    value: object,
+) -> None:
+    """A malformed value must leave cache keys unchanged, not raise from hashing."""
+    with patch_config_options({"runner.cacheHashSeed": value}):
+        assert _sample_seed() == 0
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(True, id="bool_true"),
+        pytest.param(float("inf"), id="inf"),
+        pytest.param(float("nan"), id="nan"),
+    ],
+)
+def test_cache_hash_seed_rejects_bool_and_non_finite_floats(
+    value: object,
+) -> None:
+    """These three slip past a plain ``int()`` guard in three different ways.
+
+    ``int(True)`` succeeds and yields ``1``, quietly changing every large-object
+    cache key; ``int(float("inf"))`` raises ``OverflowError``, which is not a
+    ``ValueError`` and so would have escaped the fallback entirely; and
+    ``int(float("nan"))`` raises ``ValueError``, which was already caught -- it is
+    covered here so that difference stays deliberate rather than incidental.
+    """
+    _warned_sample_seeds.clear()
+
+    with mock.patch.object(_LOGGER, "warning") as mock_warning:
+        with patch_config_options({"runner.cacheHashSeed": value}):
+            assert _sample_seed() == 0
+
+    mock_warning.assert_called_once()
+
+
+def test_cache_hash_seed_does_not_treat_a_bool_as_the_int_it_subclasses() -> None:
+    """``cacheHashSeed = true`` must not become the perfectly valid seed ``1``."""
+    with patch_config_options({"runner.cacheHashSeed": True}):
+        from_bool = _sample_seed()
+    with patch_config_options({"runner.cacheHashSeed": 1}):
+        from_int = _sample_seed()
+
+    assert from_int == 1, "a real 1 must still be honoured"
+    assert from_bool == 0, "True must fall back rather than alias seed 1"
+
+
+def test_cache_hash_seed_truncates_a_fractional_value() -> None:
+    """A float is converted rather than rejected; only the seed changes.
+
+    Truncation is toward zero and is not warned about, since the result is a usable
+    seed -- the config description documents this explicitly.
+    """
+    _warned_sample_seeds.clear()
+
+    with mock.patch.object(_LOGGER, "warning") as mock_warning:
+        with patch_config_options({"runner.cacheHashSeed": 1.5}):
+            assert _sample_seed() == 1
+
+    mock_warning.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(-1, id="negative"),
+        pytest.param(2**32, id="one_past_max"),
+        pytest.param(2**64, id="far_past_max"),
+    ],
+)
+def test_cache_hash_seed_falls_back_to_zero_for_out_of_range_values(
+    value: int,
+) -> None:
+    """An out-of-range seed must be ignored rather than reach the sampling backends.
+
+    ``int()`` accepts these, but numpy's ``RandomState`` (and pandas' ``random_state=``,
+    which defers to it) only accepts ``[0, 2**32 - 1]``, so without a range check they
+    would raise from inside the cache-hashing path.
+    """
+    with patch_config_options({"runner.cacheHashSeed": value}):
+        assert _sample_seed() == 0
+
+
+def test_cache_hash_seed_honours_the_largest_supported_value() -> None:
+    """The upper bound must be usable, not silently reset to the default."""
+    with patch_config_options({"runner.cacheHashSeed": _MAX_SAMPLE_SEED}):
+        assert _sample_seed() == _MAX_SAMPLE_SEED
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(-1, id="negative"),
+        pytest.param(2**32, id="one_past_max"),
+        pytest.param("not-a-number", id="text"),
+    ],
+)
+def test_cache_hash_seed_warns_when_it_ignores_a_value(value: object) -> None:
+    """An ignored seed must say so; this option exists to debug silent cache hits.
+
+    Raising would break caching outright, so the fallback warns instead of failing.
+    """
+    _warned_sample_seeds.clear()
+
+    with mock.patch.object(_LOGGER, "warning") as mock_warning:
+        with patch_config_options({"runner.cacheHashSeed": value}):
+            assert _sample_seed() == 0
+
+    mock_warning.assert_called_once()
+    logged_message = mock_warning.call_args.args[0] % mock_warning.call_args.args[1:]
+    assert repr(value) in logged_message, "the warning must name the value the user set"
+    assert str(_MAX_SAMPLE_SEED) in logged_message, (
+        "the warning must state the valid range"
+    )
+
+
+def test_cache_hash_seed_warns_only_once_for_a_repeated_value() -> None:
+    """``_sample_seed`` runs per hash, so an unchanged bad value must not flood the log."""
+    _warned_sample_seeds.clear()
+
+    with mock.patch.object(_LOGGER, "warning") as mock_warning:
+        with patch_config_options({"runner.cacheHashSeed": -1}):
+            for _ in range(5):
+                assert _sample_seed() == 0
+
+    mock_warning.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    "value", [0, 7, _MAX_SAMPLE_SEED], ids=["default", "normal", "max_supported"]
+)
+def test_cache_hash_seed_stays_quiet_for_a_usable_value(value: int) -> None:
+    """A seed that is honoured must not warn."""
+    _warned_sample_seeds.clear()
+
+    with mock.patch.object(_LOGGER, "warning") as mock_warning:
+        with patch_config_options({"runner.cacheHashSeed": value}):
+            assert _sample_seed() == value
+
+    mock_warning.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(-1, id="negative"),
+        pytest.param(2**32, id="one_past_max"),
+        pytest.param(2**64, id="far_past_max"),
+        pytest.param(_MAX_SAMPLE_SEED, id="max_supported"),
+    ],
+)
+@pytest.mark.parametrize(
+    "make_obj",
+    [
+        pytest.param(_large_pandas_dataframe, id="pandas_dataframe"),
+        pytest.param(_large_pandas_series, id="pandas_series"),
+        pytest.param(_large_numpy_array, id="numpy_array"),
+        pytest.param(
+            _large_polars_dataframe,
+            id="polars_dataframe",
+            marks=pytest.mark.require_integration,
+        ),
+        pytest.param(
+            _large_polars_series,
+            id="polars_series",
+            marks=pytest.mark.require_integration,
+        ),
+    ],
+)
+def test_cache_hash_seed_never_breaks_hashing_of_a_large_object(
+    make_obj: Callable[[], Any], value: int
+) -> None:
+    """Hashing a large object must succeed whatever the option is set to.
+
+    This is the user-visible symptom: a bad seed reaching the sampling call raises
+    and breaks ``@st.cache_data`` / ``@st.cache_resource`` entirely, so assert on a
+    real hash rather than only on ``_sample_seed``'s return value.
+    """
+    obj = make_obj()
+
+    with patch_config_options({"runner.cacheHashSeed": value}):
+        assert isinstance(get_hash(obj), bytes)
+
+
+@pytest.mark.parametrize(
+    "make_obj",
+    [
+        pytest.param(_large_pandas_dataframe, id="pandas_dataframe"),
+        pytest.param(_large_pandas_series, id="pandas_series"),
+        pytest.param(_large_numpy_array, id="numpy_array"),
+        # The polars cases need the integration dependency group, and the marker is
+        # exclusive in both directions -- an unmarked polars test would be skipped by
+        # the default run (no polars) and by the integration run (no marker), so it
+        # would never actually execute.
+        pytest.param(
+            _large_polars_dataframe,
+            id="polars_dataframe",
+            marks=pytest.mark.require_integration,
+        ),
+        pytest.param(
+            _large_polars_series,
+            id="polars_series",
+            marks=pytest.mark.require_integration,
+        ),
+    ],
+)
+def test_cache_hash_seed_reaches_every_sampling_path(
+    make_obj: Callable[[], Any],
+) -> None:
+    """Changing the seed must change the cache key of a large object."""
+    obj = make_obj()
+
+    with patch_config_options({"runner.cacheHashSeed": 0}):
+        hash_default = get_hash(obj)
+    with patch_config_options({"runner.cacheHashSeed": 1}):
+        hash_other = get_hash(obj)
+
+    assert hash_default != hash_other
+
+
+def test_cache_hash_seed_is_deterministic_for_pandas_dataframe() -> None:
+    """A given seed must produce a stable cache key across calls."""
+    with patch_config_options({"runner.cacheHashSeed": 7}):
+        first = get_hash(_large_pandas_dataframe())
+        second = get_hash(_large_pandas_dataframe())
+
+    assert first == second
+
+
+def test_cache_hash_seed_does_not_affect_small_objects() -> None:
+    """Objects below the sampling threshold are hashed in full either way."""
+    small = pd.DataFrame({"a": np.arange(10)})
+
+    with patch_config_options({"runner.cacheHashSeed": 0}):
+        hash_default = get_hash(small)
+    with patch_config_options({"runner.cacheHashSeed": 99}):
+        hash_other = get_hash(small)
+
+    assert hash_default == hash_other
+
+
+def test_cache_hash_seed_moves_off_a_real_collision() -> None:
+    """The escape hatch the option exists to provide (GitHub issue #14622).
+
+    Builds a genuine collision under the default seed by mutating only positions
+    that seed never draws -- the drawn positions depend on the seed and the array
+    length, not on the values, so this is exact rather than probabilistic -- then
+    shows a different seed tells the two arrays apart.
+    """
+    length = _NP_SIZE_LARGE + 100_000
+    base = np.arange(length)
+
+    # Replay seed 0 -- the historical default, not ``_sample_seed()`` -- to find the
+    # indices that sampler never draws. ``value == index`` for arange, so the drawn
+    # values are the drawn indices.
+    drawn = np.random.RandomState(0).choice(base.flat, size=_NP_SAMPLE_SIZE)
+    never_drawn = np.setdiff1d(np.arange(length), np.unique(drawn))
+    assert never_drawn.size > 0, (
+        "expected the default seed to leave positions unsampled"
+    )
+
+    mutated = base.copy()
+    mutated[never_drawn] = -1
+
+    with patch_config_options({"runner.cacheHashSeed": 0}):
+        assert get_hash(base) == get_hash(mutated), (
+            "expected a collision under the default seed"
+        )
+
+    with patch_config_options({"runner.cacheHashSeed": 12345}):
+        assert get_hash(base) != get_hash(mutated)

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+
+import time
 
 import numpy as np
 import plotly.express as px
@@ -80,7 +82,7 @@ fig_bar = px.bar(data_canada, x="year", y="pop")
 event_data = st.plotly_chart(
     fig_bar, on_select="rerun", key="bar_chart", selection_mode=["points"]
 )
-if len(event_data.selection["points"]) > 0:
+if len(event_data["selection"].get("points", [])) > 0:
     st.write("The original df data selected:")
     points = st.session_state.bar_chart.selection["points"]
     # Extract x and y values directly into lists
@@ -124,17 +126,13 @@ fig = px.histogram(df, x="total_bill")
 def histogram_callback():
     if len(st.session_state.histogram_chart.selection["points"]) > 0:
         st.write("Callback triggered")
-        points = list(
-            point for point in st.session_state.histogram_chart.selection["points"]
-        )
+        points = list(st.session_state.histogram_chart.selection["points"])
         st.dataframe(points)
 
 
 st.plotly_chart(
     fig, on_select=histogram_callback, key="histogram_chart", selection_mode="lasso"
 )
-
-import time
 
 if st.button("Create some elements to unmount component"):
     for _ in range(3):
@@ -149,14 +147,14 @@ event_data = st.plotly_chart(
     fig, on_select="rerun", key="bubble_chart_2", selection_mode=("box", "lasso")
 )
 
-if len(event_data.selection["points"]) > 0:
-    st.dataframe(event_data.selection["points"])
+if len(event_data["selection"]["points"]) > 0:
+    st.dataframe(event_data["selection"]["points"])
 
 st.header("Bubble Chart with Points & Box Select")
 event_data = st.plotly_chart(
     fig_bubble, on_select="rerun", selection_mode=("points", "box")
 )
-if len(event_data.selection.points) > 0:
+if len(event_data["selection"]["points"]) > 0:
     points = event_data.selection.points
     # Extract x and y values directly into lists
     x_values = [point["x"] for point in points]
@@ -169,3 +167,42 @@ if len(event_data.selection.points) > 0:
     st.write(f"Selected points: {len(filtered_df)}")
 else:
     st.write("Nothing is selected")
+
+
+# Treemap chart for hierarchical selection
+st.header("Treemap with Selection")
+df_gapminder = px.data.gapminder().query("year == 2007")
+fig_treemap = px.treemap(
+    df_gapminder, path=["continent", "country"], values="pop", title="World Population"
+)
+event_treemap = st.plotly_chart(
+    fig_treemap, on_select="rerun", key="treemap_chart", selection_mode="points"
+)
+if event_treemap and len(event_treemap.selection.get("points", [])) > 0:
+    st.write("Treemap selection:")
+    point = event_treemap.selection["points"][0]
+    st.write(f"Selected: {point.get('label', 'N/A')}")
+    st.write(f"ID: {point.get('id', 'N/A')}")
+    st.write(f"Parent: {point.get('parent', 'N/A')}")
+else:
+    st.write("No treemap selection")
+
+
+# Sunburst chart for hierarchical selection
+st.header("Sunburst with Selection")
+fig_sunburst = px.sunburst(
+    df_gapminder,
+    path=["continent", "country"],
+    values="pop",
+    title="World Population Sunburst",
+)
+event_sunburst = st.plotly_chart(
+    fig_sunburst, on_select="rerun", key="sunburst_chart", selection_mode="points"
+)
+if event_sunburst and len(event_sunburst.selection.get("points", [])) > 0:
+    st.write("Sunburst selection:")
+    point = event_sunburst.selection["points"][0]
+    st.write(f"Selected: {point.get('label', 'N/A')}")
+    st.write(f"ID: {point.get('id', 'N/A')}")
+else:
+    st.write("No sunburst selection")

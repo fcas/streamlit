@@ -26,7 +26,7 @@ $ pip install streamlit
 $ streamlit hello
 ```
 
-If this opens our sweet _Streamlit Hello_ app in your browser, you're all set! If not, head over to [our docs](https://docs.streamlit.io/library/get-started) for specific installs.
+If this opens our sweet _Streamlit Hello_ app in your browser, you're all set! If not, head over to [our docs](https://docs.streamlit.io/get-started) for specific installs.
 
 The app features a bunch of examples of what you can do with Streamlit. Jump to the [quickstart](#quickstart) section to understand how that all works.
 
@@ -36,9 +36,10 @@ The app features a bunch of examples of what you can do with Streamlit. Jump to 
 
 ### A little example
 
-Create a new file `streamlit_app.py` with the following code:
+Create a new file named `streamlit_app.py` in your project directory with the following code:
 ```python
 import streamlit as st
+
 x = st.slider("Select a value")
 st.write(x, "squared is", x * x)
 ```
@@ -52,32 +53,32 @@ $ streamlit run streamlit_app.py
 
 ### Give me more!
 
-Streamlit comes in with [a ton of additional powerful elements](https://docs.streamlit.io/library/api-reference) to spice up your data apps and delight your viewers. Some examples:
+Streamlit comes in with [a ton of additional powerful elements](https://docs.streamlit.io/develop/api-reference) to spice up your data apps and delight your viewers. Some examples:
 
 <table border="0">
   <tr>
     <td>
-      <a target="_blank" href="https://docs.streamlit.io/library/api-reference/widgets">
+      <a target="_blank" href="https://docs.streamlit.io/develop/api-reference/widgets">
         <img src="https://user-images.githubusercontent.com/7164864/217936099-12c16f8c-7fe4-44b1-889a-1ac9ee6a1b44.png" style="max-height:150px; width:auto; display:block;">
       </a>
     </td>
     <td>
-      <a target="_blank" href="https://docs.streamlit.io/library/api-reference/data/st.dataframe">
+      <a target="_blank" href="https://docs.streamlit.io/develop/api-reference/data/st.dataframe">
         <img src="https://user-images.githubusercontent.com/7164864/215110064-5eb4e294-8f30-4933-9563-0275230e52b5.gif" style="max-height:150px; width:auto; display:block;">
       </a>
     </td>
     <td>
-      <a target="_blank" href="https://docs.streamlit.io/library/api-reference/charts">
+      <a target="_blank" href="https://docs.streamlit.io/develop/api-reference/charts">
         <img src="https://user-images.githubusercontent.com/7164864/215174472-bca8a0d7-cf4b-4268-9c3b-8c03dad50bcd.gif" style="max-height:150px; width:auto; display:block;">
       </a>
     </td>
     <td>
-      <a target="_blank" href="https://docs.streamlit.io/library/api-reference/layout">
+      <a target="_blank" href="https://docs.streamlit.io/develop/api-reference/layout">
         <img src="https://user-images.githubusercontent.com/7164864/217936149-a35c35be-0d96-4c63-8c6a-1c4b52aa8f60.png" style="max-height:150px; width:auto; display:block;">
       </a>
     </td>
     <td>
-      <a target="_blank" href="https://docs.streamlit.io/library/get-started/multipage-apps">
+      <a target="_blank" href="https://docs.streamlit.io/develop/concepts/multipage-apps">
         <img src="https://user-images.githubusercontent.com/7164864/215173883-eae0de69-7c1d-4d78-97d0-3bc1ab865e5b.gif" style="max-height:150px; width:auto; display:block;">
       </a>
     </td>
@@ -98,7 +99,7 @@ Streamlit comes in with [a ton of additional powerful elements](https://docs.str
 </table>
 
 
-Our vibrant creators community also extends Streamlit capabilities using  🧩 [Streamlit Components](http://components.streamlit.app).
+Our vibrant creators community also extends Streamlit capabilities using  🧩 [Streamlit Components](https://streamlit.io/components).
 
 ## Get inspired
 
@@ -118,15 +119,31 @@ Deploy, manage and share your apps for free using our [Community Cloud](https://
 <img src="https://user-images.githubusercontent.com/7164864/214965336-64500db3-0d79-4a20-8052-2dda883902d2.gif" width="400"></img>
 
 ## Resources
+
 - Explore our [docs](https://docs.streamlit.io) to learn how Streamlit works.
 - Ask questions and get help in our [community forum](https://discuss.streamlit.io).
 - Read our [blog](https://blog.streamlit.io) for tips from developers and creators.
-- Extend Streamlit's capabilities by installing or creating your own [Streamlit Components](http://components.streamlit.app/).
+- Extend Streamlit's capabilities by installing or creating your own [Streamlit Components](https://streamlit.io/components).
 - Help others find and play with your app by using the Streamlit GitHub badge in your repository:
 ```markdown
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](URL_TO_YOUR_APP)
 ```
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://share.streamlit.io/streamlit/roadmap)
+
+## Contribute
+
+🎉 Thanks for your interest in helping improve Streamlit! 🎉
+
+We have paused accepting pull requests from outside the Streamlit maintainer team. You can still
+make a valuable contribution by [reporting bugs](https://github.com/streamlit/streamlit/issues/new?template=bug_report.yml),
+[requesting features](https://github.com/streamlit/streamlit/issues/new?template=feature_request.yml),
+[improving or upvoting existing issues](https://github.com/streamlit/streamlit/issues?q=is%3Aissue%20state%3Aopen%20sort%3Areactions-%2B1-desc),
+[commenting on open specs](https://github.com/streamlit/streamlit/issues?q=state%3Aopen%20label%3Achange%3Aspec), creating
+[custom components](https://docs.streamlit.io/develop/concepts/custom-components/components-v2),
+and contributing to [streamlit-extras](https://github.com/arnaudmiribel/streamlit-extras).
+
+Read our [contribution guide](https://github.com/streamlit/streamlit/blob/develop/CONTRIBUTING.md)
+for details.
 
 ## License
 

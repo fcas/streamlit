@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,43 +14,56 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
-import { useTheme } from "@emotion/react"
-import JSON5 from "json5"
-import ReactJson from "react-json-view"
-import ErrorElement from "@streamlit/lib/src/components/shared/ErrorElement"
+import { memo, ReactElement, useCallback } from "react"
 
-import { Json as JsonProto } from "@streamlit/lib/src/proto"
-import {
-  hasLightBackgroundColor,
-  EmotionTheme,
-} from "@streamlit/lib/src/theme"
-import { ensureError } from "@streamlit/lib/src/util/ErrorHandling"
+import JSON5 from "json5"
+
+import { Json as JsonProto } from "@streamlit/protobuf"
+
+import ErrorElement from "~lib/components/shared/ErrorElement/ErrorElement"
+import { useCopyToClipboard } from "~lib/hooks/useCopyToClipboard"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
+import { hasLightBackgroundColor } from "~lib/theme/getColors"
+import { ensureError } from "~lib/util/ErrorHandling"
+import ReactJson, { type OnCopyProps } from "~lib/util/reactJsonViewCompat"
+
+import JsonPathTooltip from "./JsonPathTooltip"
+import { StyledJsonWrapper } from "./styled-components"
+import { useJsonTooltip } from "./useJsonTooltip"
 
 export interface JsonProps {
-  width: number
   element: JsonProto
 }
 
 /**
  * Functional element representing JSON structured text.
  */
-export default function Json({ width, element }: JsonProps): ReactElement {
-  const styleProp = { width }
-  const theme: EmotionTheme = useTheme()
+function Json({ element }: Readonly<JsonProps>): ReactElement {
+  const theme = useEmotionTheme()
+  const { tooltip, handleSelect, clearTooltip } = useJsonTooltip()
+
+  const { copyToClipboard } = useCopyToClipboard()
+
+  const handleCopy = useCallback(
+    (copy: OnCopyProps): void => {
+      copyToClipboard(JSON.stringify(copy.src))
+    },
+    [copyToClipboard]
+  )
 
   let bodyObject
   try {
     bodyObject = JSON.parse(element.body)
   } catch (e) {
     const error = ensureError(e)
+
     try {
       bodyObject = JSON5.parse(element.body)
-    } catch (json5Error) {
+    } catch {
       // If content fails to parse as Json, rebuild the error message
       // to show where the problem occurred.
       const pos = parseInt(error.message.replace(/[^0-9]/g, ""), 10)
-      error.message += `\n${element.body.substr(0, pos + 1)} ← here`
+      error.message += `\n${element.body.substring(0, pos + 1)} ← here`
       return <ErrorElement name={"Json Parse Error"} message={error.message} />
     }
   }
@@ -60,21 +73,36 @@ export default function Json({ width, element }: JsonProps): ReactElement {
   const jsonTheme = hasLightBackgroundColor(theme) ? "rjv-default" : "monokai"
 
   return (
-    <div data-testid="stJson" style={styleProp}>
+    <StyledJsonWrapper className="stJson" data-testid="stJson">
       <ReactJson
         src={bodyObject}
-        collapsed={!element.expanded}
+        collapsed={element.maxExpandDepth ?? !element.expanded}
         displayDataTypes={false}
         displayObjectSize={false}
         name={false}
         theme={jsonTheme}
+        enableClipboard={handleCopy}
+        onSelect={handleSelect}
+        // @ts-expect-error showComma prop exists at runtime but is missing from type definitions
+        showComma={false}
         style={{
           fontFamily: theme.genericFonts.codeFont,
-          fontSize: theme.fontSizes.sm,
+          fontSize: theme.fontSizes.codeFontSize,
+          fontWeight: theme.fontWeights.code,
           backgroundColor: theme.colors.bgColor,
           whiteSpace: "pre-wrap", // preserve whitespace
         }}
       />
-    </div>
+      {tooltip && (
+        <JsonPathTooltip
+          top={tooltip.y}
+          left={tooltip.x}
+          path={tooltip.path}
+          clearTooltip={clearTooltip}
+        />
+      )}
+    </StyledJsonWrapper>
   )
 }
+
+export default memo(Json)

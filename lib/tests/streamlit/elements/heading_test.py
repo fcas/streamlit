@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,10 +13,12 @@
 # limitations under the License.
 
 import pytest
+from parameterized import parameterized
 
 import streamlit as st
-from streamlit.errors import StreamlitAPIException
+from streamlit.errors import StreamlitAPIException, StreamlitValueError
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.elements.layout_test_utils import WidthConfigFields
 
 
 class StHeaderTest(DeltaGeneratorTestCase):
@@ -27,32 +29,32 @@ class StHeaderTest(DeltaGeneratorTestCase):
         st.header("some header")
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some header")
-        self.assertEqual(el.heading.tag, "h2")
-        self.assertFalse(el.heading.hide_anchor, False)
-        self.assertFalse(el.heading.divider)
+        assert el.heading.body == "some header"
+        assert el.heading.tag == "h2"
+        assert not el.heading.hide_anchor
+        assert not el.heading.divider
 
     def test_st_header_with_anchor(self):
         """Test st.header with anchor."""
         st.header("some header", anchor="some-anchor")
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some header")
-        self.assertEqual(el.heading.tag, "h2")
-        self.assertEqual(el.heading.anchor, "some-anchor")
-        self.assertFalse(el.heading.hide_anchor, False)
-        self.assertFalse(el.heading.divider)
+        assert el.heading.body == "some header"
+        assert el.heading.tag == "h2"
+        assert el.heading.anchor == "some-anchor"
+        assert not el.heading.hide_anchor
+        assert not el.heading.divider
 
     def test_st_header_with_hidden_anchor(self):
         """Test st.header with hidden anchor."""
         st.header("some header", anchor=False)
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some header")
-        self.assertEqual(el.heading.tag, "h2")
-        self.assertEqual(el.heading.anchor, "")
-        self.assertTrue(el.heading.hide_anchor, True)
-        self.assertFalse(el.heading.divider)
+        assert el.heading.body == "some header"
+        assert el.heading.tag == "h2"
+        assert el.heading.anchor == ""
+        assert el.heading.hide_anchor is True
+        assert not el.heading.divider
 
     def test_st_header_with_invalid_anchor(self):
         """Test st.header with invalid anchor."""
@@ -63,35 +65,95 @@ class StHeaderTest(DeltaGeneratorTestCase):
         """Test st.header with help."""
         st.header("some header", help="help text")
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some header")
-        self.assertEqual(el.heading.tag, "h2")
-        self.assertEqual(el.heading.help, "help text")
-        self.assertFalse(el.heading.divider)
+        assert el.heading.body == "some header"
+        assert el.heading.tag == "h2"
+        assert el.heading.help == "help text"
+        assert not el.heading.divider
 
     def test_st_header_with_divider_true(self):
         """Test st.header with divider True."""
         st.header("some header", divider=True)
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some header")
-        self.assertEqual(el.heading.tag, "h2")
-        self.assertFalse(el.heading.hide_anchor, False)
-        self.assertEqual(el.heading.divider, "auto")
+        assert el.heading.body == "some header"
+        assert el.heading.tag == "h2"
+        assert not el.heading.hide_anchor
+        assert el.heading.divider == "auto"
 
     def test_st_header_with_divider_color(self):
         """Test st.header with divider color."""
         st.header("some header", divider="blue")
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some header")
-        self.assertEqual(el.heading.tag, "h2")
-        self.assertFalse(el.heading.hide_anchor, False)
-        self.assertEqual(el.heading.divider, "blue")
+        assert el.heading.body == "some header"
+        assert el.heading.tag == "h2"
+        assert not el.heading.hide_anchor
+        assert el.heading.divider == "blue"
 
     def test_st_header_with_invalid_divider(self):
         """Test st.header with invalid divider."""
-        with pytest.raises(StreamlitAPIException):
+        with pytest.raises(StreamlitValueError):
             st.header("some header", divider="corgi")
+
+    def test_st_header_with_width(self):
+        """Test st.header with different width types."""
+        test_cases = [
+            (500, WidthConfigFields.PIXEL_WIDTH.value, "pixel_width", 500),
+            ("stretch", WidthConfigFields.USE_STRETCH.value, "use_stretch", True),
+            ("content", WidthConfigFields.USE_CONTENT.value, "use_content", True),
+        ]
+
+        for width_value, expected_width_spec, field_name, field_value in test_cases:
+            with self.subTest(width_value=width_value):
+                st.header("some header", width=width_value)
+
+                el = self.get_delta_from_queue().new_element
+                assert el.heading.body == "some header"
+                assert el.heading.tag == "h2"
+
+                assert el.width_config.WhichOneof("width_spec") == expected_width_spec
+                assert getattr(el.width_config, field_name) == field_value
+
+    def test_st_header_with_invalid_width(self):
+        """Test st.header with invalid width values."""
+        test_cases = [
+            (
+                "invalid",
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                -100,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                0,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                100.5,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+        ]
+
+        for width_value, expected_error_message in test_cases:
+            with self.subTest(width_value=width_value):
+                with pytest.raises(StreamlitAPIException) as exc:
+                    st.header("some header", width=width_value)
+
+                assert expected_error_message in str(exc.value)
+
+    def test_st_header_default_width(self):
+        """Test that st.header defaults to stretch width."""
+        st.header("some header")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.heading.body == "some header"
+        assert el.heading.tag == "h2"
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert el.width_config.use_stretch is True
 
 
 class StSubheaderTest(DeltaGeneratorTestCase):
@@ -102,32 +164,32 @@ class StSubheaderTest(DeltaGeneratorTestCase):
         st.subheader("some subheader")
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some subheader")
-        self.assertEqual(el.heading.tag, "h3")
-        self.assertFalse(el.heading.hide_anchor)
-        self.assertFalse(el.heading.divider)
+        assert el.heading.body == "some subheader"
+        assert el.heading.tag == "h3"
+        assert not el.heading.hide_anchor
+        assert not el.heading.divider
 
     def test_st_subheader_with_anchor(self):
         """Test st.subheader with anchor."""
         st.subheader("some subheader", anchor="some-anchor")
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some subheader")
-        self.assertEqual(el.heading.tag, "h3")
-        self.assertEqual(el.heading.anchor, "some-anchor")
-        self.assertFalse(el.heading.hide_anchor)
-        self.assertFalse(el.heading.divider)
+        assert el.heading.body == "some subheader"
+        assert el.heading.tag == "h3"
+        assert el.heading.anchor == "some-anchor"
+        assert not el.heading.hide_anchor
+        assert not el.heading.divider
 
     def test_st_subheader_with_hidden_anchor(self):
         """Test st.subheader with hidden anchor."""
         st.subheader("some subheader", anchor=False)
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some subheader")
-        self.assertEqual(el.heading.tag, "h3")
-        self.assertEqual(el.heading.anchor, "")
-        self.assertTrue(el.heading.hide_anchor, True)
-        self.assertFalse(el.heading.divider)
+        assert el.heading.body == "some subheader"
+        assert el.heading.tag == "h3"
+        assert el.heading.anchor == ""
+        assert el.heading.hide_anchor is True
+        assert not el.heading.divider
 
     def test_st_subheader_with_invalid_anchor(self):
         """Test st.subheader with invalid anchor."""
@@ -138,35 +200,95 @@ class StSubheaderTest(DeltaGeneratorTestCase):
         """Test st.subheader with help."""
         st.subheader("some subheader", help="help text")
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some subheader")
-        self.assertEqual(el.heading.tag, "h3")
-        self.assertEqual(el.heading.help, "help text")
-        self.assertFalse(el.heading.divider)
+        assert el.heading.body == "some subheader"
+        assert el.heading.tag == "h3"
+        assert el.heading.help == "help text"
+        assert not el.heading.divider
 
     def test_st_subheader_with_divider_true(self):
         """Test st.subheader with divider True."""
         st.subheader("some subheader", divider=True)
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some subheader")
-        self.assertEqual(el.heading.tag, "h3")
-        self.assertFalse(el.heading.hide_anchor)
-        self.assertEqual(el.heading.divider, "auto")
+        assert el.heading.body == "some subheader"
+        assert el.heading.tag == "h3"
+        assert not el.heading.hide_anchor
+        assert el.heading.divider == "auto"
 
     def test_st_subheader_with_divider_color(self):
         """Test st.subheader with divider color."""
         st.subheader("some subheader", divider="blue")
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some subheader")
-        self.assertEqual(el.heading.tag, "h3")
-        self.assertFalse(el.heading.hide_anchor)
-        self.assertEqual(el.heading.divider, "blue")
+        assert el.heading.body == "some subheader"
+        assert el.heading.tag == "h3"
+        assert not el.heading.hide_anchor
+        assert el.heading.divider == "blue"
 
     def test_st_subheader_with_invalid_divider(self):
         """Test st.subheader with invalid divider."""
-        with pytest.raises(StreamlitAPIException):
+        with pytest.raises(StreamlitValueError):
             st.subheader("some header", divider="corgi")
+
+    def test_st_subheader_with_width(self):
+        """Test st.subheader with different width types."""
+        test_cases = [
+            (500, WidthConfigFields.PIXEL_WIDTH.value, "pixel_width", 500),
+            ("stretch", WidthConfigFields.USE_STRETCH.value, "use_stretch", True),
+            ("content", WidthConfigFields.USE_CONTENT.value, "use_content", True),
+        ]
+
+        for width_value, expected_width_spec, field_name, field_value in test_cases:
+            with self.subTest(width_value=width_value):
+                st.subheader("some subheader", width=width_value)
+
+                el = self.get_delta_from_queue().new_element
+                assert el.heading.body == "some subheader"
+                assert el.heading.tag == "h3"
+
+                assert el.width_config.WhichOneof("width_spec") == expected_width_spec
+                assert getattr(el.width_config, field_name) == field_value
+
+    def test_st_subheader_with_invalid_width(self):
+        """Test st.subheader with invalid width values."""
+        test_cases = [
+            (
+                "invalid",
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                -100,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                0,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                100.5,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+        ]
+
+        for width_value, expected_error_message in test_cases:
+            with self.subTest(width_value=width_value):
+                with pytest.raises(StreamlitAPIException) as exc:
+                    st.subheader("some subheader", width=width_value)
+
+                assert expected_error_message in str(exc.value)
+
+    def test_st_subheader_default_width(self):
+        """Test that st.subheader defaults to stretch width."""
+        st.subheader("some subheader")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.heading.body == "some subheader"
+        assert el.heading.tag == "h3"
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert el.width_config.use_stretch is True
 
 
 class StTitleTest(DeltaGeneratorTestCase):
@@ -177,32 +299,32 @@ class StTitleTest(DeltaGeneratorTestCase):
         st.title("some title")
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some title")
-        self.assertEqual(el.heading.tag, "h1")
-        self.assertFalse(el.heading.hide_anchor)
-        self.assertFalse(el.heading.divider)
+        assert el.heading.body == "some title"
+        assert el.heading.tag == "h1"
+        assert not el.heading.hide_anchor
+        assert not el.heading.divider
 
     def test_st_title_with_anchor(self):
         """Test st.title with anchor."""
         st.title("some title", anchor="some-anchor")
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some title")
-        self.assertEqual(el.heading.tag, "h1")
-        self.assertEqual(el.heading.anchor, "some-anchor")
-        self.assertFalse(el.heading.hide_anchor)
-        self.assertFalse(el.heading.divider)
+        assert el.heading.body == "some title"
+        assert el.heading.tag == "h1"
+        assert el.heading.anchor == "some-anchor"
+        assert not el.heading.hide_anchor
+        assert not el.heading.divider
 
     def test_st_title_with_hidden_anchor(self):
         """Test st.title with hidden anchor."""
         st.title("some title", anchor=False)
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some title")
-        self.assertEqual(el.heading.tag, "h1")
-        self.assertEqual(el.heading.anchor, "")
-        self.assertTrue(el.heading.hide_anchor)
-        self.assertFalse(el.heading.divider)
+        assert el.heading.body == "some title"
+        assert el.heading.tag == "h1"
+        assert el.heading.anchor == ""
+        assert el.heading.hide_anchor
+        assert not el.heading.divider
 
     def test_st_title_with_invalid_anchor(self):
         """Test st.title with invalid anchor."""
@@ -220,10 +342,10 @@ class StTitleTest(DeltaGeneratorTestCase):
         st.title("some title", help="help text")
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.heading.body, "some title")
-        self.assertEqual(el.heading.tag, "h1")
-        self.assertEqual(el.heading.help, "help text")
-        self.assertFalse(el.heading.divider)
+        assert el.heading.body == "some title"
+        assert el.heading.tag == "h1"
+        assert el.heading.help == "help text"
+        assert not el.heading.divider
 
     def test_st_title_with_invalid_divider(self):
         """Test st.title with invalid divider."""
@@ -231,3 +353,165 @@ class StTitleTest(DeltaGeneratorTestCase):
             st.title("some header", divider=True)
         with pytest.raises(TypeError):
             st.title("some header", divider="blue")
+
+    def test_st_title_with_width(self):
+        """Test st.title with different width types."""
+        test_cases = [
+            (500, WidthConfigFields.PIXEL_WIDTH.value, "pixel_width", 500),
+            ("stretch", WidthConfigFields.USE_STRETCH.value, "use_stretch", True),
+            ("content", WidthConfigFields.USE_CONTENT.value, "use_content", True),
+        ]
+
+        for width_value, expected_width_spec, field_name, field_value in test_cases:
+            with self.subTest(width_value=width_value):
+                st.title("some title", width=width_value)
+
+                el = self.get_delta_from_queue().new_element
+                assert el.heading.body == "some title"
+                assert el.heading.tag == "h1"
+
+                assert el.width_config.WhichOneof("width_spec") == expected_width_spec
+                assert getattr(el.width_config, field_name) == field_value
+
+    def test_st_title_with_invalid_width(self):
+        """Test st.title with invalid width values."""
+        test_cases = [
+            (
+                "invalid",
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                -100,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                0,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                100.5,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+        ]
+
+        for width_value, expected_error_message in test_cases:
+            with self.subTest(width_value=width_value):
+                with pytest.raises(StreamlitAPIException) as exc:
+                    st.title("some title", width=width_value)
+
+                assert expected_error_message in str(exc.value)
+
+    def test_st_title_default_width(self):
+        """Test that st.title defaults to stretch width."""
+        st.title("some title")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.heading.body == "some title"
+        assert el.heading.tag == "h1"
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert el.width_config.use_stretch is True
+
+
+class StTitleTextAlignmentTest(DeltaGeneratorTestCase):
+    """Test st.title text_alignment parameter."""
+
+    @parameterized.expand(
+        [
+            ("left", 1),
+            ("center", 2),
+            ("right", 3),
+            ("justify", 4),
+            (None, 1),  # Default case
+        ]
+    )
+    def test_st_title_text_alignment(
+        self, text_alignment: str | None, expected_alignment: int
+    ):
+        """Test st.title with various text_alignment values."""
+        if text_alignment is None:
+            st.title("Title text")
+        else:
+            st.title("Title text", text_alignment=text_alignment)
+
+        el = self.get_delta_from_queue().new_element
+        assert el.heading.body == "Title text"
+        assert el.heading.tag == "h1"
+        assert el.text_alignment_config.alignment == expected_alignment
+
+    def test_st_title_text_alignment_invalid(self):
+        """Test st.title with invalid text_alignment raises error."""
+        with pytest.raises(StreamlitAPIException) as exc:
+            st.title("Title text", text_alignment="bottom")
+
+        assert "Invalid `text_alignment` value" in str(exc.value)
+
+
+class StHeaderTextAlignmentTest(DeltaGeneratorTestCase):
+    """Test st.header text_alignment parameter."""
+
+    @parameterized.expand(
+        [
+            ("left", 1),
+            ("center", 2),
+            ("right", 3),
+            ("justify", 4),
+            (None, 1),  # Default case
+        ]
+    )
+    def test_st_header_text_alignment(
+        self, text_alignment: str | None, expected_alignment: int
+    ):
+        """Test st.header with various text_alignment values."""
+        if text_alignment is None:
+            st.header("Header text")
+        else:
+            st.header("Header text", text_alignment=text_alignment)
+
+        el = self.get_delta_from_queue().new_element
+        assert el.heading.body == "Header text"
+        assert el.heading.tag == "h2"
+        assert el.text_alignment_config.alignment == expected_alignment
+
+    def test_st_header_text_alignment_invalid(self):
+        """Test st.header with invalid text_alignment raises error."""
+        with pytest.raises(StreamlitAPIException) as exc:
+            st.header("Header text", text_alignment="start")
+
+        assert "Invalid `text_alignment` value" in str(exc.value)
+
+
+class StSubheaderTextAlignmentTest(DeltaGeneratorTestCase):
+    """Test st.subheader text_alignment parameter."""
+
+    @parameterized.expand(
+        [
+            ("left", 1),
+            ("center", 2),
+            ("right", 3),
+            ("justify", 4),
+            (None, 1),  # Default case
+        ]
+    )
+    def test_st_subheader_text_alignment(
+        self, text_alignment: str | None, expected_alignment: int
+    ):
+        """Test st.subheader with various text_alignment values."""
+        if text_alignment is None:
+            st.subheader("Subheader text")
+        else:
+            st.subheader("Subheader text", text_alignment=text_alignment)
+
+        el = self.get_delta_from_queue().new_element
+        assert el.heading.body == "Subheader text"
+        assert el.heading.tag == "h3"
+        assert el.text_alignment_config.alignment == expected_alignment
+
+    def test_st_subheader_text_alignment_invalid(self):
+        """Test st.subheader with invalid text_alignment raises error."""
+        with pytest.raises(StreamlitAPIException) as exc:
+            st.subheader("Subheader text", text_alignment="middle")
+
+        assert "Invalid `text_alignment` value" in str(exc.value)

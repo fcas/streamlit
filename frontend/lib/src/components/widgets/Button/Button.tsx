@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,60 +14,87 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
-import { Button as ButtonProto } from "@streamlit/lib/src/proto"
+import { memo, ReactElement, useCallback } from "react"
+
+import { Button as ButtonProto } from "@streamlit/protobuf"
+
+import { Box } from "~lib/components/shared/Base/styled-components"
 import BaseButton, {
-  BaseButtonTooltip,
   BaseButtonKind,
   BaseButtonSize,
-} from "@streamlit/lib/src/components/shared/BaseButton"
-import { WidgetStateManager } from "@streamlit/lib/src/WidgetStateManager"
-import StreamlitMarkdown from "@streamlit/lib/src/components/shared/StreamlitMarkdown"
+} from "~lib/components/shared/BaseButton/BaseButton"
+import { BaseButtonTooltip } from "~lib/components/shared/BaseButton/BaseButtonTooltip"
+import { DynamicButtonLabel } from "~lib/components/shared/BaseButton/DynamicButtonLabel"
+import { mapProtoIconPosition } from "~lib/components/shared/BaseButton/iconPosition"
+import { useResolvedWrap } from "~lib/components/shared/BaseButton/useResolvedWrap"
+import { useRegisterShortcut } from "~lib/hooks/useRegisterShortcut"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
 
 export interface Props {
   disabled: boolean
   element: ButtonProto
   widgetMgr: WidgetStateManager
-  width: number
   fragmentId?: string
 }
 
 function Button(props: Props): ReactElement {
-  const { disabled, element, widgetMgr, width, fragmentId } = props
-  const style = { width }
+  const { disabled, element, widgetMgr, fragmentId } = props
+  const shortcut = element.shortcut ? element.shortcut : undefined
 
-  const kind =
-    element.type === "primary"
-      ? BaseButtonKind.PRIMARY
-      : BaseButtonKind.SECONDARY
+  // wrap defaults to auto (no wrap in horizontal layouts, wrap otherwise). When
+  // wrap resolves to no-wrap, reveal the full label on hover via a native title,
+  // skipped when help is set since help provides the tooltip.
+  const wrap = useResolvedWrap(element.wrap)
+  const addTitleTooltip = !wrap && !element.help
 
-  // When useContainerWidth true & has help tooltip,
-  // we need to pass the container width down to the button
-  const fluidWidth = element.help ? width : true
+  let kind = BaseButtonKind.SECONDARY
+  if (element.type === "primary") {
+    kind = BaseButtonKind.PRIMARY
+  } else if (element.type === "tertiary") {
+    kind = BaseButtonKind.TERTIARY
+  }
+
+  const handleTrigger = useCallback(() => {
+    if (disabled) {
+      return
+    }
+
+    void widgetMgr.setTriggerValue(element, { fromUi: true }, fragmentId)
+  }, [disabled, widgetMgr, element, fragmentId])
+
+  useRegisterShortcut({
+    shortcut,
+    disabled,
+    onActivate: handleTrigger,
+  })
 
   return (
-    <div className="row-widget stButton" data-testid="stButton" style={style}>
-      <BaseButtonTooltip help={element.help}>
+    <Box className="stButton" data-testid="stButton">
+      <BaseButtonTooltip
+        help={element.help}
+        // The element wrapper determines the width so
+        // we should always expand to fill the wrapper.
+        containerWidth={true}
+      >
         <BaseButton
           kind={kind}
           size={BaseButtonSize.SMALL}
           disabled={disabled}
-          fluidWidth={element.useContainerWidth ? fluidWidth : false}
-          onClick={() =>
-            widgetMgr.setTriggerValue(element, { fromUi: true }, fragmentId)
-          }
+          containerWidth={true}
+          onClick={handleTrigger}
         >
-          <StreamlitMarkdown
-            source={element.label}
-            allowHTML={false}
-            isLabel
-            largerLabel
-            disableLinks
+          <DynamicButtonLabel
+            icon={element.icon}
+            iconPosition={mapProtoIconPosition(element.iconPosition)}
+            label={element.label}
+            shortcut={shortcut}
+            wrap={wrap}
+            addTitleTooltip={addTitleTooltip}
           />
         </BaseButton>
       </BaseButtonTooltip>
-    </div>
+    </Box>
   )
 }
 
-export default Button
+export default memo(Button)

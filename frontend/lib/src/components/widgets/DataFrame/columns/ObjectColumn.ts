@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,19 +14,16 @@
  * limitations under the License.
  */
 
-import { GridCell, TextCell, GridCellKind } from "@glideapps/glide-data-grid"
+import { GridCell, GridCellKind, TextCell } from "@glideapps/glide-data-grid"
 
-import {
-  notNullOrUndefined,
-  isNullOrUndefined,
-} from "@streamlit/lib/src/util/utils"
+import { isNullOrUndefined, notNullOrUndefined } from "~lib/util/utils"
 
 import {
   BaseColumn,
   BaseColumnProps,
   getErrorCell,
-  toSafeString,
   removeLineBreaks,
+  toSafeString,
 } from "./utils"
 
 /**
@@ -34,21 +31,24 @@ import {
  * for data types that are currently not supported for editing.
  */
 function ObjectColumn(props: BaseColumnProps): BaseColumn {
-  const cellTemplate = {
+  const cellTemplate: TextCell = {
     kind: GridCellKind.Text,
     data: "",
     displayData: "",
     allowOverlay: true,
-    contentAlignment: props.contentAlignment,
+    contentAlign: props.contentAlignment,
+    allowWrapping: props.isWrappingAllowed,
     readonly: true,
-    style: props.isIndex ? "faded" : "normal",
-  } as TextCell
+    // The text in pinned columns should be faded.
+    style: props.isPinned ? "faded" : "normal",
+  }
   return {
     ...props,
     kind: "object",
     sortMode: "default",
+    typeIcon: ":material/data_object:",
     isEditable: false, // Object columns are read-only.
-    getCell(data?: any): GridCell {
+    getCell(data?: unknown): GridCell {
       try {
         const cellData = notNullOrUndefined(data) ? toSafeString(data) : null
         const displayData = notNullOrUndefined(cellData)
@@ -63,6 +63,7 @@ function ObjectColumn(props: BaseColumnProps): BaseColumn {
       } catch (error) {
         return getErrorCell(
           toSafeString(data),
+          // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
           `The value cannot be interpreted as a string. Error: ${error}`
         )
       }

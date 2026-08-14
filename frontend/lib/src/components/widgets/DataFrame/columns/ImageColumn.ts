@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 import { GridCell, GridCellKind, ImageCell } from "@glideapps/glide-data-grid"
 
-import { notNullOrUndefined } from "@streamlit/lib/src/util/utils"
+import { notNullOrUndefined } from "~lib/util/utils"
 
 import { BaseColumn, BaseColumnProps, toSafeString } from "./utils"
 
@@ -27,22 +27,23 @@ import { BaseColumn, BaseColumnProps, toSafeString } from "./utils"
  * This column type is currently read-only.
  */
 function ImageColumn(props: BaseColumnProps): BaseColumn {
-  const cellTemplate = {
+  const cellTemplate: ImageCell = {
     kind: GridCellKind.Image,
     data: [],
     displayData: [],
     readonly: true,
     allowOverlay: true,
     contentAlign: props.contentAlignment || "center",
-    style: props.isIndex ? "faded" : "normal",
-  } as ImageCell
+    style: "normal",
+  }
 
   return {
     ...props,
     kind: "image",
+    typeIcon: ":material/image:",
     sortMode: "default",
     isEditable: false, // Image columns are always read-only
-    getCell(data?: any): GridCell {
+    getCell(data?: unknown): GridCell {
       // The native image cell implementation in glide-data-grid expects an array
       // of image URLs. For our usecase, we only support single images. We
       // need to wrap the image URL in an array to have it compatible with the

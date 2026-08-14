@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,52 +14,121 @@
  * limitations under the License.
  */
 
-import React, {
-  CSSProperties,
-  FunctionComponent,
-  HTMLProps,
-  PureComponent,
-  ReactElement,
-  ReactNode,
-} from "react"
-import { visit } from "unist-util-visit"
-import { useTheme } from "@emotion/react"
-import ReactMarkdown from "react-markdown"
-import { PluggableList } from "react-markdown/lib/react-markdown"
 import {
-  Components,
-  ReactMarkdownProps,
-} from "react-markdown/lib/ast-to-react"
-import once from "lodash/once"
-import omit from "lodash/omit"
-import remarkDirective from "remark-directive"
-import remarkMathPlugin from "remark-math"
-import rehypeRaw from "rehype-raw"
-import rehypeKatex from "rehype-katex"
+  createContext,
+  CSSProperties,
+  type FC,
+  type HTMLProps,
+  lazy,
+  memo,
+  type ReactElement,
+  type ReactNode,
+  Suspense,
+  useCallback,
+  useContext,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
+
+import slugify from "@sindresorhus/slugify"
+import { parseToRgba } from "color2k"
+import { type Element, type Root as HastRoot } from "hast"
+import { omit, once } from "lodash-es"
+import type { Root as MdastRoot, Text } from "mdast"
+import { findAndReplace } from "mdast-util-find-and-replace"
 import { Link2 as LinkIcon } from "react-feather"
-import remarkEmoji from "remark-emoji"
+import ReactMarkdown, {
+  Components,
+  Options as ReactMarkdownProps,
+} from "react-markdown"
+import remarkDirective from "remark-directive"
 import remarkGfm from "remark-gfm"
-import CodeBlock from "@streamlit/lib/src/components/elements/CodeBlock"
-import IsDialogContext from "@streamlit/lib/src/components/core/IsDialogContext"
-import IsSidebarContext from "@streamlit/lib/src/components/core/IsSidebarContext"
-import ErrorBoundary from "@streamlit/lib/src/components/shared/ErrorBoundary"
-import { InlineTooltipIcon } from "@streamlit/lib/src/components/shared/TooltipIcon"
+import remarkMathPlugin from "remark-math"
+import remend, { type RemendHandler } from "remend"
+import { PluggableList } from "unified"
+import { visit } from "unist-util-visit"
+import xxhash from "xxhashjs"
+
+import streamlitLogo from "~lib/assets/img/streamlit-logo/streamlit-mark-color.svg"
+import IsDialogContext from "~lib/components/core/IsDialogContext"
+import IsSidebarContext from "~lib/components/core/IsSidebarContext"
+import { StyledInlineCode } from "~lib/components/elements/CodeBlock/styled-components"
+import { SquareSkeleton } from "~lib/components/elements/Skeleton/styled-components"
+import ErrorBoundary from "~lib/components/shared/ErrorBoundary/ErrorBoundary"
+import { InlineTooltipIcon } from "~lib/components/shared/TooltipIcon/TooltipIcon"
+import { useCrossOriginAttribute } from "~lib/hooks/useCrossOriginAttribute"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
 import {
   getMarkdownTextColors,
-  getMarkdownBgColors,
-} from "@streamlit/lib/src/theme"
+  getThemeBackgroundColors,
+} from "~lib/theme/getColors"
+import type { EmotionTheme } from "~lib/theme/types"
+import { convertRemToPx } from "~lib/theme/utils"
+import { BLOCKED_LINK_URI, isDangerousLinkUri } from "~lib/util/UriUtil"
 
-import { LibContext } from "@streamlit/lib/src/components/core/LibContext"
 import {
-  StyledLinkIcon,
   StyledHeadingActionElements,
-  StyledStreamlitMarkdown,
   StyledHeadingWithActionElements,
+  StyledHelpIconWrapper,
+  StyledLinkIcon,
+  StyledPreWrapper,
+  StyledStreamlitMarkdown,
 } from "./styled-components"
+import {
+  type EmojiPlugin,
+  isLoadedPlugin,
+  type KatexPlugin,
+  loadKatexPlugin,
+  loadKatexStyles,
+  loadRehypeRaw,
+  loadRemarkEmoji,
+  type RawPlugin,
+  type RemarkPluginFactory,
+  useLazyPlugin,
+  wrapRehypePlugin,
+  wrapRemarkPlugin,
+} from "./utils"
 
-import "katex/dist/katex.min.css"
-import xxhash from "xxhashjs"
-import StreamlitSyntaxHighlighter from "@streamlit/lib/src/components/elements/CodeBlock/StreamlitSyntaxHighlighter"
+const StreamlitSyntaxHighlighter = lazy(
+  () => import("~lib/components/elements/CodeBlock/StreamlitSyntaxHighlighter")
+)
+
+const MermaidChart = lazy(() =>
+  import("./MermaidChart").then(module => ({
+    default: module.MermaidChart,
+  }))
+)
+
+/**
+ * Heuristic to determine if the markdown source contains emoji shortcodes that require remark-emoji.
+ * Checks for patterns like :emoji_name: but excludes Streamlit's custom :material/ and
+ * :streamlit: syntax which are handled separately.
+ * Supports shortcodes with special characters like :+1:, :-1:, etc.
+ *
+ * @param source - The markdown source string to check
+ * @returns true if emoji shortcodes are detected, false otherwise
+ */
+export function containsEmojiShortcodes(source: string): boolean {
+  return /:(?!material\/|streamlit:)[\w+-][\w_+-]*:/.test(source)
+}
+
+/**
+ * Detects if the markdown source contains math syntax that requires KaTeX.
+ * Checks for inline math ($...$) and display math ($$...$$) patterns.
+ * For inline math, ensures no whitespace immediately after opening $ or before closing $
+ * to avoid false positives like "$5 and $10".
+ *
+ * @param source - The markdown source string to check
+ * @returns true if math syntax is detected, false otherwise
+ */
+export function containsMathSyntax(source: string): boolean {
+  // Detect display math: $$...$$ or inline math: $...$
+  // Inline math requires non-whitespace after opening $ and before closing $
+  return /\$\$[\s\S]+?\$\$|\$(?!\s)[^$\n]+?(?<!\s)\$/.test(source)
+}
 
 export enum Tags {
   H1 = "h1",
@@ -92,11 +161,6 @@ export interface Props {
   boldLabel?: boolean
 
   /**
-   * Checkbox labels have larger font sizing
-   */
-  largerLabel?: boolean
-
-  /**
    * Does not allow links
    */
   disableLinks?: boolean
@@ -105,35 +169,119 @@ export interface Props {
    * Toast has smaller font sizing & special CSS
    */
   isToast?: boolean
+
+  /**
+   * Inherit font family, size, and weight from parent
+   */
+  inheritFont?: boolean
+
+  /**
+   * Optional help text for inline help tooltips.
+   * When present, :help[] markers in the source will use this text.
+   */
+  helpText?: string
+
+  /**
+   * Truncate text with ellipsis when it overflows the container.
+   * Useful for single-line text that should not wrap, such as metric labels.
+   */
+  truncate?: boolean
+
+  /**
+   * Enables unterminated markdown completion (via remend) during streaming.
+   */
+  unterminatedParsing?: boolean
+
+  /**
+   * When true, headers (h1-h6) keep their `id` for deep linking but the
+   * visible anchor link icon is not rendered.
+   */
+  hideAnchors?: boolean
 }
 
 /**
- * Creates a slug suitable for use as an anchor given a string.
- * Splits the string on non-alphanumeric characters, and joins with a dash.
+ * Type for mdast text nodes that carry hast transformation data.
+ * Used by mdast-util-to-hast to convert these placeholder nodes into specific HTML elements.
+ * @see https://github.com/syntax-tree/mdast-util-to-hast#fields-on-nodes
  */
-export function createAnchorFromText(text: string | null): string {
-  let newAnchor = ""
-  // Check if the text is valid ASCII characters - necessary for fully functional anchors (issue #5291)
-  const isASCII = text && /^[\x00-\x7F]*$/.test(text)
-
-  if (isASCII) {
-    newAnchor = text
-      ?.toLowerCase()
-      .split(/[^\p{L}\p{N}]+/gu) // split on non-alphanumeric characters
-      .filter(Boolean) // filter out falsy values using Boolean constructor
-      .join("-")
-  } else if (text) {
-    // if the text is not valid ASCII, use a hash of the text
-    newAnchor = xxhash.h32(text, 0xabcd).toString(16)
+interface MdastTextWithHastData {
+  type: "text"
+  value: string
+  data: {
+    hName: string
+    hProperties: Record<string, string>
+    hChildren?: Array<{ type: string; value: string }>
   }
-  return newAnchor
 }
 
-// Note: React markdown limits hrefs to specific protocols ('http', 'https',
-// 'mailto', 'tel') We are essentially allowing any URL (a data URL). It can
-// be considered a security flaw, but developers can choose to expose it.
+/**
+ * A rehype plugin to add an `inline` property to code blocks.
+ * This is used to distinguish between inline code and code blocks.
+ * It is needed for versions of react-markdown from v9 onwards.
+ */
+function rehypeSetCodeInlineProperty() {
+  return (tree: HastRoot) => {
+    visit(tree, "element", (node: Element, _index, parent) => {
+      if (node.tagName !== "code") {
+        return
+      }
+
+      if (parent?.type === "element" && parent.tagName === "pre") {
+        node.properties = { ...node.properties, inline: false }
+      } else {
+        node.properties = { ...node.properties, inline: true }
+      }
+    })
+  }
+}
+
+/**
+ * Creates a URL-friendly anchor ID from a text string.
+ *
+ * @param text {string | null} - The text to convert into an anchor ID. Can be null.
+ * @returns A URL-safe string suitable for use as an HTML anchor ID:
+ *   - If text is null or empty, returns an empty string
+ *   - If text contains valid characters that can be slugified, returns a version using `@sindresorhus/slugify`
+ *   - If slugification results in an empty string, falls back to an xxhash of the original text
+ *
+ * @example
+ * createAnchorFromText("Hello World!") // Returns "hello-world"
+ * createAnchorFromText("---") // Returns xxhash of "---"
+ * createAnchorFromText(null) // Returns ""
+ */
+export function createAnchorFromText(text: string | null): string {
+  if (!text) {
+    return ""
+  }
+
+  /**
+   * @see https://www.npmjs.com/package/@sindresorhus/slugify
+   * @see https://www.npmjs.com/package/@sindresorhus/transliterate
+   */
+  const newAnchor = slugify(text)
+
+  if (newAnchor.length > 0) {
+    return newAnchor
+  }
+
+  // If slugify is not able to create a slug, fallback to hash
+  return xxhash.h32(text, 0xabcd).toString(16)
+}
+
+/**
+ * Transforms link URIs for markdown rendering.
+ *
+ * Uses a blocklist approach instead of React Markdown's default allowlist
+ * (defaultUrlTransform) to preserve compatibility with data: URLs and other
+ * custom schemes that Streamlit users rely on (e.g., inline images, PDFs).
+ * Only explicitly dangerous schemes (javascript:, vbscript:) are blocked.
+ *
+ * Blocked URLs return "#" (BLOCKED_LINK_URI) instead of "" to prevent
+ * navigation. An empty href combined with target="_blank" would open the
+ * current page in a new tab.
+ */
 function transformLinkUri(href: string): string {
-  return href
+  return isDangerousLinkUri(href) ? BLOCKED_LINK_URI : href
 }
 
 // wrapping in `once` ensures we only scroll once
@@ -147,11 +295,12 @@ interface HeadingActionElements {
   hideAnchor?: boolean
 }
 
-const HeaderActionElements: FunctionComponent<HeadingActionElements> = ({
+const HeaderActionElements: FC<HeadingActionElements> = ({
   elementId,
   help,
   hideAnchor,
 }) => {
+  const theme = useEmotionTheme()
   if (!help && hideAnchor) {
     return <></>
   }
@@ -160,8 +309,13 @@ const HeaderActionElements: FunctionComponent<HeadingActionElements> = ({
     <StyledHeadingActionElements data-testid="stHeaderActionElements">
       {help && <InlineTooltipIcon content={help} />}
       {elementId && !hideAnchor && (
-        <StyledLinkIcon href={`#${elementId}`}>
-          <LinkIcon size="18" />
+        <StyledLinkIcon href={`#${elementId}`} aria-label="Link to heading">
+          <LinkIcon
+            // Convert size to px because using rem works but logs a console
+            // error (at least on webkit)
+            size={convertRemToPx(theme.iconSizes.base)}
+            aria-hidden="true"
+          />
         </StyledLinkIcon>
       )}
     </StyledHeadingActionElements>
@@ -177,46 +331,63 @@ interface HeadingWithActionElementsProps {
   help?: string
 }
 
-export const HeadingWithActionElements: FunctionComponent<
-  React.PropsWithChildren<HeadingWithActionElementsProps>
-> = ({ tag, anchor: propsAnchor, help, hideAnchor, children, tagProps }) => {
-  const isInSidebar = React.useContext(IsSidebarContext)
-  const isInDialog = React.useContext(IsDialogContext)
-  const [elementId, setElementId] = React.useState(propsAnchor)
-  const [target, setTarget] = React.useState<HTMLElement | null>(null)
+export const HeadingWithActionElements: FC<HeadingWithActionElementsProps> = ({
+  tag,
+  anchor: propsAnchor,
+  help,
+  hideAnchor,
+  children,
+  tagProps,
+}) => {
+  const isInSidebar = useContext(IsSidebarContext)
+  const isInDialog = useContext(IsDialogContext)
+  const [elementId, setElementId] = useState(propsAnchor)
+  const nodeRef = useRef<HTMLElement | null>(null)
 
-  const { addScriptFinishedHandler, removeScriptFinishedHandler } =
-    React.useContext(LibContext)
-  const onScriptFinished = React.useCallback(() => {
-    if (target !== null) {
-      // wait a bit for everything on page to finish loading
-      window.setTimeout(() => {
-        scrollNodeIntoView(target)
-      }, 300)
-    }
-  }, [target])
-
-  React.useEffect(() => {
-    addScriptFinishedHandler(onScriptFinished)
-    return () => {
-      removeScriptFinishedHandler(onScriptFinished)
-    }
-  }, [addScriptFinishedHandler, removeScriptFinishedHandler, onScriptFinished])
-
-  const ref = React.useCallback(
-    (node: any) => {
-      if (node === null) {
-        return
-      }
-
+  /**
+   * Set the heading id from `propsAnchor` or the node's textContent, then scroll
+   * the node into view if that id matches the current URL hash. Shared by the
+   * mount-time ref callback and the rerun effect below so the two paths cannot
+   * drift apart.
+   */
+  const applyAnchor = useCallback(
+    (node: HTMLElement): void => {
       const anchor = propsAnchor || createAnchorFromText(node.textContent)
       setElementId(anchor)
-      if (window.location.hash.slice(1) === anchor) {
-        setTarget(node)
+      const windowHash = window.location.hash.slice(1)
+      if (windowHash && windowHash === anchor) {
+        scrollNodeIntoView(node)
       }
     },
     [propsAnchor]
   )
+
+  const ref = useCallback(
+    (node: HTMLElement | null) => {
+      nodeRef.current = node
+      if (node === null) {
+        return
+      }
+      applyAnchor(node)
+    },
+    [applyAnchor]
+  )
+
+  // Re-derive the anchor when heading text changes across reruns. The ref
+  // callback only fires on mount or when propsAnchor changes; when only the text
+  // content changes, React reuses the DOM node and the callback never re-fires.
+  // Skipped when propsAnchor is set, since an explicit anchor never depends on
+  // the text.
+  //
+  // useLayoutEffect (not useEffect) so the re-derived id is committed before
+  // paint; otherwise a frame can render with the previous hash link.
+  useLayoutEffect(() => {
+    const node = nodeRef.current
+    if (!node || propsAnchor) {
+      return
+    }
+    applyAnchor(node)
+  }, [children, propsAnchor, applyAnchor])
 
   const isInSidebarOrDialog = isInSidebar || isInDialog
   const actionElements = (
@@ -227,20 +398,44 @@ export const HeadingWithActionElements: FunctionComponent<
     />
   )
 
-  const attributes = isInSidebarOrDialog ? {} : { ref, id: elementId }
+  // Accessibility:
+  // Headings can contain action elements (help tooltip icon, anchor link icon).
+  // Those elements are rendered inside the <h*> for layout reasons, but they
+  // can accidentally become part of the heading's computed accessible name.
+  //
+  // To keep the heading name stable (visible heading text only), we use
+  // aria-labelledby to point at a span that wraps only the text content.
+  //
+  // We generate the label span id with useId() to ensure uniqueness even if
+  // multiple headings end up sharing the same anchor slug.
+  //
+  // Only set aria-labelledby when action elements are present:
+  // - help: tooltip icon can be present even in sidebar/dialog (where we don't
+  //   set a heading id/anchor)
+  // - anchor icon: only present when we have an elementId and it's not hidden
+  const rawHeadingTextId = useId()
+  const headingTextId =
+    help || (elementId && !hideAnchor && !isInSidebarOrDialog)
+      ? rawHeadingTextId
+      : undefined
+
+  const idAttribute = elementId ? { id: elementId } : {}
+  const ariaLabelledbyAttribute = headingTextId
+    ? { "aria-labelledby": headingTextId }
+    : {}
+  const mergedAttributes = {
+    ...(isInSidebarOrDialog ? {} : { ref, ...idAttribute }),
+    ...ariaLabelledbyAttribute,
+  }
+  const Tag = tag
   // We nest the action-elements (tooltip, link-icon) into the header element (e.g. h1),
   // so that it appears inline. For context: we also tried setting the h's display attribute to 'inline', but
   // then we would need to add padding to the outer container and fiddle with the vertical alignment.
-  const headerElementWithActions = React.createElement(
-    tag,
-    {
-      ...tagProps,
-      ...attributes,
-    },
-    <>
-      {children}
+  const headerElementWithActions = (
+    <Tag {...tagProps} {...mergedAttributes}>
+      {headingTextId ? <span id={headingTextId}>{children}</span> : children}
       {actionElements}
-    </>
+    </Tag>
   )
 
   // we don't want to apply styling, so return the "raw" header
@@ -256,23 +451,43 @@ export const HeadingWithActionElements: FunctionComponent<
 }
 
 type HeadingProps = JSX.IntrinsicElements["h1"] &
-  ReactMarkdownProps & { level: number; "data-anchor"?: string }
+  ReactMarkdownProps & {
+    level: number
+    "data-anchor"?: string
+    node: Element
+  }
 
-export const CustomHeading: FunctionComponent<
-  React.PropsWithChildren<HeadingProps>
-> = ({ node, children, ...rest }) => {
+/**
+ * Context to indicate if markdown is being streamed (unterminatedParsing mode).
+ * When true, mermaid code blocks render as syntax-highlighted code instead of diagrams.
+ * This prevents flickering and error states from partial/incomplete diagram source.
+ */
+const StreamingContext = createContext<boolean>(false)
+StreamingContext.displayName = "StreamingContext"
+
+/**
+ * Context that controls whether anchor link icons render next to markdown
+ * headings. Heading `id` attributes are still set when this is true, so URL
+ * fragment deep links keep working.
+ */
+const HideAnchorsContext = createContext<boolean>(false)
+HideAnchorsContext.displayName = "HideAnchorsContext"
+
+const CustomHeading: FC<HeadingProps> = ({ node, children, ...rest }) => {
   const anchor = rest["data-anchor"]
+  const hideAnchor = useContext(HideAnchorsContext)
   return (
     <HeadingWithActionElements
       tag={node.tagName}
       anchor={anchor}
+      hideAnchor={hideAnchor}
       tagProps={rest}
     >
       {children}
     </HeadingWithActionElements>
   )
 }
-export interface RenderedMarkdownProps {
+interface RenderedMarkdownProps {
   /**
    * The Markdown formatted text to render.
    */
@@ -295,6 +510,23 @@ export interface RenderedMarkdownProps {
    * Does not allow links
    */
   disableLinks?: boolean
+
+  /**
+   * Optional help text for inline help tooltips.
+   * When present, :help[] markers in the source will use this text.
+   */
+  helpText?: string
+
+  /**
+   * Enables unterminated markdown completion (via remend) during streaming.
+   */
+  unterminatedParsing?: boolean
+
+  /**
+   * When true, headers (h1-h6) keep their `id` for deep linking but the
+   * visible anchor link icon is not rendered.
+   */
+  hideAnchors?: boolean
 }
 
 export type CustomCodeTagProps = JSX.IntrinsicElements["code"] &
@@ -302,46 +534,140 @@ export type CustomCodeTagProps = JSX.IntrinsicElements["code"] &
 
 /**
  * Renders code tag with highlighting based on requested language.
+ * Mermaid code blocks are rendered as diagrams (unless streaming is in progress).
  */
-export const CustomCodeTag: FunctionComponent<
-  React.PropsWithChildren<CustomCodeTagProps>
-> = ({ inline, className, children, ...props }) => {
+export const CustomCodeTag: FC<CustomCodeTagProps> = ({
+  inline,
+  className,
+  children,
+  ...props
+}) => {
   const match = /language-(\w+)/.exec(className || "")
-  const codeText = String(children).trim().replace(/\n$/, "")
+  const isStreaming = useContext(StreamingContext)
 
-  const language = (match && match[1]) || ""
+  const codeText = String(children ?? "")
+    .replace(/^\n/, "")
+    .replace(/\n$/, "")
+
+  const language = match?.[1] || ""
+
+  // Handle mermaid code blocks: render as a diagram unless streaming
+  // (see StreamingContext for rationale).
+  if (!inline && language.toLowerCase() === "mermaid" && !isStreaming) {
+    return (
+      <ErrorBoundary>
+        <Suspense
+          fallback={
+            <SquareSkeleton data-testid="stSkeleton" aria-hidden="true" />
+          }
+        >
+          <MermaidChart source={codeText} />
+        </Suspense>
+      </ErrorBoundary>
+    )
+  }
+
   return !inline ? (
-    <StreamlitSyntaxHighlighter language={language} showLineNumbers={false}>
-      {codeText}
-    </StreamlitSyntaxHighlighter>
+    <ErrorBoundary>
+      <Suspense
+        fallback={
+          <SquareSkeleton data-testid="stSkeleton" aria-hidden="true" />
+        }
+      >
+        <StreamlitSyntaxHighlighter
+          language={language}
+          showLineNumbers={false}
+        >
+          {codeText}
+        </StreamlitSyntaxHighlighter>
+      </Suspense>
+    </ErrorBoundary>
   ) : (
-    <code className={className} {...omit(props, "node")}>
+    <StyledInlineCode className={className} {...omit(props, "node")}>
       {children}
-    </code>
+    </StyledInlineCode>
   )
 }
 
-export function RenderedMarkdown({
-  allowHTML,
-  source,
-  overrideComponents,
-  isLabel,
-  disableLinks,
-}: RenderedMarkdownProps): ReactElement {
-  const renderers: Components = {
-    pre: CodeBlock,
-    code: CustomCodeTag,
-    a: LinkWithTargetBlank,
-    h1: CustomHeading,
-    h2: CustomHeading,
-    h3: CustomHeading,
-    h4: CustomHeading,
-    h5: CustomHeading,
-    h6: CustomHeading,
-    ...(overrideComponents || {}),
+/**
+ * Renders pre tag with added margin.
+ */
+export const CustomPreTag: FC<ReactMarkdownProps> = ({ children }) => {
+  return (
+    <StyledPreWrapper data-testid="stMarkdownPre">{children}</StyledPreWrapper>
+  )
+}
+
+export const CustomMediaTag: FC<
+  JSX.IntrinsicElements["img" | "video" | "audio"] &
+    ReactMarkdownProps & { node: Element }
+> = ({ node, ...props }) => {
+  const crossOrigin = useCrossOriginAttribute(props.src)
+  const Tag = node.tagName
+
+  const attributes = {
+    ...props,
+    crossOrigin,
   }
-  const theme = useTheme()
-  const { red, orange, yellow, green, blue, violet, purple, gray } =
+  return <Tag {...attributes} />
+}
+
+const HelpTextContext = createContext<string | undefined>(undefined)
+HelpTextContext.displayName = "HelpTextContext"
+
+interface CustomHelpIconProps {
+  children?: string
+}
+
+/**
+ * Custom component to render inline help icons in markdown.
+ * Wraps InlineTooltipIcon in an inline-block span for proper inline flow.
+ *
+ * Gets the help text from HelpTextContext (used by the `help` parameter) if available,
+ * or falls back to `children` (for manual :help[content] directive usage).
+ *
+ * Note: When using the :help[content] directive manually in markdown, be aware of
+ * text directive limitations:
+ * - Newlines (\n) are not supported - use context via the help parameter instead
+ * - Brackets [, ] and other special markdown characters may cause parsing issues
+ * - For reliable multiline or complex markdown in tooltips, use the help parameter
+ *   which passes content via context and avoids directive label limitations.
+ */
+const CustomHelpIcon: FC<CustomHelpIconProps> = ({ children }) => {
+  // Prefer context (from help parameter) over children (from directive label)
+  const contextHelpText = useContext(HelpTextContext)
+  const tooltipContent =
+    contextHelpText || (typeof children === "string" ? children : "")
+
+  return (
+    <StyledHelpIconWrapper>
+      <InlineTooltipIcon content={tooltipContent} />
+    </StyledHelpIconWrapper>
+  )
+}
+
+// These are common renderers that don't depend on props or context
+const BASE_RENDERERS = {
+  pre: CustomPreTag,
+  code: CustomCodeTag,
+  h1: CustomHeading,
+  h2: CustomHeading,
+  h3: CustomHeading,
+  h4: CustomHeading,
+  h5: CustomHeading,
+  h6: CustomHeading,
+  img: CustomMediaTag,
+  video: CustomMediaTag,
+  audio: CustomMediaTag,
+  "streamlit-help-icon": CustomHelpIcon,
+}
+
+/**
+ * Create a color mapping based on the theme.
+ * Extracted from RenderedMarkdown to reduce re-calculations.
+ */
+function createColorMapping(theme: EmotionTheme): Map<string, string> {
+  const { red, orange, yellow, green, blue, violet, purple, gray, primary } =
     getMarkdownTextColors(theme)
   const {
     redbg,
@@ -352,166 +678,447 @@ export function RenderedMarkdown({
     violetbg,
     purplebg,
     graybg,
-  } = getMarkdownBgColors(theme)
-  const colorMapping = new Map(
+    primarybg,
+  }: Record<string, string> = getThemeBackgroundColors(theme)
+
+  return new Map(
     Object.entries({
       red: `color: ${red}`,
+      orange: `color: ${orange}`,
+      yellow: `color: ${yellow}`,
       blue: `color: ${blue}`,
       green: `color: ${green}`,
       violet: `color: ${violet}`,
-      orange: `color: ${orange}`,
       gray: `color: ${gray}`,
       grey: `color: ${gray}`,
+      primary: `color: ${primary}`,
       // Gradient from red, orange, yellow, green, blue, violet, purple
       rainbow: `color: transparent; background-clip: text; -webkit-background-clip: text; background-image: linear-gradient(to right,
         ${red}, ${orange}, ${yellow}, ${green}, ${blue}, ${violet}, ${purple});`,
       "red-background": `background-color: ${redbg}`,
+      "orange-background": `background-color: ${orangebg}`,
+      "yellow-background": `background-color: ${yellowbg}`,
       "blue-background": `background-color: ${bluebg}`,
       "green-background": `background-color: ${greenbg}`,
       "violet-background": `background-color: ${violetbg}`,
-      "orange-background": `background-color: ${orangebg}`,
       "gray-background": `background-color: ${graybg}`,
       "grey-background": `background-color: ${graybg}`,
+      "primary-background": `background-color: ${primarybg}`,
       // Gradient from red, orange, yellow, green, blue, violet, purple
       "rainbow-background": `background: linear-gradient(to right,
         ${redbg}, ${orangebg}, ${yellowbg}, ${greenbg}, ${bluebg}, ${violetbg}, ${purplebg});`,
     })
   )
-  function remarkColoring() {
-    return (tree: any) => {
-      visit(tree, node => {
-        if (node.type === "textDirective") {
-          const nodeName = String(node.name)
-          if (colorMapping.has(nodeName)) {
-            const data = node.data || (node.data = {})
-            const style = colorMapping.get(nodeName)
-            data.hName = "span"
-            data.hProperties = data.hProperties || {}
-            data.hProperties.style = style
-            // Add class for background color for custom styling
-            if (
-              style &&
-              (/background-color:/.test(style) || /background:/.test(style))
-            ) {
-              data.hProperties.className =
-                (data.hProperties.className || "") + " has-background-color"
-            }
-          }
-        }
-      })
-    }
-  }
-  const plugins = [
-    remarkMathPlugin,
-    remarkEmoji,
-    remarkGfm,
-    remarkDirective,
-    remarkColoring,
-  ]
-
-  const rehypePlugins: PluggableList = [
-    rehypeKatex,
-    ...(allowHTML ? [rehypeRaw] : []),
-  ]
-
-  // Sets disallowed markdown for widget labels
-  const disallowed = [
-    // Restricts images, table elements, headings, unordered/ordered lists, task lists, horizontal rules, & blockquotes
-    "img",
-    "table",
-    "thead",
-    "tbody",
-    "tr",
-    "th",
-    "td",
-    "h1",
-    "h2",
-    "h3",
-    "ul",
-    "ol",
-    "li",
-    "input",
-    "hr",
-    "blockquote",
-    // additionally restrict links
-    ...(disableLinks ? ["a"] : []),
-  ]
-
-  return (
-    <ErrorBoundary>
-      <ReactMarkdown
-        remarkPlugins={plugins}
-        rehypePlugins={rehypePlugins}
-        components={renderers}
-        transformLinkUri={transformLinkUri}
-        disallowedElements={isLabel ? disallowed : []}
-        // unwrap and render children from invalid markdown
-        unwrapDisallowed={true}
-      >
-        {source}
-      </ReactMarkdown>
-    </ErrorBoundary>
-  )
 }
 
 /**
- * Wraps the <ReactMarkdown> component to include our standard
- * renderers and AST plugins (for syntax highlighting, HTML support, etc).
+ * Factory function to create the help icon directive plugin
  */
-class StreamlitMarkdown extends PureComponent<Props> {
-  static contextType = IsSidebarContext
+function createRemarkHelpIcon() {
+  return () => (tree: MdastRoot) => {
+    visit(tree, "textDirective", (node, _index, _parent) => {
+      const nodeName = String(node.name)
 
-  context!: React.ContextType<typeof IsSidebarContext>
-
-  public componentDidCatch = (): void => {
-    const { source } = this.props
-
-    throw Object.assign(new Error(), {
-      name: "Error parsing Markdown or HTML in this string",
-      message: <p>{source}</p>,
-      stack: null,
+      // Handle help icon directive (:help[tooltip content])
+      if (nodeName === "help") {
+        const data = node.data || (node.data = {})
+        data.hName = "streamlit-help-icon"
+        data.hProperties = data.hProperties || {}
+        // Pass the children through so CustomHelpIcon can extract the content
+        return
+      }
     })
-  }
 
-  public render(): ReactNode {
-    const {
-      source,
-      allowHTML,
-      style,
-      isCaption,
-      isLabel,
-      boldLabel,
-      largerLabel,
-      disableLinks,
-      isToast,
-    } = this.props
-    const isInSidebar = this.context
-
-    return (
-      <StyledStreamlitMarkdown
-        isCaption={Boolean(isCaption)}
-        isInSidebar={isInSidebar}
-        isLabel={isLabel}
-        boldLabel={boldLabel}
-        largerLabel={largerLabel}
-        isToast={isToast}
-        style={style}
-        data-testid={isCaption ? "stCaptionContainer" : "stMarkdownContainer"}
-      >
-        <RenderedMarkdown
-          source={source}
-          allowHTML={allowHTML}
-          isLabel={isLabel}
-          disableLinks={disableLinks}
-        />
-      </StyledStreamlitMarkdown>
-    )
+    return tree
   }
 }
 
+/**
+ * Validates that a string is a valid CSS color value.
+ * Accepts hex colors (#RGB, #RRGGBB, #RGBA, #RRGGBBAA), rgb(), rgba(), hsl(), hsla(),
+ * and named colors.
+ *
+ * @param color - The color string to validate
+ * @returns true if the color is valid, false otherwise
+ */
+export function isValidCssColor(color: string): boolean {
+  if (!color) return false
+  try {
+    parseToRgba(color)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * Factory function to create the color and small text directive plugin
+ */
+function createRemarkColoringAndSmall(
+  theme: EmotionTheme,
+  colorMapping: Map<string, string>
+) {
+  return () => (tree: MdastRoot) => {
+    visit(tree, "textDirective", (node, _index, _parent) => {
+      const nodeName = String(node.name)
+
+      // Handle shimmer text directive (:shimmer[])
+      if (nodeName === "shimmer") {
+        const data = node.data || (node.data = {})
+        data.hName = "span"
+        data.hProperties = data.hProperties || {}
+        data.hProperties.className = "stMarkdownShimmer"
+        return
+      }
+
+      // Handle small text directive (:small[])
+      if (nodeName === "small") {
+        const data = node.data || (node.data = {})
+        data.hName = "span"
+        data.hProperties = data.hProperties || {}
+        data.hProperties.style = `font-size: ${theme.fontSizes.sm};`
+        return
+      }
+
+      // Handle custom color directive (:color[text]{foreground="...", background="..."})
+      if (nodeName === "color" && node.attributes) {
+        const { foreground, background } = node.attributes
+        const validForeground = foreground && isValidCssColor(foreground)
+        const validBackground = background && isValidCssColor(background)
+
+        const data = node.data || (node.data = {})
+        data.hName = "span"
+        data.hProperties = data.hProperties || {}
+
+        if (validForeground || validBackground) {
+          const styles: string[] = []
+
+          if (validForeground) {
+            styles.push(`color: ${foreground}`)
+          }
+
+          if (validBackground) {
+            styles.push(`background-color: ${background}`)
+          }
+
+          // Use background class when background is set (has more styling: padding, border-radius)
+          const className = validBackground
+            ? "stMarkdownColoredBackground"
+            : "stMarkdownColoredText"
+
+          data.hProperties.style = styles.join("; ")
+          data.hProperties.className = className
+        }
+        // When both colors are invalid, render as plain span (no style)
+        // to preserve the content text rather than falling through to
+        // unsupported directive cleanup which would lose the content
+        return
+      }
+
+      // Handle badge directives (:color-badge[])
+      const badgeMatch = nodeName.match(/^(.+)-badge$/)
+      if (badgeMatch && colorMapping.has(badgeMatch[1])) {
+        const color = badgeMatch[1]
+
+        // rainbow-badge is not supported because the rainbow text effect uses
+        // background-clip: text with a transparent color, which conflicts with
+        // having a background color for the badge.
+        // We *could* support it by using a nested span structure, but that breaks
+        // the material icon handling below.
+        // We can support that in the future if we want to, but I think a
+        // rainbow-colored badge shouldn't be a common use case anyway.
+        if (color === "rainbow") {
+          return
+        }
+
+        const textColor = colorMapping.get(color)
+        const bgColor = colorMapping.get(`${color}-background`)
+
+        if (textColor && bgColor) {
+          const data = node.data || (node.data = {})
+          data.hName = "span"
+          data.hProperties = data.hProperties || {}
+          data.hProperties.className = "stMarkdownBadge"
+          data.hProperties.style = `${bgColor}; ${textColor}; font-size: ${theme.fontSizes.sm};`
+          return
+        }
+      }
+
+      // Handle color directives (:color[] or :color-background[])
+      if (colorMapping.has(nodeName)) {
+        const data = node.data || (node.data = {})
+        const style = colorMapping.get(nodeName)
+        data.hName = "span"
+        data.hProperties = data.hProperties || {}
+        data.hProperties.style = style
+        // Add class name specific to colored text used for button hover selector
+        // to override text color
+        data.hProperties.className = "stMarkdownColoredText"
+        // Add class for background color for custom styling
+        if (
+          style &&
+          (/background-color:/.test(style) || /background:/.test(style))
+        ) {
+          data.hProperties.className = "stMarkdownColoredBackground"
+        }
+        return
+      }
+    })
+    return tree
+  }
+}
+
+/**
+ * Factory function to create the unsupported directives cleanup plugin.
+ * This plugin should run last to convert any unsupported text directives
+ * to plain text, ensuring they are rendered rather than ignored.
+ */
+function createRemarkUnsupportedDirectivesCleanup(): () => (
+  tree: MdastRoot
+) => MdastRoot {
+  return () => (tree: MdastRoot) => {
+    visit(tree, "textDirective", (node, index, parent) => {
+      // Convert unsupported text directives to plain text to avoid them being
+      // ignored / not rendered. See https://github.com/streamlit/streamlit/issues/8726,
+      // https://github.com/streamlit/streamlit/issues/5968
+      // Don't convert if the directive was already handled by another plugin
+      if (!node.data?.hName && parent && index !== undefined) {
+        const textNode: Text = {
+          type: "text",
+          value: `:${node.name}`,
+        }
+        parent.children[index] = textNode
+      }
+    })
+    return tree
+  }
+}
+
+/**
+ * Factory function to create the material icons directive plugin
+ */
+function createRemarkMaterialIcons(theme: EmotionTheme) {
+  return () => (tree: MdastRoot) => {
+    function replace(
+      fullMatch: string,
+      iconName: string
+    ): MdastTextWithHastData {
+      return {
+        type: "text",
+        value: fullMatch,
+        data: {
+          hName: "span",
+          hProperties: {
+            role: "img",
+            ariaLabel: iconName + " icon",
+            // Prevent the icon text from being translated
+            // this would break the icon display in the UI.
+            // https://github.com/streamlit/streamlit/issues/10168
+            translate: "no",
+            // We need to use string-style CSS here so that it works
+            // correctly with the rehype-raw plugin.
+            style: `
+            display: inline-block;
+            font-family: ${theme.genericFonts.iconFont};
+            font-weight: ${theme.fontWeights.normal};
+            user-select: none;
+            vertical-align: bottom;
+            white-space: nowrap;
+            word-wrap: normal;
+            `,
+          },
+          hChildren: [{ type: "text", value: iconName }],
+        },
+      }
+    }
+    // We replace all `:material/` occurrences with `:material_` to avoid
+    // conflicts with the directive plugin.
+    // Since all `:material/` already got replaced with `:material_`
+    // within the markdown text (see below), we need to use `:material_`
+    // within the regex.
+    findAndReplace(tree, [
+      [
+        /:material_(\w+):/g,
+        replace as (fullMatch: string, iconName: string) => Text,
+      ],
+    ])
+    return tree
+  }
+}
+
+/**
+ * Factory function to create the streamlit logo plugin
+ */
+function createRemarkStreamlitLogo() {
+  return () => (tree: MdastRoot) => {
+    function replaceStreamlit(): MdastTextWithHastData {
+      return {
+        type: "text",
+        value: "",
+        data: {
+          hName: "img",
+          hProperties: {
+            src: streamlitLogo,
+            alt: "Streamlit logo",
+            // We need to use string-style CSS here so that it works
+            // correctly with the rehype-raw plugin.
+            // The base of the Streamlit logo is curved, so move it down a bit to
+            // make it look aligned with the text.
+            style: `display: inline-block; user-select: none; height: 0.75em; vertical-align: baseline; margin-bottom: -0.05ex;`,
+          },
+        },
+      }
+    }
+    findAndReplace(tree, [[/:streamlit:/g, replaceStreamlit as () => Text]])
+    return tree
+  }
+}
+
+/**
+ * Factory function to create typographical symbols plugin
+ */
+function createRemarkTypographicalSymbols() {
+  return () => (tree: MdastRoot) => {
+    visit(tree, (node, _index, parent) => {
+      if (
+        parent &&
+        (parent.type === "link" || parent.type === "linkReference")
+      ) {
+        // Don't replace symbols in links.
+        // Note that remark extensions are not applied in code blocks and latex
+        // formulas, so we don't need to worry about them here.
+        return
+      }
+
+      if (node.type === "text" && node.value) {
+        // Only replace symbols wrapped in spaces, so it's a bit safer in case the
+        // symbols are used as part of a word or longer string of symbols.
+        const replacements = [
+          [/(^|\s)<->(\s|$)/g, "$1↔$2"],
+          [/(^|\s)->(\s|$)/g, "$1→$2"],
+          [/(^|\s)<-(\s|$)/g, "$1←$2"],
+          [/(^|\s)--(\s|$)/g, "$1—$2"],
+          [/(^|\s)>=(\s|$)/g, "$1≥$2"],
+          [/(^|\s)<=(\s|$)/g, "$1≤$2"],
+          [/(^|\s)~=(\s|$)/g, "$1≈$2"],
+        ]
+
+        let newValue = node.value
+        for (const [pattern, replacement] of replacements) {
+          newValue = newValue.replace(pattern, replacement as string)
+        }
+
+        if (newValue !== node.value) {
+          node.value = newValue
+        }
+      }
+    })
+
+    return tree
+  }
+}
+
+/**
+ * Completes unclosed Streamlit directive syntax (e.g., `:red[text`) during streaming.
+ *
+ * Runs before remend's link handler (priority 10 < 20) to prevent incomplete directives
+ * from being misinterpreted as markdown links, which produces "(streamdown:incomplete-link)".
+ * See: https://github.com/streamlit/streamlit/issues/14460
+ */
+const directiveCompletionHandler: RemendHandler = {
+  name: "streamlit-directives",
+  priority: 10,
+  handle: (text: string): string => {
+    // Match directive patterns like :red[, :small[, :red-background[
+    const directivePattern = /:[a-z][a-z0-9-]*\[/
+    const firstMatch = directivePattern.exec(text)
+    if (!firstMatch) {
+      return text
+    }
+
+    // Track directive openings (:<name>[), nested brackets, and close with ']'.
+    // We track all '[' inside directives to handle cases like `:red[text [link]`
+    // where nested brackets need proper balancing.
+    let depth = 1
+    let i = firstMatch.index + firstMatch[0].length
+
+    while (i < text.length) {
+      const char = text[i]
+
+      if (char === "[" && depth > 0) {
+        depth += 1
+        i += 1
+        continue
+      }
+
+      if (char === "]" && depth > 0) {
+        depth -= 1
+        i += 1
+        continue
+      }
+
+      if (char === ":") {
+        // Attempt to match another directive starting at this position.
+        const remainingText = text.slice(i)
+        const nextMatch = directivePattern.exec(remainingText)
+        if (nextMatch?.index === 0) {
+          depth += 1
+          i += nextMatch[0].length
+          continue
+        }
+      }
+
+      i += 1
+    }
+
+    return depth > 0 ? text + "]".repeat(depth) : text
+  },
+}
+
+// Options for remend to use the directive completion handler
+const REMEND_OPTIONS = { handlers: [directiveCompletionHandler] }
+
+// Standard remark plugins that don't depend on theme or props
+// Note: remarkEmoji is lazy-loaded and added conditionally when emoji shortcodes are detected
+const BASE_REMARK_PLUGINS = [
+  remarkMathPlugin,
+  remarkGfm,
+  remarkDirective,
+  createRemarkHelpIcon(),
+  createRemarkStreamlitLogo(),
+  createRemarkTypographicalSymbols(),
+]
+
+// Sets disallowed markdown for widget labels
+const LABEL_DISALLOWED_ELEMENTS = [
+  // Restricts table elements, headings, unordered/ordered lists, task lists, horizontal rules, & blockquotes
+  // Note that images are allowed but have a max height equal to the text height
+  "table",
+  "thead",
+  "tbody",
+  "tr",
+  "th",
+  "td",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+  "ul",
+  "ol",
+  "li",
+  "input",
+  "hr",
+  "blockquote",
+]
+
+// Add link disallowing to the base disallowed elements
+const LINKS_DISALLOWED_ELEMENTS = [...LABEL_DISALLOWED_ELEMENTS, "a"]
+
 interface LinkProps {
-  node: any
-  children: ReactNode[]
+  node?: Element
+  children?: ReactNode
   href?: string
   title?: string
   target?: string
@@ -523,7 +1130,7 @@ interface LinkProps {
 export function LinkWithTargetBlank(props: LinkProps): ReactElement {
   // if it's a #hash link, don't open in new tab
   const { href } = props
-  if (href && href.startsWith("#")) {
+  if (href?.startsWith("#")) {
     const { children, ...rest } = props
     return <a {...omit(rest, "node")}>{children}</a>
   }
@@ -542,4 +1149,236 @@ export function LinkWithTargetBlank(props: LinkProps): ReactElement {
   )
 }
 
-export default StreamlitMarkdown
+export const RenderedMarkdown = memo(function RenderedMarkdown({
+  allowHTML,
+  source,
+  overrideComponents,
+  isLabel,
+  disableLinks,
+  helpText,
+  unterminatedParsing,
+  hideAnchors,
+}: Readonly<RenderedMarkdownProps>): ReactElement {
+  const theme = useEmotionTheme()
+
+  const needsKatex = useMemo(() => containsMathSyntax(source), [source])
+  const needsEmoji = useMemo(() => containsEmojiShortcodes(source), [source])
+
+  // Lazy load plugins only when needed
+  const katexPlugin = useLazyPlugin<KatexPlugin>({
+    key: "katex",
+    needed: needsKatex,
+    load: loadKatexPlugin,
+    pluginName: "rehype-katex",
+    onBeforeLoad: loadKatexStyles,
+  })
+
+  const rawPlugin = useLazyPlugin<RawPlugin>({
+    key: "raw",
+    needed: allowHTML,
+    load: loadRehypeRaw,
+    pluginName: "rehype-raw",
+  })
+
+  const emojiPlugin = useLazyPlugin<EmojiPlugin>({
+    key: "emoji",
+    needed: needsEmoji,
+    load: loadRemarkEmoji,
+    pluginName: "remark-emoji",
+  })
+
+  const colorMapping = useMemo(() => createColorMapping(theme), [theme])
+
+  // Wrap plugins once when they load, not on every render or when other deps change
+  const wrappedKatexPlugin = useMemo(
+    () =>
+      isLoadedPlugin(katexPlugin)
+        ? wrapRehypePlugin(katexPlugin, "rehype-katex")
+        : null,
+    [katexPlugin]
+  )
+
+  const wrappedRawPlugin = useMemo(
+    () =>
+      isLoadedPlugin(rawPlugin)
+        ? wrapRehypePlugin(rawPlugin, "rehype-raw")
+        : null,
+    [rawPlugin]
+  )
+
+  const wrappedEmojiPlugin = useMemo(
+    () =>
+      isLoadedPlugin(emojiPlugin)
+        ? // Cast needed: unified's Plugin type is more complex than our RemarkPluginFactory wrapper
+          wrapRemarkPlugin(emojiPlugin as RemarkPluginFactory, "remark-emoji")
+        : null,
+    [emojiPlugin]
+  )
+
+  const remarkPlugins = useMemo<PluggableList>(() => {
+    const plugins: PluggableList = [
+      ...BASE_REMARK_PLUGINS,
+      createRemarkColoringAndSmall(theme, colorMapping),
+      createRemarkMaterialIcons(theme),
+    ]
+
+    if (needsEmoji && wrappedEmojiPlugin) {
+      plugins.push(wrappedEmojiPlugin)
+    }
+
+    // This plugin must run last to clean up any unsupported directives
+    plugins.push(createRemarkUnsupportedDirectivesCleanup())
+
+    return plugins
+  }, [theme, colorMapping, needsEmoji, wrappedEmojiPlugin])
+
+  const rehypePlugins = useMemo<PluggableList>(() => {
+    const plugins: PluggableList = []
+
+    if (needsKatex && wrappedKatexPlugin) {
+      plugins.push(wrappedKatexPlugin)
+    }
+
+    if (allowHTML && wrappedRawPlugin) {
+      plugins.push(wrappedRawPlugin)
+    }
+
+    // This plugin must run last to ensure the inline property is set correctly
+    // and not overwritten by other plugins like rehypeRaw
+    plugins.push(rehypeSetCodeInlineProperty)
+
+    return plugins
+  }, [allowHTML, needsKatex, wrappedKatexPlugin, wrappedRawPlugin])
+
+  const renderers = useMemo(
+    () =>
+      ({
+        ...BASE_RENDERERS,
+        a: LinkWithTargetBlank,
+        ...overrideComponents,
+      }) as Components,
+    [overrideComponents]
+  )
+
+  const processedSource = useMemo(() => {
+    // Replace :material/ with :material_ to avoid conflicts with the directive plugin.
+    // The material icon regex in createMaterialIconPlugin uses :material_ to match.
+    let processed = source.replaceAll(":material/", ":material_")
+
+    if (isLabel) {
+      // Escape markdown syntax that would be stripped in labels, leaving empty content.
+      // See: https://github.com/streamlit/streamlit/issues/7359
+      //
+      // Escapes: "- item", "+ item", "* item", "# heading", "> quote"
+      // Does not escape: "not-a-list", "#hashtag", "1.5" (no space after marker)
+      //
+      // Unordered lists (-, +, *), headings (#), and blockquotes (>)
+      // Note: > doesn't need lookahead (always a blockquote), others need (?=\s|$)
+      processed = processed.replace(
+        /^(\s*)((?:[+\-*]|#+)(?=\s|$)|>)/gm,
+        "$1\\$2"
+      )
+      // Ordered lists (1., 2., etc.): escape only the punctuation, not the digits
+      processed = processed.replace(/^(\s*)(\d+)([.)])(?=\s|$)/gm, "$1$2\\$3")
+    }
+
+    // Complete incomplete markdown syntax (e.g., unclosed **bold) during streaming.
+    // Only apply when unterminatedParsing is enabled (during streaming).
+    // Skip for labels (short, complete strings) and HTML content (may interfere).
+    if (unterminatedParsing && !isLabel && !allowHTML) {
+      processed = remend(processed, REMEND_OPTIONS)
+    }
+
+    return processed
+  }, [source, isLabel, allowHTML, unterminatedParsing])
+
+  const disallowed = useMemo(() => {
+    if (!isLabel) return []
+    return disableLinks ? LINKS_DISALLOWED_ELEMENTS : LABEL_DISALLOWED_ELEMENTS
+  }, [isLabel, disableLinks])
+
+  // Show skeleton while required plugins are still loading
+  // A plugin is "loading" if it's needed but state is still null (not loaded, not failed)
+  const isLoadingPlugins =
+    (needsKatex && katexPlugin === null) ||
+    (allowHTML && rawPlugin === null) ||
+    (needsEmoji && emojiPlugin === null)
+
+  if (isLoadingPlugins) {
+    return (
+      <ErrorBoundary>
+        <SquareSkeleton data-testid="stSkeleton" aria-hidden="true" />
+      </ErrorBoundary>
+    )
+  }
+
+  return (
+    <StreamingContext.Provider value={Boolean(unterminatedParsing)}>
+      <HelpTextContext.Provider value={helpText}>
+        <HideAnchorsContext.Provider value={Boolean(hideAnchors)}>
+          <ErrorBoundary>
+            <ReactMarkdown
+              remarkPlugins={remarkPlugins}
+              rehypePlugins={rehypePlugins}
+              components={renderers}
+              urlTransform={transformLinkUri}
+              disallowedElements={disallowed}
+              // unwrap and render children from invalid markdown
+              unwrapDisallowed={true}
+            >
+              {processedSource}
+            </ReactMarkdown>
+          </ErrorBoundary>
+        </HideAnchorsContext.Provider>
+      </HelpTextContext.Provider>
+    </StreamingContext.Provider>
+  )
+})
+
+/**
+ * Wraps the <ReactMarkdown> component to include our standard
+ * renderers and AST plugins (for syntax highlighting, HTML support, etc).
+ */
+const StreamlitMarkdown: FC<Props> = ({
+  source,
+  allowHTML,
+  style,
+  isCaption,
+  isLabel,
+  boldLabel,
+  disableLinks,
+  isToast,
+  inheritFont,
+  helpText,
+  truncate,
+  unterminatedParsing,
+  hideAnchors,
+}) => {
+  const isInDialog = useContext(IsDialogContext)
+
+  return (
+    <StyledStreamlitMarkdown
+      isCaption={Boolean(isCaption)}
+      isInDialog={isInDialog}
+      isLabel={isLabel}
+      inheritFont={inheritFont}
+      boldLabel={boldLabel}
+      isToast={isToast}
+      truncate={truncate}
+      style={style}
+      data-testid={isCaption ? "stCaptionContainer" : "stMarkdownContainer"}
+    >
+      <RenderedMarkdown
+        source={source}
+        allowHTML={allowHTML}
+        isLabel={isLabel}
+        disableLinks={disableLinks}
+        helpText={helpText}
+        unterminatedParsing={unterminatedParsing}
+        hideAnchors={hideAnchors}
+      />
+    </StyledStreamlitMarkdown>
+  )
+}
+
+export default memo(StreamlitMarkdown)

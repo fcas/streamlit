@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,24 +14,23 @@
  * limitations under the License.
  */
 
-import React from "react"
+import { act, screen } from "@testing-library/react"
+import { userEvent } from "@testing-library/user-event"
 
-import { screen, fireEvent } from "@testing-library/react"
-import "@testing-library/jest-dom"
-
-import { WidgetStateManager } from "@streamlit/lib/src/WidgetStateManager"
-import { render } from "@streamlit/lib/src/test_util"
 import {
   Checkbox as CheckboxProto,
-  LabelVisibilityMessage as LabelVisibilityMessageProto,
-} from "@streamlit/lib/src/proto"
+  LabelVisibility as LabelVisibilityProto,
+} from "@streamlit/protobuf"
 
-import Checkbox, { OwnProps } from "./Checkbox"
+import { render } from "~lib/test_util"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import Checkbox, { Props } from "./Checkbox"
 
 const getProps = (
   elementProps: Partial<CheckboxProto> = {},
-  widgetProps: Partial<OwnProps> = {}
-): OwnProps => ({
+  widgetProps: Partial<Props> = {}
+): Props => ({
   element: CheckboxProto.create({
     id: "1",
     label: "Label",
@@ -39,11 +38,10 @@ const getProps = (
     type: CheckboxProto.StyleType.DEFAULT,
     ...elementProps,
   }),
-  width: 0,
   disabled: false,
   widgetMgr: new WidgetStateManager({
-    sendRerunBackMsg: jest.fn(),
-    formsDataChanged: jest.fn(),
+    sendRerunBackMsg: vi.fn(),
+    formsDataChanged: vi.fn(),
   }),
   ...widgetProps,
 })
@@ -58,7 +56,7 @@ describe("Checkbox widget", () => {
 
   it("sets widget value on mount", () => {
     const props = getProps()
-    jest.spyOn(props.widgetMgr, "setBoolValue")
+    vi.spyOn(props.widgetMgr, "setBoolValue")
 
     render(<Checkbox {...props} />)
 
@@ -70,14 +68,12 @@ describe("Checkbox widget", () => {
     )
   })
 
-  it("has correct className and style", () => {
+  it("has correct className", () => {
     const props = getProps()
     render(<Checkbox {...props} />)
     const checkboxElement = screen.getByTestId("stCheckbox")
 
-    expect(checkboxElement).toHaveClass("row-widget")
     expect(checkboxElement).toHaveClass("stCheckbox")
-    expect(checkboxElement).toHaveStyle(`width: ${props.width}px`)
   })
 
   it("renders a label", () => {
@@ -89,7 +85,7 @@ describe("Checkbox widget", () => {
   it("pass labelVisibility prop to StyledContent correctly when hidden", () => {
     const props = getProps({
       labelVisibility: {
-        value: LabelVisibilityMessageProto.LabelVisibilityOptions.HIDDEN,
+        value: LabelVisibilityProto.LabelVisibilityOptions.HIDDEN,
       },
     })
 
@@ -102,7 +98,7 @@ describe("Checkbox widget", () => {
   it("pass labelVisibility prop to StyledContent correctly when collapsed", () => {
     const props = getProps({
       labelVisibility: {
-        value: LabelVisibilityMessageProto.LabelVisibilityOptions.COLLAPSED,
+        value: LabelVisibilityProto.LabelVisibilityOptions.COLLAPSED,
       },
     })
 
@@ -118,20 +114,32 @@ describe("Checkbox widget", () => {
     expect(screen.getByRole("checkbox")).not.toBeChecked()
   })
 
-  it("is not disabled by default", () => {
-    const props = getProps()
+  it("is checked when default is true", () => {
+    const props = getProps({ default: true })
     render(<Checkbox {...props} />)
 
-    expect(screen.getByRole("checkbox")).not.toBeDisabled()
+    expect(screen.getByRole("checkbox")).toBeChecked()
   })
 
-  it("handles the onChange event", () => {
+  it("has an accessible name matching the label", () => {
     const props = getProps()
-    jest.spyOn(props.widgetMgr, "setBoolValue")
-
     render(<Checkbox {...props} />)
 
-    fireEvent.click(screen.getByRole("checkbox"))
+    expect(
+      screen.getByRole("checkbox", { name: props.element.label })
+    ).toBeVisible()
+  })
+
+  it("toggles via keyboard Space key", async () => {
+    const user = userEvent.setup()
+    const props = getProps()
+    vi.spyOn(props.widgetMgr, "setBoolValue")
+    render(<Checkbox {...props} />)
+
+    act(() => {
+      screen.getByRole("checkbox").focus()
+    })
+    await user.keyboard(" ")
 
     expect(props.widgetMgr.setBoolValue).toHaveBeenCalledWith(
       props.element,
@@ -142,13 +150,39 @@ describe("Checkbox widget", () => {
     expect(screen.getByRole("checkbox")).toBeChecked()
   })
 
-  it("can pass fragmentId to setBoolValue", () => {
-    const props = getProps(undefined, { fragmentId: "myFragmentId" })
-    jest.spyOn(props.widgetMgr, "setBoolValue")
+  it("is not disabled by default", () => {
+    const props = getProps()
+    render(<Checkbox {...props} />)
+
+    expect(screen.getByRole("checkbox")).not.toBeDisabled()
+  })
+
+  it("handles the onChange event", async () => {
+    const user = userEvent.setup()
+    const props = getProps()
+    vi.spyOn(props.widgetMgr, "setBoolValue")
 
     render(<Checkbox {...props} />)
 
-    fireEvent.click(screen.getByRole("checkbox"))
+    await user.click(screen.getByRole("checkbox"))
+
+    expect(props.widgetMgr.setBoolValue).toHaveBeenCalledWith(
+      props.element,
+      true,
+      { fromUi: true },
+      undefined
+    )
+    expect(screen.getByRole("checkbox")).toBeChecked()
+  })
+
+  it("can pass fragmentId to setBoolValue", async () => {
+    const user = userEvent.setup()
+    const props = getProps(undefined, { fragmentId: "myFragmentId" })
+    vi.spyOn(props.widgetMgr, "setBoolValue")
+
+    render(<Checkbox {...props} />)
+
+    await user.click(screen.getByRole("checkbox"))
 
     expect(props.widgetMgr.setBoolValue).toHaveBeenCalledWith(
       props.element,
@@ -158,17 +192,18 @@ describe("Checkbox widget", () => {
     )
   })
 
-  it("resets its value when form is cleared", () => {
+  it("resets its value when form is cleared", async () => {
+    const user = userEvent.setup()
     // Create a widget in a clearOnSubmit form
     const props = getProps({ formId: "form" })
-    props.widgetMgr.setFormClearOnSubmit("form", true)
+    props.widgetMgr.setFormSubmitBehaviors("form", true)
 
-    jest.spyOn(props.widgetMgr, "setBoolValue")
+    vi.spyOn(props.widgetMgr, "setBoolValue")
 
     render(<Checkbox {...props} />)
 
     // Change the widget value
-    fireEvent.click(screen.getByRole("checkbox"))
+    await user.click(screen.getByRole("checkbox"))
 
     expect(screen.getByRole("checkbox")).toBeChecked()
     expect(props.widgetMgr.setBoolValue).toHaveBeenLastCalledWith(
@@ -179,7 +214,9 @@ describe("Checkbox widget", () => {
     )
 
     // "Submit" the form
-    props.widgetMgr.submitForm("form")
+    act(() => {
+      props.widgetMgr.submitForm("form", undefined)
+    })
 
     // Our widget should be reset, and the widgetMgr should be updated
     expect(screen.getByRole("checkbox")).not.toBeChecked()
@@ -189,6 +226,229 @@ describe("Checkbox widget", () => {
       {
         fromUi: true,
       },
+      undefined
+    )
+  })
+})
+
+describe("Checkbox TOGGLE type", () => {
+  const getToggleProps = (
+    elementProps: Partial<CheckboxProto> = {},
+    widgetProps: Partial<Props> = {}
+  ): Props =>
+    getProps(
+      { type: CheckboxProto.StyleType.TOGGLE, ...elementProps },
+      widgetProps
+    )
+
+  it("renders with ARIA role switch", () => {
+    const props = getToggleProps()
+    render(<Checkbox {...props} />)
+
+    expect(screen.getByRole("switch")).toBeVisible()
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument()
+  })
+
+  it("is off by default", () => {
+    const props = getToggleProps()
+    render(<Checkbox {...props} />)
+
+    expect(screen.getByRole("switch")).not.toBeChecked()
+  })
+
+  it("is on when default is true", () => {
+    const props = getToggleProps({ default: true })
+    render(<Checkbox {...props} />)
+
+    expect(screen.getByRole("switch")).toBeChecked()
+  })
+
+  it("has an accessible name matching the label", () => {
+    const props = getToggleProps()
+    render(<Checkbox {...props} />)
+
+    expect(
+      screen.getByRole("switch", { name: props.element.label })
+    ).toBeVisible()
+  })
+
+  it("toggles via keyboard Space key", async () => {
+    const user = userEvent.setup()
+    const props = getToggleProps()
+    vi.spyOn(props.widgetMgr, "setBoolValue")
+    render(<Checkbox {...props} />)
+
+    act(() => {
+      screen.getByRole("switch").focus()
+    })
+    await user.keyboard(" ")
+
+    expect(props.widgetMgr.setBoolValue).toHaveBeenCalledWith(
+      props.element,
+      true,
+      { fromUi: true },
+      undefined
+    )
+    expect(screen.getByRole("switch")).toBeChecked()
+  })
+
+  it("sets widget value on mount", () => {
+    const props = getToggleProps()
+    vi.spyOn(props.widgetMgr, "setBoolValue")
+
+    render(<Checkbox {...props} />)
+
+    expect(props.widgetMgr.setBoolValue).toHaveBeenCalledWith(
+      props.element,
+      props.element.default,
+      { fromUi: false },
+      undefined
+    )
+  })
+
+  it("is not disabled by default", () => {
+    const props = getToggleProps()
+    render(<Checkbox {...props} />)
+
+    expect(screen.getByRole("switch")).not.toBeDisabled()
+  })
+
+  it("is disabled when disabled prop is true", () => {
+    const props = getToggleProps({}, { disabled: true })
+    render(<Checkbox {...props} />)
+
+    expect(screen.getByRole("switch")).toBeDisabled()
+  })
+
+  it("handles toggling on", async () => {
+    const user = userEvent.setup()
+    const props = getToggleProps()
+    vi.spyOn(props.widgetMgr, "setBoolValue")
+
+    render(<Checkbox {...props} />)
+
+    await user.click(screen.getByRole("switch"))
+
+    expect(props.widgetMgr.setBoolValue).toHaveBeenCalledWith(
+      props.element,
+      true,
+      { fromUi: true },
+      undefined
+    )
+    expect(screen.getByRole("switch")).toBeChecked()
+  })
+
+  it("does not toggle when disabled", async () => {
+    const user = userEvent.setup()
+    const props = getToggleProps({}, { disabled: true })
+    vi.spyOn(props.widgetMgr, "setBoolValue")
+
+    render(<Checkbox {...props} />)
+
+    // Clear initial mount call
+    vi.mocked(props.widgetMgr.setBoolValue).mockClear()
+
+    await user.click(screen.getByRole("switch"))
+
+    expect(props.widgetMgr.setBoolValue).not.toHaveBeenCalled()
+    expect(screen.getByRole("switch")).not.toBeChecked()
+  })
+
+  it("renders a label", () => {
+    const props = getToggleProps()
+    render(<Checkbox {...props} />)
+
+    expect(screen.getByText(props.element.label)).toBeInTheDocument()
+  })
+
+  it("applies hidden label visibility to stWidgetLabel", () => {
+    const props = getToggleProps({
+      labelVisibility: {
+        value: LabelVisibilityProto.LabelVisibilityOptions.HIDDEN,
+      },
+    })
+
+    render(<Checkbox {...props} />)
+
+    expect(screen.getByTestId("stWidgetLabel")).toHaveStyle(
+      "visibility: hidden"
+    )
+  })
+
+  it("applies collapsed label visibility to stWidgetLabel", () => {
+    const props = getToggleProps({
+      labelVisibility: {
+        value: LabelVisibilityProto.LabelVisibilityOptions.COLLAPSED,
+      },
+    })
+
+    render(<Checkbox {...props} />)
+
+    expect(screen.getByTestId("stWidgetLabel")).toHaveStyle("display: none")
+  })
+})
+
+describe("Checkbox query param binding", () => {
+  it("registers query param binding on mount when queryParamKey is set", () => {
+    const props = getProps({ queryParamKey: "my_checkbox" })
+    vi.spyOn(props.widgetMgr, "registerQueryParamBinding")
+
+    render(<Checkbox {...props} />)
+
+    expect(props.widgetMgr.registerQueryParamBinding).toHaveBeenCalledWith(
+      props.element.id,
+      "my_checkbox",
+      "bool_value",
+      props.element.default,
+      false,
+      undefined
+    )
+  })
+
+  it("unregisters query param binding on unmount", () => {
+    const props = getProps({ queryParamKey: "my_checkbox" })
+    const unregisterSpy = vi.spyOn(
+      props.widgetMgr,
+      "unregisterQueryParamBinding"
+    )
+
+    const { unmount } = render(<Checkbox {...props} />)
+
+    // Clear any calls from React Strict Mode's initial mount/unmount/remount cycle
+    unregisterSpy.mockClear()
+
+    unmount()
+
+    expect(props.widgetMgr.unregisterQueryParamBinding).toHaveBeenCalledWith(
+      props.element.id
+    )
+  })
+
+  it("does not register query param binding when queryParamKey is not set", () => {
+    const props = getProps()
+    vi.spyOn(props.widgetMgr, "registerQueryParamBinding")
+
+    render(<Checkbox {...props} />)
+
+    expect(props.widgetMgr.registerQueryParamBinding).not.toHaveBeenCalled()
+  })
+
+  it("registers query param binding for toggle widget with default true", () => {
+    const props = getProps({
+      queryParamKey: "my_toggle",
+      default: true,
+      type: CheckboxProto.StyleType.TOGGLE,
+    })
+    vi.spyOn(props.widgetMgr, "registerQueryParamBinding")
+
+    render(<Checkbox {...props} />)
+
+    expect(props.widgetMgr.registerQueryParamBinding).toHaveBeenCalledWith(
+      props.element.id,
+      "my_toggle",
+      "bool_value",
+      true,
+      false,
       undefined
     )
   })

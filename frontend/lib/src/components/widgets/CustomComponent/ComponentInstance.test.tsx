@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,82 +14,106 @@
  * limitations under the License.
  */
 
-import React from "react"
-import "@testing-library/jest-dom"
-import { act, screen, fireEvent } from "@testing-library/react"
+import { act, screen } from "@testing-library/react"
+import { Mock, MockInstance } from "vitest"
 
 import {
   ComponentInstance as ComponentInstanceProto,
+  IComponentInstance as IComponentInstanceProto,
   SpecialArg,
-} from "@streamlit/lib/src/proto"
+} from "@streamlit/protobuf"
+
+import * as UseResizeObserver from "~lib/hooks/useResizeObserver"
+import { mockEndpoints } from "~lib/mocks/mocks"
+import { mockTheme } from "~lib/mocks/mockTheme"
+import { renderWithContexts } from "~lib/test_util"
+import { bgColorToBaseString, toExportedTheme } from "~lib/theme/utils"
 import {
   DEFAULT_IFRAME_FEATURE_POLICY,
   DEFAULT_IFRAME_SANDBOX_POLICY,
-} from "@streamlit/lib/src/util/IFrameUtil"
-import { logWarning } from "@streamlit/lib/src/util/log"
-import { buildHttpUri } from "@streamlit/lib/src/util/UriUtil"
-import { WidgetStateManager } from "@streamlit/lib/src/WidgetStateManager"
-import { bgColorToBaseString, toExportedTheme } from "@streamlit/lib/src/theme"
-import { fonts } from "@streamlit/lib/src/theme/primitives/typography"
-import { mockEndpoints } from "@streamlit/lib/src/mocks/mocks"
-import { mockTheme } from "@streamlit/lib/src/mocks/mockTheme"
-import { render } from "@streamlit/lib/src/test_util"
+} from "~lib/util/IFrameUtil"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
 
 import ComponentInstance, {
   COMPONENT_READY_WARNING_TIME_MS,
 } from "./ComponentInstance"
-import { CUSTOM_COMPONENT_API_VERSION } from "./componentUtils"
 import { ComponentRegistry } from "./ComponentRegistry"
+import {
+  LOG as componentUtilsLog,
+  CUSTOM_COMPONENT_API_VERSION,
+} from "./componentUtils"
 import { ComponentMessageType, StreamlitMessageType } from "./enums"
 
-// Mock log functions.
-jest.mock("@streamlit/lib/src/util/log")
-
 // We have some timeouts that we want to use fake timers for.
-jest.useFakeTimers()
+vi.useFakeTimers()
 
-// Mock uri utils.
-jest.mock("@streamlit/lib/src/util/UriUtil")
-const mockedBuildHttpUri = buildHttpUri as jest.Mock
-mockedBuildHttpUri.mockImplementation(() => "registry/url")
+// Mock uri utils and StreamlitConfig
+vi.mock("@streamlit/utils", async () => {
+  const actualModule = await vi.importActual("@streamlit/utils")
+  const mockedBuildHttpUri = vi.fn().mockImplementation(() => "registry/url")
+
+  return {
+    ...actualModule,
+    buildHttpUri: mockedBuildHttpUri,
+    get StreamlitConfig() {
+      return globalThis.__mockStreamlitConfig
+    },
+  }
+})
 
 // Mock our WidgetStateManager
-jest.mock("@streamlit/lib/src/WidgetStateManager")
+vi.mock("~lib/WidgetStateManager")
 
 const MOCK_COMPONENT_URL = "http://a.mock.url"
 const MOCK_WIDGET_ID = "mock_widget_id"
 const MOCK_COMPONENT_NAME = "mock_component_name"
 
+/** Dispatch a window MessageEvent inside act() so ComponentInstance state updates flush. */
+const dispatchMessageEvent = (event: MessageEvent): void => {
+  act(() => {
+    window.dispatchEvent(event)
+  })
+}
+
 describe("ComponentInstance", () => {
+  let logWarnSpy: MockInstance
   const getComponentRegistry = (): ComponentRegistry => {
     return new ComponentRegistry(mockEndpoints())
   }
 
   beforeEach(() => {
     // Clear our class mocks
-    const mockWidgetStateManager = WidgetStateManager as unknown as jest.Mock
+    const mockWidgetStateManager = WidgetStateManager as unknown as Mock
     mockWidgetStateManager.mockClear()
 
-    const mockLog = logWarning as jest.Mock
-    mockLog.mockClear()
+    logWarnSpy = vi
+      .spyOn(componentUtilsLog, "warn")
+      .mockImplementation(() => {})
+
+    vi.spyOn(UseResizeObserver, "useResizeObserver").mockReturnValue({
+      elementRef: { current: null },
+      values: [250],
+    })
+  })
+
+  afterEach(() => {
+    globalThis.__mockStreamlitConfig = {}
   })
 
   it("registers a message listener on render", () => {
     const componentRegistry = getComponentRegistry()
-    const registerListener = jest.spyOn(componentRegistry, "registerListener")
-    render(
+    const registerListener = vi.spyOn(componentRegistry, "registerListener")
+    renderWithContexts(
       <ComponentInstance
         element={createElementProp()}
-        registry={componentRegistry}
-        width={100}
         disabled={false}
-        theme={mockTheme.emotion}
         widgetMgr={
           new WidgetStateManager({
-            sendRerunBackMsg: jest.fn(),
-            formsDataChanged: jest.fn(),
+            sendRerunBackMsg: vi.fn(),
+            formsDataChanged: vi.fn(),
           })
         }
+        componentRegistry={componentRegistry}
       />
     )
     expect(registerListener).toHaveBeenCalledTimes(1)
@@ -97,23 +121,21 @@ describe("ComponentInstance", () => {
 
   it("deregisters its message listener on rerender", () => {
     const componentRegistry = getComponentRegistry()
-    const deregisterListener = jest.spyOn(
+    const deregisterListener = vi.spyOn(
       componentRegistry,
       "deregisterListener"
     )
-    const { unmount } = render(
+    const { unmount } = renderWithContexts(
       <ComponentInstance
         element={createElementProp()}
-        registry={componentRegistry}
-        width={100}
         disabled={false}
-        theme={mockTheme.emotion}
         widgetMgr={
           new WidgetStateManager({
-            sendRerunBackMsg: jest.fn(),
-            formsDataChanged: jest.fn(),
+            sendRerunBackMsg: vi.fn(),
+            formsDataChanged: vi.fn(),
           })
         }
+        componentRegistry={componentRegistry}
       />
     )
     unmount()
@@ -122,50 +144,98 @@ describe("ComponentInstance", () => {
 
   it("renders its iframe correctly", () => {
     const componentRegistry = getComponentRegistry()
-    render(
+    renderWithContexts(
       <ComponentInstance
         element={createElementProp()}
-        registry={componentRegistry}
-        width={100}
         disabled={false}
-        theme={mockTheme.emotion}
         widgetMgr={
           new WidgetStateManager({
-            sendRerunBackMsg: jest.fn(),
-            formsDataChanged: jest.fn(),
+            sendRerunBackMsg: vi.fn(),
+            formsDataChanged: vi.fn(),
           })
         }
+        componentRegistry={componentRegistry}
       />
     )
     const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
     expect(iframe).toHaveAttribute(
       "src",
-      "http://a.mock.url?streamlitUrl=http%3A%2F%2Flocalhost%2F"
+      "http://a.mock.url?streamlitUrl=http%3A%2F%2Flocalhost%3A3000%2F"
     )
     expect(iframe).toHaveAttribute("allow", DEFAULT_IFRAME_FEATURE_POLICY)
     expect(iframe).toHaveAttribute("sandbox", DEFAULT_IFRAME_SANDBOX_POLICY)
+    expect(iframe).toHaveClass("stCustomComponentV1")
+  })
+
+  it("Gets URL from componentRegistry if one is not set in proto", () => {
+    const componentRegistry = getComponentRegistry()
+    // @ts-expect-error - accessing private properties for testing
+    componentRegistry.endpoints.buildComponentURL = vi
+      .fn()
+      .mockImplementation(() => "http://another.mock.url")
+
+    renderWithContexts(
+      <ComponentInstance
+        element={createElementProp({}, [], { url: undefined })}
+        disabled={false}
+        widgetMgr={
+          new WidgetStateManager({
+            sendRerunBackMsg: vi.fn(),
+            formsDataChanged: vi.fn(),
+          })
+        }
+        componentRegistry={componentRegistry}
+      />
+    )
+    const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
+    expect(iframe).toHaveAttribute(
+      "src",
+      "http://another.mock.url?streamlitUrl=http%3A%2F%2Flocalhost%3A3000%2F"
+    )
+  })
+
+  it("includes StreamlitConfig.CUSTOM_COMPONENT_CLIENT_ID in queryString if set", () => {
+    globalThis.__mockStreamlitConfig.CUSTOM_COMPONENT_CLIENT_ID = "foobar"
+    const componentRegistry = getComponentRegistry()
+    renderWithContexts(
+      <ComponentInstance
+        element={createElementProp()}
+        disabled={false}
+        widgetMgr={
+          new WidgetStateManager({
+            sendRerunBackMsg: vi.fn(),
+            formsDataChanged: vi.fn(),
+          })
+        }
+        componentRegistry={componentRegistry}
+      />
+    )
+    const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
+    expect(iframe).toHaveAttribute(
+      "src",
+      "http://a.mock.url?__streamlit_parent_client_id=foobar&streamlitUrl=http%3A%2F%2Flocalhost%3A3000%2F"
+    )
   })
 
   it("displays a skeleton initially with a certain height", () => {
     const componentRegistry = getComponentRegistry()
-    render(
+    renderWithContexts(
       <ComponentInstance
         element={createElementProp()}
-        registry={componentRegistry}
-        width={100}
         disabled={false}
-        theme={mockTheme.emotion}
         widgetMgr={
           new WidgetStateManager({
-            sendRerunBackMsg: jest.fn(),
-            formsDataChanged: jest.fn(),
+            sendRerunBackMsg: vi.fn(),
+            formsDataChanged: vi.fn(),
           })
         }
+        componentRegistry={componentRegistry}
       />
     )
     const skeleton = screen.getByTestId("stSkeleton")
     expect(skeleton).toBeInTheDocument()
-    expect(skeleton).toHaveStyle("height: 2.75rem")
+    // Defaults to the standard widget height (theme.sizes.minElementHeight).
+    expect(skeleton).toHaveStyle("height: 2.5rem")
 
     const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
     expect(iframe).toHaveAttribute("height", "0")
@@ -173,19 +243,17 @@ describe("ComponentInstance", () => {
 
   it("will not displays a skeleton when height is explicitly set to 0", () => {
     const componentRegistry = getComponentRegistry()
-    render(
+    renderWithContexts(
       <ComponentInstance
         element={createElementProp({ height: 0 })}
-        registry={componentRegistry}
-        width={100}
         disabled={false}
-        theme={mockTheme.emotion}
         widgetMgr={
           new WidgetStateManager({
-            sendRerunBackMsg: jest.fn(),
-            formsDataChanged: jest.fn(),
+            sendRerunBackMsg: vi.fn(),
+            formsDataChanged: vi.fn(),
           })
         }
+        componentRegistry={componentRegistry}
       />
     )
     expect(screen.queryByTestId("stSkeleton")).not.toBeInTheDocument()
@@ -198,27 +266,24 @@ describe("ComponentInstance", () => {
     it("posts a RENDER message to the iframe", () => {
       const jsonArgs = { foo: "string", bar: 5 }
       const componentRegistry = getComponentRegistry()
-      render(
+      renderWithContexts(
         <ComponentInstance
           element={createElementProp(jsonArgs)}
-          registry={componentRegistry}
-          width={100}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
       const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
       // @ts-expect-error
-      const postMessage = jest.spyOn(iframe.contentWindow, "postMessage")
+      const postMessage = vi.spyOn(iframe.contentWindow, "postMessage")
       // SET COMPONENT_READY
-      fireEvent(
-        window,
+      dispatchMessageEvent(
         new MessageEvent("message", {
           data: {
             isStreamlitMessage: true,
@@ -234,27 +299,24 @@ describe("ComponentInstance", () => {
 
     it("hides the skeleton and maintains iframe height of 0", () => {
       const componentRegistry = getComponentRegistry()
-      render(
+      renderWithContexts(
         <ComponentInstance
           element={createElementProp()}
-          registry={componentRegistry}
-          width={100}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
 
       const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
 
       // SET COMPONENT_READY
-      fireEvent(
-        window,
+      dispatchMessageEvent(
         new MessageEvent("message", {
           data: {
             isStreamlitMessage: true,
@@ -272,24 +334,22 @@ describe("ComponentInstance", () => {
     it("prevents RENDER message until component is ready", () => {
       const jsonArgs = { foo: "string", bar: 5 }
       const componentRegistry = getComponentRegistry()
-      render(
+      renderWithContexts(
         <ComponentInstance
           element={createElementProp(jsonArgs)}
-          registry={componentRegistry}
-          width={100}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
       const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
       // @ts-expect-error
-      const postMessage = jest.spyOn(iframe.contentWindow, "postMessage")
+      const postMessage = vi.spyOn(iframe.contentWindow, "postMessage")
       expect(postMessage).toHaveBeenCalledTimes(0)
     })
 
@@ -299,27 +359,24 @@ describe("ComponentInstance", () => {
       // reloads.)
       const jsonArgs = { foo: "string", bar: 5 }
       const componentRegistry = getComponentRegistry()
-      render(
+      renderWithContexts(
         <ComponentInstance
           element={createElementProp(jsonArgs)}
-          registry={componentRegistry}
-          width={100}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
       const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
       // @ts-expect-error
-      const postMessage = jest.spyOn(iframe.contentWindow, "postMessage")
+      const postMessage = vi.spyOn(iframe.contentWindow, "postMessage")
       // SET COMPONENT_READY
-      fireEvent(
-        window,
+      dispatchMessageEvent(
         new MessageEvent("message", {
           data: {
             isStreamlitMessage: true,
@@ -331,8 +388,7 @@ describe("ComponentInstance", () => {
         })
       )
       // SET COMPONENT_READY
-      fireEvent(
-        window,
+      dispatchMessageEvent(
         new MessageEvent("message", {
           data: {
             isStreamlitMessage: true,
@@ -349,27 +405,24 @@ describe("ComponentInstance", () => {
     it("send render message whenever the args change and the component is ready", () => {
       let jsonArgs = { foo: "string", bar: 5 }
       const componentRegistry = getComponentRegistry()
-      const { rerender } = render(
+      const { rerender } = renderWithContexts(
         <ComponentInstance
           element={createElementProp(jsonArgs)}
-          registry={componentRegistry}
-          width={100}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
       const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
       // @ts-expect-error
-      const postMessage = jest.spyOn(iframe.contentWindow, "postMessage")
+      const postMessage = vi.spyOn(iframe.contentWindow, "postMessage")
       // SET COMPONENT_READY
-      fireEvent(
-        window,
+      dispatchMessageEvent(
         new MessageEvent("message", {
           data: {
             isStreamlitMessage: true,
@@ -384,16 +437,14 @@ describe("ComponentInstance", () => {
       rerender(
         <ComponentInstance
           element={createElementProp(jsonArgs)}
-          registry={componentRegistry}
-          width={100}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
 
@@ -401,30 +452,32 @@ describe("ComponentInstance", () => {
     })
 
     it("send render message when viewport changes", () => {
-      const jsonArgs = { foo: "string", bar: 5 }
       let width = 100
+      vi.spyOn(UseResizeObserver, "useResizeObserver").mockReturnValue({
+        elementRef: { current: null },
+        values: [width],
+      })
+
+      const jsonArgs = { foo: "string", bar: 5 }
       const componentRegistry = getComponentRegistry()
-      const { rerender } = render(
+      const { rerender } = renderWithContexts(
         <ComponentInstance
           element={createElementProp(jsonArgs)}
-          registry={componentRegistry}
-          width={width}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
       const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
       // @ts-expect-error
-      const postMessage = jest.spyOn(iframe.contentWindow, "postMessage")
+      const postMessage = vi.spyOn(iframe.contentWindow, "postMessage")
       // SET COMPONENT_READY
-      fireEvent(
-        window,
+      dispatchMessageEvent(
         new MessageEvent("message", {
           data: {
             isStreamlitMessage: true,
@@ -436,19 +489,24 @@ describe("ComponentInstance", () => {
         })
       )
       width = width + 1
+
+      // Update the spy to return the new width
+      vi.spyOn(UseResizeObserver, "useResizeObserver").mockReturnValue({
+        elementRef: { current: null },
+        values: [width],
+      })
+
       rerender(
         <ComponentInstance
           element={createElementProp(jsonArgs)}
-          registry={componentRegistry}
-          width={width}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
 
@@ -459,25 +517,22 @@ describe("ComponentInstance", () => {
       const badAPIVersion = CUSTOM_COMPONENT_API_VERSION + 1
       const jsonArgs = { foo: "string", bar: 5 }
       const componentRegistry = getComponentRegistry()
-      render(
+      renderWithContexts(
         <ComponentInstance
           element={createElementProp(jsonArgs)}
-          registry={componentRegistry}
-          width={100}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
       const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
       // SET COMPONENT_READY
-      fireEvent(
-        window,
+      dispatchMessageEvent(
         new MessageEvent("message", {
           data: {
             isStreamlitMessage: true,
@@ -488,7 +543,7 @@ describe("ComponentInstance", () => {
           source: iframe.contentWindow,
         })
       )
-      expect(screen.getByTestId("stNotificationContentError")).toBeVisible()
+      expect(screen.getByTestId("stAlertContentError")).toBeVisible()
     })
 
     it("errors on unrecognized special args", () => {
@@ -497,19 +552,17 @@ describe("ComponentInstance", () => {
         new SpecialArg({ key: "foo" }),
       ])
       const componentRegistry = getComponentRegistry()
-      render(
+      renderWithContexts(
         <ComponentInstance
           element={element}
-          registry={componentRegistry}
-          width={100}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
       expect(
@@ -517,25 +570,23 @@ describe("ComponentInstance", () => {
       ).toBeVisible()
     })
 
-    it("warns if COMPONENT_READY hasn't been received after a timeout", () => {
+    it("warns if COMPONENT_READY hasn't been received after a timeout", async () => {
       const componentRegistry = getComponentRegistry()
-      render(
+      renderWithContexts(
         <ComponentInstance
           element={createElementProp()}
-          registry={componentRegistry}
-          width={100}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
       // Advance past our warning timeout, and force a re-render.
-      act(() => jest.advanceTimersByTime(COMPONENT_READY_WARNING_TIME_MS))
+      await act(() => vi.advanceTimersByTime(COMPONENT_READY_WARNING_TIME_MS))
 
       expect(
         screen.getByText(/The app is attempting to load the component from/)
@@ -543,36 +594,91 @@ describe("ComponentInstance", () => {
     })
   })
 
+  describe("Error handling", () => {
+    it("triggers component registry's checkSourceUrlResponse when component is mounted", () => {
+      const componentRegistry = getComponentRegistry()
+      const checkSourceUrlResponseSpy = vi.spyOn(
+        componentRegistry,
+        "checkSourceUrlResponse"
+      )
+      renderWithContexts(
+        <ComponentInstance
+          element={createElementProp()}
+          disabled={false}
+          widgetMgr={
+            new WidgetStateManager({
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
+            })
+          }
+          componentRegistry={componentRegistry}
+        />
+      )
+
+      expect(checkSourceUrlResponseSpy).toHaveBeenCalledWith(
+        "http://a.mock.url?streamlitUrl=http%3A%2F%2Flocalhost%3A3000%2F",
+        MOCK_COMPONENT_NAME
+      )
+    })
+
+    it("triggers component registry's sendTimeoutError when component has timed out waiting for READY message", async () => {
+      const componentRegistry = getComponentRegistry()
+      // spy on Component Registry's sendTimeoutError method
+      const sendTimeoutErrorSpy = vi.spyOn(
+        componentRegistry,
+        "sendTimeoutError"
+      )
+
+      renderWithContexts(
+        <ComponentInstance
+          element={createElementProp()}
+          disabled={false}
+          widgetMgr={
+            new WidgetStateManager({
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
+            })
+          }
+          componentRegistry={componentRegistry}
+        />
+      )
+      // Advance past our warning timeout, and force a re-render.
+      await act(() => vi.advanceTimersByTime(COMPONENT_READY_WARNING_TIME_MS))
+
+      expect(sendTimeoutErrorSpy).toHaveBeenCalledWith(
+        "http://a.mock.url?streamlitUrl=http%3A%2F%2Flocalhost%3A3000%2F",
+        MOCK_COMPONENT_NAME
+      )
+    })
+  })
+
   describe("SET_COMPONENT_VALUE handler", () => {
     it("handles JSON values", () => {
+      const componentRegistry = getComponentRegistry()
       const jsonValue = {
         foo: "string",
         bar: 123,
         list: [1, "foo", false],
       }
 
-      const componentRegistry = getComponentRegistry()
       const element = createElementProp(jsonValue)
-      render(
+      renderWithContexts(
         <ComponentInstance
           element={element}
-          registry={componentRegistry}
-          width={100}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
 
       const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
       // SET COMPONENT_READY
-      fireEvent(
-        window,
+      dispatchMessageEvent(
         new MessageEvent("message", {
           data: {
             isStreamlitMessage: true,
@@ -584,8 +690,7 @@ describe("ComponentInstance", () => {
         })
       )
       // SET COMPONENT_VALUE
-      fireEvent(
-        window,
+      dispatchMessageEvent(
         new MessageEvent("message", {
           data: {
             isStreamlitMessage: true,
@@ -598,7 +703,7 @@ describe("ComponentInstance", () => {
           source: iframe.contentWindow,
         })
       )
-      const widgetMgr = (WidgetStateManager as any).mock.instances[0]
+      const widgetMgr = vi.mocked(WidgetStateManager).mock.instances[0]
       expect(widgetMgr.setJsonValue).toHaveBeenCalledWith(
         element,
         jsonValue,
@@ -612,30 +717,27 @@ describe("ComponentInstance", () => {
     it("handles bytes values", () => {
       const jsonValue = {}
 
-      const componentRegistry = getComponentRegistry()
       const element = createElementProp(jsonValue)
-      render(
+      const componentRegistry = getComponentRegistry()
+      renderWithContexts(
         <ComponentInstance
           element={element}
-          registry={componentRegistry}
-          width={100}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
           // Also verify that we can pass a fragmentID down to setBytesValue.
           fragmentId="myFragmentId"
+          componentRegistry={componentRegistry}
         />
       )
 
       const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
       // SET COMPONENT_READY
-      fireEvent(
-        window,
+      dispatchMessageEvent(
         new MessageEvent("message", {
           data: {
             isStreamlitMessage: true,
@@ -649,8 +751,7 @@ describe("ComponentInstance", () => {
 
       const bytesValue = new Uint8Array([0, 1, 2])
       // SET COMPONENT_VALUE
-      fireEvent(
-        window,
+      dispatchMessageEvent(
         new MessageEvent("message", {
           data: {
             isStreamlitMessage: true,
@@ -663,7 +764,7 @@ describe("ComponentInstance", () => {
           source: iframe.contentWindow,
         })
       )
-      const widgetMgr = (WidgetStateManager as any).mock.instances[0]
+      const widgetMgr = vi.mocked(WidgetStateManager).mock.instances[0]
       expect(widgetMgr.setBytesValue).toHaveBeenCalledWith(
         element,
         bytesValue,
@@ -681,27 +782,24 @@ describe("ComponentInstance", () => {
         list: [1, "foo", false],
       }
 
-      const componentRegistry = getComponentRegistry()
       const element = createElementProp(jsonValue)
-      render(
+      const componentRegistry = getComponentRegistry()
+      renderWithContexts(
         <ComponentInstance
           element={element}
-          registry={componentRegistry}
-          width={100}
           disabled={false}
-          theme={mockTheme.emotion}
           widgetMgr={
             new WidgetStateManager({
-              sendRerunBackMsg: jest.fn(),
-              formsDataChanged: jest.fn(),
+              sendRerunBackMsg: vi.fn(),
+              formsDataChanged: vi.fn(),
             })
           }
+          componentRegistry={componentRegistry}
         />
       )
       const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
       // SET COMPONENT_VALUE
-      fireEvent(
-        window,
+      dispatchMessageEvent(
         new MessageEvent("message", {
           data: {
             isStreamlitMessage: true,
@@ -714,10 +812,10 @@ describe("ComponentInstance", () => {
           source: iframe.contentWindow,
         })
       )
-      const widgetMgr = (WidgetStateManager as any).mock.instances[0]
+      const widgetMgr = vi.mocked(WidgetStateManager).mock.instances[0]
       expect(widgetMgr.setJsonValue).not.toHaveBeenCalled()
 
-      expect(logWarning).toHaveBeenCalledWith(
+      expect(logWarnSpy).toHaveBeenCalledWith(
         `Got ${ComponentMessageType.SET_COMPONENT_VALUE} before ${ComponentMessageType.COMPONENT_READY}!`
       )
     })
@@ -725,27 +823,24 @@ describe("ComponentInstance", () => {
     describe("SET_FRAME_HEIGHT handler", () => {
       it("updates the frameHeight without re-rendering", () => {
         const jsonValue = {}
-        const componentRegistry = getComponentRegistry()
         const element = createElementProp(jsonValue)
-        render(
+        const componentRegistry = getComponentRegistry()
+        renderWithContexts(
           <ComponentInstance
             element={element}
-            registry={componentRegistry}
-            width={100}
             disabled={false}
-            theme={mockTheme.emotion}
             widgetMgr={
               new WidgetStateManager({
-                sendRerunBackMsg: jest.fn(),
-                formsDataChanged: jest.fn(),
+                sendRerunBackMsg: vi.fn(),
+                formsDataChanged: vi.fn(),
               })
             }
+            componentRegistry={componentRegistry}
           />
         )
         const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
         // SET COMPONENT_READY
-        fireEvent(
-          window,
+        dispatchMessageEvent(
           new MessageEvent("message", {
             data: {
               isStreamlitMessage: true,
@@ -757,8 +852,7 @@ describe("ComponentInstance", () => {
           })
         )
         // SET IFRAME_HEIGHT
-        fireEvent(
-          window,
+        dispatchMessageEvent(
           new MessageEvent("message", {
             data: {
               isStreamlitMessage: true,
@@ -784,27 +878,24 @@ describe("ComponentInstance", () => {
           list: [1, "foo", false],
         }
 
-        const componentRegistry = getComponentRegistry()
         const element = createElementProp(jsonValue)
-        render(
+        const componentRegistry = getComponentRegistry()
+        renderWithContexts(
           <ComponentInstance
             element={element}
-            registry={componentRegistry}
-            width={100}
             disabled={false}
-            theme={mockTheme.emotion}
             widgetMgr={
               new WidgetStateManager({
-                sendRerunBackMsg: jest.fn(),
-                formsDataChanged: jest.fn(),
+                sendRerunBackMsg: vi.fn(),
+                formsDataChanged: vi.fn(),
               })
             }
+            componentRegistry={componentRegistry}
           />
         )
         const iframe = screen.getByTitle(MOCK_COMPONENT_NAME)
         // SET IFRAME_HEIGHT
-        fireEvent(
-          window,
+        dispatchMessageEvent(
           new MessageEvent("message", {
             data: {
               isStreamlitMessage: true,
@@ -816,10 +907,10 @@ describe("ComponentInstance", () => {
             source: iframe.contentWindow,
           })
         )
-        const widgetMgr = (WidgetStateManager as any).mock.instances[0]
+        const widgetMgr = vi.mocked(WidgetStateManager).mock.instances[0]
         expect(widgetMgr.setJsonValue).not.toHaveBeenCalled()
 
-        expect(logWarning).toHaveBeenCalledWith(
+        expect(logWarnSpy).toHaveBeenCalledWith(
           `Got ${ComponentMessageType.SET_FRAME_HEIGHT} before ${ComponentMessageType.COMPONENT_READY}!`
         )
       })
@@ -827,15 +918,16 @@ describe("ComponentInstance", () => {
   })
 
   function renderMsg(
-    args: { [name: string]: any },
-    dataframes: any[],
+    args: Record<string, unknown>,
+    dataframes: unknown[],
     disabled = false,
     theme = {
       ...toExportedTheme(mockTheme.emotion),
+      // Fills in the deprecated font property for backwards compatibility
+      font: mockTheme.emotion.genericFonts.bodyFont,
       base: bgColorToBaseString(mockTheme.emotion.colors.bgColor),
-      font: fonts.sansSerif,
     }
-  ): any {
+  ): Record<string, unknown> {
     return forwardMsg(StreamlitMessageType.RENDER, {
       args,
       dfs: dataframes,
@@ -844,14 +936,18 @@ describe("ComponentInstance", () => {
     })
   }
 
-  function forwardMsg(type: StreamlitMessageType, data: any): any {
+  function forwardMsg(
+    type: StreamlitMessageType,
+    data: Record<string, unknown>
+  ): Record<string, unknown> {
     return { type, ...data }
   }
 
   /** Create a ComponentInstance.props.element prop with the given args. */
   function createElementProp(
-    jsonArgs: { [name: string]: any } = {},
-    specialArgs: SpecialArg[] = []
+    jsonArgs: Record<string, unknown> = {},
+    specialArgs: SpecialArg[] = [],
+    overrides: Partial<IComponentInstanceProto> = {}
   ): ComponentInstanceProto {
     return ComponentInstanceProto.create({
       jsonArgs: JSON.stringify(jsonArgs),
@@ -859,6 +955,7 @@ describe("ComponentInstance", () => {
       componentName: MOCK_COMPONENT_NAME,
       id: MOCK_WIDGET_ID,
       url: MOCK_COMPONENT_URL,
+      ...overrides,
     })
   }
 })

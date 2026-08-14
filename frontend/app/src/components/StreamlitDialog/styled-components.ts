@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,146 +15,21 @@
  */
 
 import styled from "@emotion/styled"
-import { ChevronLeft } from "react-feather"
-import { darken } from "color2k"
-import { Small } from "@streamlit/lib"
 
-export const StyledRerunHeader = styled.div(({ theme }) => ({
-  marginBottom: theme.spacing.sm,
-}))
-
-export const StyledCommandLine = styled.textarea(({ theme }) => ({
-  width: theme.sizes.full,
-  fontFamily: theme.genericFonts.codeFont,
-  fontSize: theme.fontSizes.sm,
-  height: "6rem",
-}))
-
-export const StyledShortcutLabel = styled.span(() => ({
-  "&::first-letter": {
-    textDecoration: "underline",
-  },
-}))
-
-export const StyledBackButton = styled(ChevronLeft)(({ theme }) => ({
-  cursor: "pointer",
-  marginRight: theme.spacing.lg,
-}))
-
-export const StyledDialogBody = styled.div(({ theme }) => ({
-  display: "grid",
-  gap: theme.spacing.twoXL,
-  gridTemplateColumns: "1fr 1fr",
-  margin: 0,
-  padding: 0,
-}))
-
-export const StyledFullRow = styled.div(({ theme }) => ({
-  gridColumnStart: 1,
-  gridColumnEnd: -1,
-  display: "grid",
-  gap: theme.spacing.xs,
-}))
-
-export const StyledHeader = styled.h2(({ theme }) => ({
-  paddingBottom: 0,
-  paddingTop: 0,
-  marginBottom: theme.spacing.md,
-  marginTop: "0",
-  fontWeight: theme.fontWeights.bold,
-  fontSize: theme.fontSizes.md,
-  lineHeight: theme.lineHeights.tight,
-  color: theme.colors.bodyText,
-  display: "grid",
-  gridAutoFlow: "row",
-  gap: theme.spacing.xs,
-
-  // Override the default global style for a h2:first-of-type
-  "&:first-of-type": {
-    marginTop: 0,
-  },
-}))
-
-export const StyledLabel = styled.label(({ theme }) => ({
-  paddingBottom: 0,
-  paddingTop: 0,
-  marginBottom: 0,
-  marginTop: 0,
-  lineHeight: 1.25,
-  fontSize: theme.fontSizes.sm,
-}))
-
-export const StyledSmall = styled(Small)(() => ({
-  display: "block",
-  paddingBottom: 0,
-  paddingTop: 0,
-  marginBottom: 0,
-  marginTop: 0,
-  lineHeight: 1.5,
-}))
-
-export const StyledHr = styled.hr(({ theme }) => ({
-  padding: 0,
-  marginBottom: 0,
-  marginLeft: `-${theme.spacing.xl}`,
-  marginRight: `-${theme.spacing.xl}`,
-  marginTop: 0,
-}))
-
-export const StyledButtonContainer = styled.div(({ theme }) => ({
-  marginTop: theme.spacing.md,
-}))
-
-export const StyledCheckbox = styled.input(({ theme }) => ({
-  marginRight: theme.spacing.xs,
-  appearance: "none",
-  border: `1px solid ${theme.colors.fadedText10}`,
-  width: theme.fontSizes.md,
-  height: theme.fontSizes.md,
-  borderRadius: theme.radii.sm,
-  display: "inline-flex",
-  alignItems: "center",
-  justifyContent: "center",
-  padding: 0,
-  verticalAlign: "middle",
-  overflow: "hidden",
-
-  "&:focus-visible": {
-    outline: `2px solid ${theme.colors.primary}`,
-  },
-
-  "&:checked": {
-    backgroundColor: theme.colors.primary,
-
-    "&:after": {
-      content: '"✓"',
-      fontFamily: theme.fonts.monospace,
-      fontSize: theme.fontSizes.md,
-      color: theme.colors.white,
-      lineHeight: 1,
-    },
-  },
-
-  "&:disabled": {
-    backgroundColor: theme.colors.secondaryBg,
-  },
-}))
-
-export const StyledDeployErrorContent = styled.div(() => ({
+export const StyledDeployErrorContent = styled.div(({ theme }) => ({
   "& > ul": {
-    paddingLeft: "1.4rem",
+    paddingLeft: theme.spacing.twoXL,
   },
 }))
 
-export const StyledAboutInfo = styled.div(() => ({
-  padding: "0 0 1rem 0",
-  overflowY: "scroll",
-}))
+interface StyledErrorTextProps {
+  hasCodeBelow: boolean
+}
 
-export const StyledAboutLink = styled.a(({ theme }) => ({
-  color: `${theme.colors.linkText} !important`,
-
-  "&:hover": {
-    color: `${darken(theme.colors.linkText, 0.15)} !important`,
-  },
-}))
+export const StyledErrorText = styled.div<StyledErrorTextProps>(
+  ({ theme, hasCodeBelow }) => ({
+    ...(hasCodeBelow && {
+      marginBottom: theme.spacing.lg,
+    }),
+  })
+)

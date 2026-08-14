@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,15 +14,25 @@
  * limitations under the License.
  */
 
-import React from "react"
-import "@testing-library/jest-dom"
 import { screen } from "@testing-library/react"
 
-import { mockEndpoints } from "@streamlit/lib/src/mocks/mocks"
-import { render } from "@streamlit/lib/src/test_util"
-import { Block as BlockProto } from "@streamlit/lib/src/proto"
+import { Block as BlockProto } from "@streamlit/protobuf"
+
+import { mockEndpoints } from "~lib/mocks/mocks"
+import { render, renderWithContexts } from "~lib/test_util"
 
 import ChatMessage, { ChatMessageProps } from "./ChatMessage"
+
+// Mock StreamlitConfig using global mock state (see vitest.setup.ts)
+vi.mock("@streamlit/utils", async () => {
+  const actual = await vi.importActual("@streamlit/utils")
+  return {
+    ...actual,
+    get StreamlitConfig() {
+      return globalThis.__mockStreamlitConfig
+    },
+  }
+})
 
 const getProps = (
   elementProps: Partial<BlockProto.ChatMessage> = {}
@@ -34,7 +44,7 @@ const getProps = (
     ...elementProps,
   }),
   endpoints: mockEndpoints({
-    buildMediaURL: jest.fn().mockImplementation(url => url),
+    buildMediaURL: vi.fn().mockImplementation(url => url),
   }),
 })
 
@@ -43,8 +53,9 @@ describe("ChatMessage", () => {
     const props = getProps()
     render(<ChatMessage {...props} />)
 
-    const chatContent = screen.getByTestId("stChatMessageContent")
-    expect(chatContent).toBeInTheDocument()
+    const chatMessage = screen.getByTestId("stChatMessage")
+    expect(chatMessage).toBeInTheDocument()
+    expect(chatMessage).toHaveClass("stChatMessage")
   })
 
   it("renders message children content", () => {
@@ -64,14 +75,88 @@ describe("ChatMessage", () => {
     expect(screen.getByText("😃")).toBeTruthy()
   })
 
-  it("renders with an image avatar", () => {
-    const props = getProps({
-      avatar: "http://example.com/avatar.jpg",
-      avatarType: BlockProto.ChatMessage.AvatarType.IMAGE,
+  describe("image avatar", () => {
+    it("renders with an image avatar", () => {
+      const props = getProps({
+        avatar: "http://example.com/avatar.jpg",
+        avatarType: BlockProto.ChatMessage.AvatarType.IMAGE,
+      })
+      render(<ChatMessage {...props} />)
+      const chatAvatar = screen.getByAltText("user avatar")
+      expect(chatAvatar).toHaveAttribute(
+        "src",
+        "http://example.com/avatar.jpg"
+      )
     })
-    render(<ChatMessage {...props} />)
-    const chatAvatar = screen.getByAltText("user avatar")
-    expect(chatAvatar).toHaveAttribute("src", "http://example.com/avatar.jpg")
+
+    describe("crossOrigin attribute", () => {
+      afterEach(() => {
+        globalThis.__mockStreamlitConfig = {}
+      })
+
+      it("sets crossOrigin when BACKEND_BASE_URL is configured", () => {
+        // Setup StreamlitConfig.BACKEND_BASE_URL
+        globalThis.__mockStreamlitConfig.BACKEND_BASE_URL =
+          "http://localhost:8501"
+
+        const props = getProps({
+          avatar: "avatar.jpg",
+          avatarType: BlockProto.ChatMessage.AvatarType.IMAGE,
+        })
+        renderWithContexts(<ChatMessage {...props} />, {
+          libConfigContext: {
+            resourceCrossOriginMode: "anonymous",
+          },
+        })
+
+        const chatAvatar = screen.getByAltText("user avatar")
+        expect(chatAvatar).toHaveAttribute("crossOrigin", "anonymous")
+      })
+
+      it("does not set crossOrigin when BACKEND_BASE_URL is not configured (same-origin)", () => {
+        const props = getProps({
+          avatar: "avatar.jpg",
+          avatarType: BlockProto.ChatMessage.AvatarType.IMAGE,
+        })
+        renderWithContexts(<ChatMessage {...props} />, {
+          libConfigContext: {
+            resourceCrossOriginMode: "anonymous",
+          },
+        })
+
+        const chatAvatar = screen.getByAltText("user avatar")
+        expect(chatAvatar).not.toHaveAttribute("crossOrigin")
+      })
+
+      it.each([
+        { backendBaseUrl: undefined, description: "without BACKEND_BASE_URL" },
+        {
+          backendBaseUrl: "http://localhost:8501",
+          description: "with BACKEND_BASE_URL",
+        },
+      ])(
+        "does not set crossOrigin attribute when resourceCrossOriginMode is undefined ($description)",
+        ({ backendBaseUrl }) => {
+          // Setup StreamlitConfig.BACKEND_BASE_URL if specified
+          if (backendBaseUrl) {
+            globalThis.__mockStreamlitConfig.BACKEND_BASE_URL = backendBaseUrl
+          }
+
+          const props = getProps({
+            avatar: "avatar.jpg",
+            avatarType: BlockProto.ChatMessage.AvatarType.IMAGE,
+          })
+          renderWithContexts(<ChatMessage {...props} />, {
+            libConfigContext: {
+              resourceCrossOriginMode: undefined,
+            },
+          })
+
+          const chatAvatar = screen.getByAltText("user avatar")
+          expect(chatAvatar).not.toHaveAttribute("crossOrigin")
+        }
+      )
+    })
   })
 
   it("renders with a name label character as fallback", () => {
@@ -92,7 +177,7 @@ describe("ChatMessage", () => {
     })
     render(<ChatMessage {...props} />)
 
-    const userAvatarIcon = screen.getByTestId("chatAvatarIcon-user")
+    const userAvatarIcon = screen.getByTestId("stChatMessageAvatarUser")
     expect(userAvatarIcon).toBeInTheDocument()
   })
 
@@ -104,7 +189,9 @@ describe("ChatMessage", () => {
     })
     render(<ChatMessage {...props} />)
 
-    const assistantAvatarIcon = screen.getByTestId("chatAvatarIcon-assistant")
+    const assistantAvatarIcon = screen.getByTestId(
+      "stChatMessageAvatarAssistant"
+    )
     expect(assistantAvatarIcon).toBeInTheDocument()
   })
 

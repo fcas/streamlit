@@ -1,0 +1,646 @@
+/**
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+
+import {
+  type DeckProps,
+  PickingInfo,
+  ViewStateChangeParameters,
+} from "@deck.gl/core"
+import { parseToRgba } from "color2k"
+import JSON5 from "json5"
+import { isEqual } from "lodash-es"
+
+import { DeckGlJsonChart as DeckGlJsonChartProto } from "@streamlit/protobuf"
+
+import { shouldWidthStretch } from "~lib/components/core/Layout/utils"
+import { ElementFullscreenContext } from "~lib/components/shared/ElementFullscreen/ElementFullscreenContext"
+import {
+  useBasicWidgetClientState,
+  ValueWithSource,
+} from "~lib/hooks/useBasicWidgetState"
+import { useExecuteWhenChanged } from "~lib/hooks/useExecuteWhenChanged"
+import { useRequiredContext } from "~lib/hooks/useRequiredContext"
+import { useStWidthHeight } from "~lib/hooks/useStWidthHeight"
+import type { EmotionTheme } from "~lib/theme/types"
+import { isNullOrUndefined } from "~lib/util/utils"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import type {
+  DeckGlElementState,
+  DeckGLProps,
+  DeckObject,
+  ParsedDeckGlConfig,
+} from "./types"
+import {
+  FillFunction,
+  getContextualFillColor,
+  LAYER_TYPE_TO_FILL_FUNCTION,
+} from "./utils/colors"
+import { jsonConverter } from "./utils/jsonConverter"
+
+/**
+ * Extracted type from the DeckGL library since it is not exported correctly.
+ */
+type TooltipContent =
+  NonNullable<DeckProps["getTooltip"]> extends (info: PickingInfo) => infer R
+    ? R
+    : never
+
+type UseDeckGlShape = {
+  createTooltip: (info: PickingInfo | null) => TooltipContent
+  data: DeckGlElementState
+  deck: DeckObject
+  hasActiveSelection: boolean
+  height: number | string
+  isSelectionModeActivated: boolean
+  onViewStateChange: (params: ViewStateChangeParameters) => void
+  selectionMode: DeckGlJsonChartProto.SelectionMode | undefined
+  setSelection: React.Dispatch<
+    React.SetStateAction<ValueWithSource<DeckGlElementState> | null>
+  >
+  viewState: Record<string, unknown> | null
+  width: number | string
+}
+
+const HTML_ESCAPE_MAP: Record<string, string> = {
+  "&": "&amp;",
+  "<": "&lt;",
+  ">": "&gt;",
+  '"': "&quot;",
+  "'": "&#x27;",
+}
+
+/**
+ * Escapes HTML-significant characters in a value so it can be safely embedded
+ * as text content or a quoted attribute value in an HTML tooltip template.
+ *
+ * This prevents XSS from untrusted data values interpolated into `tooltip.html`.
+ * It is only safe for element content and quoted attribute contexts. Values must
+ * not be placed by the template into unquoted attributes, URL attributes such as
+ * `href`/`src` (where a `javascript:` scheme would survive escaping), or inside
+ * `<script>`/`<style>` blocks.
+ *
+ * @param {unknown} value - The value to coerce to a string and escape.
+ * @returns {string} - The HTML-escaped string.
+ */
+const escapeHtml = (value: unknown): string =>
+  String(value).replace(/[&<>"']/g, char => HTML_ESCAPE_MAP[char])
+
+export type UseDeckGlProps = Omit<DeckGLProps, "width"> & {
+  isLightTheme: boolean
+  theme: EmotionTheme
+}
+
+export const EMPTY_STATE: DeckGlElementState = {
+  selection: {
+    indices: {},
+    objects: {},
+  },
+}
+
+/**
+ * Interpolates variables within a string using values from a PickingInfo object.
+ *
+ * This function searches for placeholders in the format `{variable}` within the provided
+ * string `body` and replaces them with corresponding values from the `info` object.
+ * It first checks if the variable exists directly on `info.object`, and if not, it checks
+ * within `info.object.properties`.
+ *
+ * @param {PickingInfo} info - The object containing the data to interpolate into the string.
+ * @param {string} body - The string containing placeholders in the format `{variable}`.
+ * @param {boolean} shouldEscapeHtml - Whether interpolated values should be HTML-escaped.
+ *   Enable this when `body` is rendered as HTML (see {@link escapeHtml} for the
+ *   contexts in which escaping is safe).
+ * @returns {string} - The interpolated string with placeholders replaced by actual values.
+ */
+const interpolate = (
+  info: PickingInfo,
+  body: string,
+  shouldEscapeHtml = false
+): string => {
+  const matchedVariables = body.match(/{(.*?)}/g)
+  if (matchedVariables) {
+    matchedVariables.forEach((match: string) => {
+      const variable = match.substring(1, match.length - 1)
+
+      let rawValue: unknown
+      if (Object.hasOwn(info.object, variable)) {
+        rawValue = info.object[variable]
+      } else if (
+        Object.hasOwn(info.object, "properties") &&
+        Object.hasOwn(info.object.properties, variable)
+      ) {
+        rawValue = info.object.properties[variable]
+      } else {
+        return
+      }
+
+      const value = shouldEscapeHtml ? escapeHtml(rawValue) : String(rawValue)
+      // Use a replacer function so `$` sequences in the value are inserted
+      // literally rather than treated as replacement patterns.
+      body = body.replace(match, () => value)
+    })
+  }
+  return body
+}
+
+function getDefaultState(
+  widgetMgr: WidgetStateManager,
+  element: DeckGlJsonChartProto
+): DeckGlElementState {
+  if (!element.id) {
+    return EMPTY_STATE
+  }
+
+  const initialFigureState = widgetMgr.getElementState<DeckGlElementState>(
+    element.id,
+    "selection"
+  )
+
+  return initialFigureState ?? EMPTY_STATE
+}
+
+function getStateFromWidgetMgr(
+  widgetMgr: WidgetStateManager,
+  element: DeckGlJsonChartProto
+): DeckGlElementState {
+  if (!element.id) {
+    return EMPTY_STATE
+  }
+
+  const stringValue = widgetMgr.getStringValue(element)
+  const currState: DeckGlElementState | null = stringValue
+    ? JSON5.parse(stringValue)
+    : null
+
+  return currState ?? EMPTY_STATE
+}
+
+function updateWidgetMgrState(
+  element: DeckGlJsonChartProto,
+  widgetMgr: WidgetStateManager,
+  vws: ValueWithSource<DeckGlElementState>,
+  fragmentId: string | undefined
+): void {
+  if (!element.id) {
+    return
+  }
+
+  widgetMgr.setStringValue(
+    element,
+    JSON.stringify(vws.value),
+    { fromUi: vws.fromUi },
+    fragmentId
+  )
+}
+
+type LayerDataInfo = {
+  layerData: Map<string, unknown[] | undefined>
+  hasUnknownLayerId: boolean
+}
+
+/**
+ * Builds a Map from layer ID to data array (or undefined for non-array data).
+ * Layers without an explicit ID are tracked separately because selections
+ * cannot be reliably validated against them.
+ */
+const getLayerDataInfo = (
+  layers: ParsedDeckGlConfig["layers"] | undefined
+): LayerDataInfo => {
+  const layerData = new Map<string, unknown[] | undefined>()
+  let hasUnknownLayerId = false
+
+  if (!layers) {
+    return { layerData, hasUnknownLayerId }
+  }
+
+  for (const layer of layers) {
+    if (layer && !Array.isArray(layer)) {
+      if (isNullOrUndefined(layer.id)) {
+        hasUnknownLayerId = true
+        continue
+      }
+
+      const layerId = `${layer.id}`
+      // For URL strings, GeoJSON objects, or undefined data, store undefined
+      // to indicate we cannot validate indices for this layer.
+      layerData.set(
+        layerId,
+        Array.isArray(layer.data) ? layer.data : undefined
+      )
+    }
+  }
+
+  return { layerData, hasUnknownLayerId }
+}
+
+type SanitizedSelection = {
+  indices: Record<string, number[]>
+  objects: Record<string, unknown[]>
+  changed: boolean
+}
+
+/**
+ * Filters valid indices for a layer with array data.
+ * Removes indices that are out of bounds after data shrinks and updates
+ * objects to match the current data at each index.
+ */
+const filterValidIndicesForLayer = (
+  indices: number[],
+  objects: unknown[],
+  layerDataArray: unknown[]
+): { validIndices: number[]; validObjects: unknown[]; changed: boolean } => {
+  const validIndices: number[] = []
+  const validObjects: unknown[] = []
+  let changed = false
+
+  indices.forEach((idx, i) => {
+    if (idx < layerDataArray.length) {
+      const nextObject = layerDataArray[idx]
+      if (nextObject !== objects[i]) {
+        changed = true
+      }
+      validIndices.push(idx)
+      validObjects.push(nextObject ?? objects[i] ?? {})
+    } else {
+      changed = true
+    }
+  })
+
+  return { validIndices, validObjects, changed }
+}
+
+/**
+ * Sanitizes selection state by removing orphaned selections.
+ * Orphaned selections occur when layers are removed or data length shrinks.
+ * For layers with non-array data (URLs, GeoJSON), selections are preserved
+ * since we cannot validate indices against them.
+ */
+const sanitizeSelection = (
+  currentSelection: {
+    indices: Record<string, number[]>
+    objects: Record<string, unknown[]>
+  },
+  layerDataInfo: LayerDataInfo
+): SanitizedSelection => {
+  const { layerData, hasUnknownLayerId } = layerDataInfo
+  const newIndices: Record<string, number[]> = {}
+  const newObjects: Record<string, unknown[]> = {}
+  let changed = false
+
+  for (const [layerId, indices] of Object.entries(currentSelection.indices)) {
+    const layerDataForId = layerData.get(layerId)
+    if (layerDataForId === undefined) {
+      // Layer doesn't exist OR has non-array data (URL, GeoJSON).
+      if (!layerData.has(layerId)) {
+        // Layer no longer exists in spec. Only preserve if we cannot validate
+        // at all (i.e., ALL layers lack IDs, so layerData is empty).
+        if (hasUnknownLayerId && layerData.size === 0) {
+          newIndices[layerId] = indices
+          newObjects[layerId] = currentSelection.objects[layerId] || []
+          continue
+        }
+        changed = true // layer no longer exists
+        continue
+      }
+      // Non-array data: preserve all selections for this layer
+      newIndices[layerId] = indices
+      newObjects[layerId] = currentSelection.objects[layerId] || []
+      continue
+    }
+
+    const objects = currentSelection.objects[layerId] || []
+    const result = filterValidIndicesForLayer(indices, objects, layerDataForId)
+
+    if (result.changed) {
+      changed = true
+    }
+
+    if (result.validIndices.length > 0) {
+      newIndices[layerId] = result.validIndices
+      newObjects[layerId] = result.validObjects
+    }
+  }
+
+  return { indices: newIndices, objects: newObjects, changed }
+}
+
+export const useDeckGl = (props: UseDeckGlProps): UseDeckGlShape => {
+  const {
+    height: fullScreenHeight,
+    width: propsWidth,
+    expanded: propsIsFullScreen,
+  } = useRequiredContext(ElementFullscreenContext)
+
+  const { element, fragmentId, isLightTheme, theme, widgetMgr, widthConfig } =
+    props
+  const { selectionMode: allSelectionModes, tooltip } = element
+  const isFullScreen = propsIsFullScreen ?? false
+
+  // Determine if we should use container width based on layout config
+  const shouldUseContainerWidth = shouldWidthStretch(widthConfig)
+
+  const [data, setSelection] = useBasicWidgetClientState<
+    DeckGlElementState,
+    DeckGlJsonChartProto
+  >({
+    element,
+    getDefaultState,
+    getStateFromWidgetMgr,
+    updateWidgetMgrState,
+    widgetMgr,
+    fragmentId,
+  })
+
+  const [viewState, setViewState] = useState<Record<string, unknown> | null>(
+    null
+  )
+
+  const { height, width } = useStWidthHeight({
+    element: {},
+    isFullScreen,
+    shouldUseContainerWidth,
+    container: { height: fullScreenHeight, width: propsWidth },
+    heightFallback:
+      (viewState?.initialViewState as { height: number } | undefined)
+        ?.height || theme.sizes.defaultMapHeight,
+  })
+
+  const initialViewStateRef = useRef<DeckObject["initialViewState"] | null>(
+    null
+  )
+
+  /**
+   * Our proto for selectionMode is an array in order to support future-looking
+   * functionality. Currently, we only support 1 single selection mode, so we'll
+   * only use the first one (if it exists) to determine our selection mode.
+   *
+   * @see deck_gl_json_chart.py #parse_selection_mode
+   */
+  const selectionMode: DeckGlJsonChartProto.SelectionMode | undefined =
+    allSelectionModes[0]
+  const isSelectionModeActivated = selectionMode !== undefined
+
+  const hasActiveSelection =
+    isSelectionModeActivated && Object.keys(data.selection.indices).length > 0
+
+  const parsedPydeckJson = useMemo(() => {
+    return Object.freeze(JSON5.parse<ParsedDeckGlConfig>(element.json))
+    // Only parse JSON when transitioning to/from fullscreen, the json changes, or theme changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- TODO: Update to match React best practices
+  }, [isFullScreen, isLightTheme, element.json])
+
+  // Sanitize selection when spec changes to remove orphaned indices
+  // (layer removed or data length shrunk). This prevents visual glitches
+  // when selection state is preserved via key-based identity.
+  useExecuteWhenChanged(() => {
+    if (!isSelectionModeActivated || !parsedPydeckJson.layers) {
+      return
+    }
+
+    const layerDataInfo = getLayerDataInfo(parsedPydeckJson.layers)
+    const sanitized = sanitizeSelection(data.selection, layerDataInfo)
+
+    if (sanitized.changed) {
+      setSelection({
+        fromUi: false,
+        value: {
+          selection: {
+            indices: sanitized.indices,
+            objects: sanitized.objects,
+          },
+        },
+      })
+    }
+  }, [parsedPydeckJson, isSelectionModeActivated])
+
+  const deck = useMemo<DeckObject>(() => {
+    const jsonCopy = { ...parsedPydeckJson }
+
+    // If unset, use either the light or dark style based on Streamlit's theme.
+    if (!jsonCopy.mapStyle) {
+      jsonCopy.mapStyle = isLightTheme
+        ? "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json"
+        : "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json"
+    }
+
+    const isUsingCarto =
+      jsonCopy?.mapProvider == "carto" ||
+      (jsonCopy?.mapStyle && jsonCopy.mapStyle?.indexOf("cartocdn") >= 0)
+
+    if (isUsingCarto && !jsonCopy.cartoKey) {
+      // This key was manually created by Carto just for Streamlit. It is NOT
+      // connected to any paid accounts, or secure API access, or anything of
+      // the sort. It's is just used for Carto to be able to separate Streamlit
+      // usage from other types in their own internal stats.
+      jsonCopy.cartoKey = "x7g2plm9yq8vfrc"
+    }
+
+    if (jsonCopy.layers) {
+      // Build a map of layer IDs to data lengths for validation
+      const { layerData } = getLayerDataInfo(jsonCopy.layers)
+
+      // Only consider a selection valid if the layer exists and has at least one
+      // index within the current data length. This prevents "dimming" (reducing
+      // opacity of unselected points to 40%) when selection state is stale
+      // (e.g., after data shrinks or layers are removed).
+      // For layers with non-array data (undefined length), we cannot validate
+      // indices, so we assume the selection is valid.
+      const anyLayersHaveSelection = Object.entries(
+        data.selection.indices
+      ).some(([layerId, indices]) => {
+        const layerDataForId = layerData.get(layerId)
+        // If layerDataForId is undefined but the layer exists, it has non-array data - assume valid.
+        // If the layer doesn't exist, treat the selection as invalid to avoid dimming everything.
+        if (layerDataForId === undefined) {
+          return layerData.has(layerId) && indices?.length > 0
+        }
+        return indices?.some(idx => idx < layerDataForId.length)
+      })
+
+      const anyLayersHavePickableDefined = jsonCopy.layers.some(layer =>
+        Object.hasOwn(layer, "pickable")
+      )
+
+      jsonCopy.layers = jsonCopy.layers.map(layer => {
+        if (
+          !layer ||
+          Array.isArray(layer) ||
+          // If selection mode is not activated, do not make any additional changes to each layer
+          !isSelectionModeActivated
+        ) {
+          return layer
+        }
+
+        if (!anyLayersHavePickableDefined) {
+          // If selection mode is activated and no layers have pickable defined,
+          // set pickable to true for every layer. This is something Streamlit
+          // does to help make map selection easier to work with out of the box.
+          layer.pickable = true
+        }
+
+        const layerId = isNullOrUndefined(layer.id) ? undefined : `${layer.id}`
+        const selectedIndices =
+          layerId !== undefined
+            ? data?.selection?.indices?.[layerId] || []
+            : []
+
+        const fillFunctions = LAYER_TYPE_TO_FILL_FUNCTION[layer["@@type"]]
+
+        if (!fillFunctions) {
+          return layer
+        }
+
+        const clonedLayer = { ...layer }
+        fillFunctions.forEach(fillFunction => {
+          clonedLayer.updateTriggers = {
+            // Tell Deck.gl to recompute the fill color when the selection changes.
+            // Without this, objects in layers will have stale colors when selection changes.
+            // @see https://deck.gl/docs/api-reference/core/layer#updatetriggers
+            [fillFunction]: [
+              ...(clonedLayer.updateTriggers?.[fillFunction] || []),
+              selectedIndices,
+              anyLayersHaveSelection,
+            ],
+          }
+
+          const shouldUseOriginalFillFunction = !anyLayersHaveSelection
+
+          const originalFillFunction = layer[fillFunction] as
+            | FillFunction
+            | undefined
+
+          if (shouldUseOriginalFillFunction || !originalFillFunction) {
+            // If we aren't changing the fill color, we don't need to change the fillFunction
+            return
+          }
+
+          const selectedOpacity = 255
+          const unselectedOpacity = Math.floor(255 * 0.4)
+
+          // Fallback colors in case there are issues while parsing the colors for a given object
+          const selectedColorParsed = parseToRgba(theme.colors.primary)
+          const selectedColor: [number, number, number, number] = [
+            selectedColorParsed[0],
+            selectedColorParsed[1],
+            selectedColorParsed[2],
+            selectedOpacity,
+          ]
+          const unselectedColorParsed = parseToRgba(theme.colors.gray20)
+          const unselectedColor: [number, number, number, number] = [
+            unselectedColorParsed[0],
+            unselectedColorParsed[1],
+            unselectedColorParsed[2],
+            unselectedOpacity,
+          ]
+
+          const newFillFunction: FillFunction = (object, objectInfo) => {
+            return getContextualFillColor({
+              isSelected: selectedIndices.includes(objectInfo.index),
+              object,
+              objectInfo,
+              originalFillFunction,
+              selectedColor,
+              unselectedColor,
+              selectedOpacity,
+              unselectedOpacity,
+            })
+          }
+
+          clonedLayer[fillFunction] = newFillFunction
+        })
+
+        return clonedLayer
+      })
+    }
+
+    delete jsonCopy?.views // We are not using views. This avoids a console warning.
+
+    return jsonConverter.convert(jsonCopy) as DeckObject
+  }, [
+    data.selection.indices,
+    isLightTheme,
+    isSelectionModeActivated,
+    parsedPydeckJson,
+    theme.colors.gray20,
+    theme.colors.primary,
+  ])
+
+  useEffect(() => {
+    // If the ViewState on the server has changed, apply the diff to the current state
+    if (!isEqual(deck.initialViewState, initialViewStateRef.current)) {
+      const diff = Object.keys(deck.initialViewState).reduce<
+        Record<string, unknown>
+      >((diffArg, key): Record<string, unknown> => {
+        if (
+          deck.initialViewState[key] === initialViewStateRef.current?.[key]
+        ) {
+          return diffArg
+        }
+
+        return {
+          ...diffArg,
+          [key]: deck.initialViewState[key],
+        }
+      }, {})
+
+      setViewState(existing => ({ ...existing, ...diff }))
+      initialViewStateRef.current = deck.initialViewState
+    }
+  }, [deck.initialViewState])
+
+  const createTooltip = useCallback(
+    (info: PickingInfo | null): TooltipContent => {
+      if (!info?.object || !tooltip) {
+        return null
+      }
+
+      const parsedTooltip = JSON5.parse(tooltip)
+
+      if (parsedTooltip.html) {
+        parsedTooltip.html = interpolate(info, parsedTooltip.html, true)
+      } else {
+        parsedTooltip.text = interpolate(info, parsedTooltip.text)
+      }
+
+      return parsedTooltip
+    },
+    [tooltip]
+  )
+
+  const onViewStateChange = useCallback(
+    ({ viewState: viewStateArg }: ViewStateChangeParameters) => {
+      setViewState(viewStateArg)
+    },
+    [setViewState]
+  )
+
+  return {
+    createTooltip,
+    data,
+    deck,
+    hasActiveSelection,
+    height,
+    isSelectionModeActivated,
+    onViewStateChange,
+    selectionMode,
+    setSelection,
+    viewState,
+    width,
+  }
+}

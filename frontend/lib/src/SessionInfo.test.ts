@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,18 @@
  * limitations under the License.
  */
 
-import { SessionInfo } from "./SessionInfo"
-import { NewSession } from "./proto"
-import { mockSessionInfoProps } from "./mocks/mocks"
+import { NewSession } from "@streamlit/protobuf"
 
-test("Throws an error when used before initialization", () => {
+import { mockSessionInfoProps } from "./mocks/mocks"
+import { SessionInfo } from "./SessionInfo"
+
+it("Throws an error when used before initialization", () => {
   const sessionInfo = new SessionInfo()
   expect(() => sessionInfo.current).toThrow()
 })
 
 describe("SessionInfo.setCurrent", () => {
-  test("copies props to `current`", () => {
+  it("copies props to `current`", () => {
     const sessionInfo = new SessionInfo()
     sessionInfo.setCurrent(mockSessionInfoProps())
 
@@ -32,7 +33,7 @@ describe("SessionInfo.setCurrent", () => {
     expect(sessionInfo.current).toEqual(mockSessionInfoProps())
   })
 
-  test("copies previous props to `last`", () => {
+  it("copies previous props to `last`", () => {
     const sessionInfo = new SessionInfo()
     sessionInfo.setCurrent(mockSessionInfoProps())
     expect(sessionInfo.last).toBeUndefined()
@@ -46,7 +47,7 @@ describe("SessionInfo.setCurrent", () => {
 })
 
 describe("SessionInfo.isHello", () => {
-  test("is true only when `isHello` is true in current SessionInfo", () => {
+  it("is true only when `isHello` is true in current SessionInfo", () => {
     const sessionInfo = new SessionInfo()
     expect(sessionInfo.isHello).toBe(false)
 
@@ -58,22 +59,46 @@ describe("SessionInfo.isHello", () => {
   })
 })
 
-test("Props can be initialized from a protobuf", () => {
+describe("SessionInfo.disconnect", () => {
+  it("marks the current session as not connected and preserves prior props as `last`", () => {
+    const sessionInfo = new SessionInfo()
+    sessionInfo.setCurrent(mockSessionInfoProps({ isConnected: true }))
+
+    sessionInfo.disconnect()
+
+    expect(sessionInfo.current.isConnected).toBe(false)
+    expect(sessionInfo.last).toEqual(
+      mockSessionInfoProps({ isConnected: true })
+    )
+  })
+
+  it("is a no-op when there is no current session", () => {
+    const sessionInfo = new SessionInfo()
+    sessionInfo.disconnect()
+
+    expect(sessionInfo.isSet).toBe(false)
+    expect(sessionInfo.last).toBeUndefined()
+  })
+})
+
+it("Props can be initialized from a protobuf", () => {
   const MESSAGE = new NewSession({
     config: {
       gatherUsageStats: false,
       maxCachedMessageAge: 31,
-      mapboxToken: "mapboxToken",
       allowRunOnSave: false,
     },
     initialize: {
       userInfo: {
         installationId: "installationId",
         installationIdV3: "installationIdV3",
+        installationIdV4: "mockInstallationIdV4",
       },
       environmentInfo: {
         streamlitVersion: "streamlitVersion",
         pythonVersion: "pythonVersion",
+        serverOs: "mockServerOS",
+        hasDisplay: true,
       },
       sessionStatus: {
         runOnSave: false,
@@ -88,8 +113,11 @@ test("Props can be initialized from a protobuf", () => {
   expect(props.sessionId).toEqual("sessionId")
   expect(props.streamlitVersion).toEqual("streamlitVersion")
   expect(props.pythonVersion).toEqual("pythonVersion")
+  expect(props.serverOS).toEqual("mockServerOS")
+  expect(props.hasDisplay).toBeTruthy()
   expect(props.installationId).toEqual("installationId")
   expect(props.installationIdV3).toEqual("installationIdV3")
+  expect(props.installationIdV4).toEqual("mockInstallationIdV4")
   expect(props.maxCachedMessageAge).toEqual(31)
   expect(props.commandLine).toBeUndefined()
   expect(props.isHello).toBeFalsy()

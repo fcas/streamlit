@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,14 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
+import { ReactElement } from "react"
+
+import { StyledCode } from "~lib/components/elements/CodeBlock/styled-components"
 import AlertContainer, {
   Kind,
-} from "@streamlit/lib/src/components/shared/AlertContainer"
-import { StyledPreError } from "./styled-components"
+} from "~lib/components/shared/AlertContainer/AlertContainer"
+
+import { StyledErrorName, StyledStackTrace } from "./styled-components"
 
 export interface ErrorElementProps {
   name: string
@@ -44,12 +47,12 @@ function ErrorElement(props: ErrorElementProps): ReactElement {
 
   return (
     <AlertContainer kind={Kind.ERROR} width={width}>
-      <strong>{name}: </strong>
+      <StyledErrorName>{name}: </StyledErrorName>
       {message}
       {stack ? (
-        <StyledPreError data-testid="stErrorElementStack">
-          <code>{cleanedStack}</code>
-        </StyledPreError>
+        <StyledStackTrace data-testid="stErrorElementStack">
+          <StyledCode wrapLines={false}>{cleanedStack}</StyledCode>
+        </StyledStackTrace>
       ) : null}
     </AlertContainer>
   )

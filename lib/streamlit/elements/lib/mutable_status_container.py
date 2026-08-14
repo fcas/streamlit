@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,16 +15,25 @@
 from __future__ import annotations
 
 import time
-from types import TracebackType
-from typing import Literal, cast
+from typing import TYPE_CHECKING, Literal, TypeAlias, cast
 
-from typing_extensions import TypeAlias
+from typing_extensions import Self
 
-from streamlit.cursor import Cursor
-from streamlit.delta_generator import DeltaGenerator, _enqueue_message
-from streamlit.errors import StreamlitAPIException
+from streamlit.delta_generator import DeltaGenerator
+from streamlit.elements.lib.layout_utils import (
+    WidthWithoutContent,
+    get_width_config,
+    validate_width,
+)
+from streamlit.errors import StreamlitValueError
 from streamlit.proto.Block_pb2 import Block as BlockProto
 from streamlit.proto.ForwardMsg_pb2 import ForwardMsg
+from streamlit.runtime.scriptrunner_utils.script_run_context import enqueue_message
+
+if TYPE_CHECKING:
+    from types import TracebackType
+
+    from streamlit.cursor import Cursor
 
 States: TypeAlias = Literal["running", "complete", "error"]
 
@@ -36,37 +45,45 @@ class StatusContainer(DeltaGenerator):
         label: str,
         expanded: bool = False,
         state: States = "running",
+        type: Literal["default", "compact"] = "default",
+        width: WidthWithoutContent = "stretch",
     ) -> StatusContainer:
+        if type not in {"default", "compact"}:
+            raise StreamlitValueError("type", ["'default'", "'compact'"])
+
         expandable_proto = BlockProto.Expandable()
         expandable_proto.expanded = expanded
         expandable_proto.label = label or ""
+        expandable_proto.type = (
+            BlockProto.Expandable.Type.COMPACT
+            if type == "compact"
+            else BlockProto.Expandable.Type.DEFAULT
+        )
 
         if state == "running":
             expandable_proto.icon = "spinner"
         elif state == "complete":
-            expandable_proto.icon = "check"
+            expandable_proto.icon = ":material/check:"
         elif state == "error":
-            expandable_proto.icon = "error"
+            expandable_proto.icon = ":material/error:"
         else:
-            raise StreamlitAPIException(
-                f"Unknown state ({state}). Must be one of 'running', 'complete', or 'error'."
-            )
+            raise StreamlitValueError("state", ["'running'", "'complete'", "'error'"])
 
         block_proto = BlockProto()
         block_proto.allow_empty = True
         block_proto.expandable.CopyFrom(expandable_proto)
 
-        delta_path: list[int] = (
-            parent._active_dg._cursor.delta_path if parent._active_dg._cursor else []
-        )
+        validate_width(width=width)
+        block_proto.width_config.CopyFrom(get_width_config(width))
 
         status_container = cast(
-            StatusContainer,
+            "StatusContainer",
             parent._block(block_proto=block_proto, dg_type=StatusContainer),
         )
 
-        # Apply initial configuration
-        status_container._delta_path = delta_path
+        # `update()` re-sends the block proto at this path. Use the path `_block()` wrote
+        # to, which can be deeper than the parent cursor points to. See issue #16281.
+        status_container._delta_path = status_container._block_delta_path
         status_container._current_proto = block_proto
         status_container._current_state = state
 
@@ -84,7 +101,7 @@ class StatusContainer(DeltaGenerator):
         cursor: Cursor | None,
         parent: DeltaGenerator | None,
         block_type: str | None,
-    ):
+    ) -> None:
         super().__init__(root_container, cursor, parent, block_type)
 
         # Initialized in `_create()`:
@@ -118,8 +135,12 @@ class StatusContainer(DeltaGenerator):
             The new state of the status container. This mainly changes the
             icon. If None, the state is not changed.
         """
-        assert self._current_proto is not None, "Status not correctly initialized!"
-        assert self._delta_path is not None, "Status not correctly initialized!"
+        if (
+            self._current_proto is None or self._delta_path is None
+        ):  # pragma: no cover - defensive
+            raise RuntimeError(
+                "StatusContainer is not correctly initialized. This should never happen."
+            )
 
         msg = ForwardMsg()
         msg.metadata.delta_path[:] = self._delta_path
@@ -137,19 +158,19 @@ class StatusContainer(DeltaGenerator):
             if state == "running":
                 msg.delta.add_block.expandable.icon = "spinner"
             elif state == "complete":
-                msg.delta.add_block.expandable.icon = "check"
+                msg.delta.add_block.expandable.icon = ":material/check:"
             elif state == "error":
-                msg.delta.add_block.expandable.icon = "error"
+                msg.delta.add_block.expandable.icon = ":material/error:"
             else:
-                raise StreamlitAPIException(
-                    f"Unknown state ({state}). Must be one of 'running', 'complete', or 'error'."
+                raise StreamlitValueError(
+                    "state", ["'running'", "'complete'", "'error'"]
                 )
             self._current_state = state
 
         self._current_proto = msg.delta.add_block
-        _enqueue_message(msg)
+        enqueue_message(msg)
 
-    def __enter__(self) -> StatusContainer:  # type: ignore[override]
+    def __enter__(self) -> Self:  # type: ignore[override]  # ty: ignore[invalid-method-override]
         # This is a little dubious: we're returning a different type than
         # our superclass' `__enter__` function. Maybe DeltaGenerator.__enter__
         # should always return `self`?
@@ -158,9 +179,9 @@ class StatusContainer(DeltaGenerator):
 
     def __exit__(
         self,
-        exc_type: type[BaseException] | None,
-        exc_val: BaseException | None,
-        exc_tb: TracebackType | None,
+        typ: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
     ) -> Literal[False]:
         # Only update if the current state is running
         if self._current_state == "running":
@@ -170,10 +191,10 @@ class StatusContainer(DeltaGenerator):
             # (to complete) is applied. Adding a short timeout here allows the frontend
             # to render the update before.
             time.sleep(0.05)
-            if exc_type is not None:
+            if typ is not None:
                 # If an exception was raised in the context,
                 # we want to update the status to error.
                 self.update(state="error")
             else:
                 self.update(state="complete")
-        return super().__exit__(exc_type, exc_val, exc_tb)
+        return super().__exit__(typ, exc, tb)

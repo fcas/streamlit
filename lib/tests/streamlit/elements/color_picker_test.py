@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,9 +20,11 @@ import pytest
 from parameterized import parameterized
 
 import streamlit as st
-from streamlit.errors import StreamlitAPIException
-from streamlit.proto.LabelVisibilityMessage_pb2 import LabelVisibilityMessage
+from streamlit.elements.widgets.color_picker import ColorPickerSerde
+from streamlit.errors import StreamlitAPIException, StreamlitValueError
+from streamlit.proto.LabelVisibility_pb2 import LabelVisibility
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.elements.layout_test_utils import WidthConfigFields
 
 
 class ColorPickerTest(DeltaGeneratorTestCase):
@@ -31,20 +33,19 @@ class ColorPickerTest(DeltaGeneratorTestCase):
         st.color_picker("the label")
 
         c = self.get_delta_from_queue().new_element.color_picker
-        self.assertEqual(c.label, "the label")
-        self.assertEqual(
-            c.label_visibility.value,
-            LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE,
+        assert c.label == "the label"
+        assert (
+            c.label_visibility.value == LabelVisibility.LabelVisibilityOptions.VISIBLE
         )
-        self.assertEqual(c.default, "#000000")
-        self.assertEqual(c.disabled, False)
+        assert c.default == "#000000"
+        assert not c.disabled
 
     def test_just_disabled(self):
         """Test that it can be called with disabled param."""
         st.color_picker("the label", disabled=True)
 
         c = self.get_delta_from_queue().new_element.color_picker
-        self.assertEqual(c.disabled, True)
+        assert c.disabled
 
     @parameterized.expand([("#333333", "#333333"), ("#333", "#333"), (None, "#000000")])
     def test_value_types(self, arg_value, proto_value):
@@ -52,17 +53,17 @@ class ColorPickerTest(DeltaGeneratorTestCase):
         st.color_picker("the label", arg_value)
 
         c = self.get_delta_from_queue().new_element.color_picker
-        self.assertEqual(c.label, "the label")
-        self.assertEqual(c.default, proto_value)
+        assert c.label == "the label"
+        assert c.default == proto_value
 
     def test_invalid_value_type_error(self):
         """Tests that when the value type is invalid, an exception is generated"""
-        with pytest.raises(StreamlitAPIException) as exc_message:
+        with pytest.raises(StreamlitAPIException):
             st.color_picker("the label", 1234567)
 
     def test_invalid_string(self):
         """Tests that when the string doesn't match regex, an exception is generated"""
-        with pytest.raises(StreamlitAPIException) as exc_message:
+        with pytest.raises(StreamlitAPIException):
             st.color_picker("the label", "#invalid-string")
 
     def test_outside_form(self):
@@ -71,7 +72,7 @@ class ColorPickerTest(DeltaGeneratorTestCase):
         st.color_picker("foo")
 
         proto = self.get_delta_from_queue().new_element.color_picker
-        self.assertEqual(proto.form_id, "")
+        assert proto.form_id == ""
 
     @patch("streamlit.runtime.Runtime.exists", MagicMock(return_value=True))
     def test_inside_form(self):
@@ -81,17 +82,17 @@ class ColorPickerTest(DeltaGeneratorTestCase):
             st.color_picker("foo")
 
         # 2 elements will be created: form block, widget
-        self.assertEqual(len(self.get_all_deltas_from_queue()), 2)
+        assert len(self.get_all_deltas_from_queue()) == 2
 
         form_proto = self.get_delta_from_queue(0).add_block
         color_picker_proto = self.get_delta_from_queue(1).new_element.color_picker
-        self.assertEqual(color_picker_proto.form_id, form_proto.form.form_id)
+        assert color_picker_proto.form_id == form_proto.form.form_id
 
     @parameterized.expand(
         [
-            ("visible", LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE),
-            ("hidden", LabelVisibilityMessage.LabelVisibilityOptions.HIDDEN),
-            ("collapsed", LabelVisibilityMessage.LabelVisibilityOptions.COLLAPSED),
+            ("visible", LabelVisibility.LabelVisibilityOptions.VISIBLE),
+            ("hidden", LabelVisibility.LabelVisibilityOptions.HIDDEN),
+            ("collapsed", LabelVisibility.LabelVisibilityOptions.COLLAPSED),
         ]
     )
     def test_label_visibility(self, label_visibility_value, proto_value):
@@ -99,16 +100,15 @@ class ColorPickerTest(DeltaGeneratorTestCase):
         st.color_picker("the label", label_visibility=label_visibility_value)
 
         c = self.get_delta_from_queue().new_element.color_picker
-        self.assertEqual(c.label, "the label")
-        self.assertEqual(c.label_visibility.value, proto_value)
+        assert c.label == "the label"
+        assert c.label_visibility.value == proto_value
 
     def test_label_visibility_wrong_value(self):
-        with self.assertRaises(StreamlitAPIException) as e:
+        with pytest.raises(StreamlitValueError) as e:
             st.color_picker("the label", label_visibility="wrong_value")
-        self.assertEqual(
-            str(e.exception),
-            "Unsupported label_visibility option 'wrong_value'. Valid values are "
-            "'visible', 'hidden' or 'collapsed'.",
+        assert (
+            str(e.value)
+            == "Invalid `label_visibility` value. Supported values: 'visible', 'hidden', 'collapsed'."
         )
 
     def test_shows_cached_widget_replay_warning(self):
@@ -116,6 +116,192 @@ class ColorPickerTest(DeltaGeneratorTestCase):
         st.cache_data(lambda: st.color_picker("the label"))()
 
         # The widget itself is still created, so we need to go back one element more:
-        el = self.get_delta_from_queue(-2).new_element.exception
-        self.assertEqual(el.type, "CachedWidgetWarning")
-        self.assertTrue(el.is_warning)
+        el = self.get_delta_from_queue(-3).new_element.exception
+        assert el.type == "CachedWidgetWarning"
+        assert el.is_warning
+
+    def test_color_picker_with_width(self):
+        """Test st.color_picker with different width types."""
+        test_cases = [
+            (500, WidthConfigFields.PIXEL_WIDTH.value, "pixel_width", 500),
+            ("stretch", WidthConfigFields.USE_STRETCH.value, "use_stretch", True),
+            ("content", WidthConfigFields.USE_CONTENT.value, "use_content", True),
+        ]
+
+        for index, (
+            width_value,
+            expected_width_spec,
+            field_name,
+            field_value,
+        ) in enumerate(test_cases):
+            with self.subTest(width_value=width_value):
+                st.color_picker(f"test label {index}", width=width_value)
+
+                el = self.get_delta_from_queue().new_element
+                assert el.color_picker.label == f"test label {index}"
+
+                assert el.width_config.WhichOneof("width_spec") == expected_width_spec
+                assert getattr(el.width_config, field_name) == field_value
+
+    def test_color_picker_with_invalid_width(self):
+        """Test st.color_picker with invalid width values."""
+        test_cases = [
+            (
+                "invalid",
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+            (
+                100.5,
+                "Width must be either a positive integer (pixels), 'stretch', or 'content'.",
+            ),
+        ]
+
+        for width_value, expected_error_message in test_cases:
+            with self.subTest(width_value=width_value):
+                with pytest.raises(StreamlitAPIException) as exc:
+                    st.color_picker("test label", width=width_value)
+
+                assert expected_error_message in str(exc.value)
+
+    def test_color_picker_default_width(self):
+        """Test that st.color_picker defaults to content width."""
+        st.color_picker("test label")
+
+        el = self.get_delta_from_queue().new_element
+        assert el.color_picker.label == "test label"
+        assert (
+            el.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_CONTENT.value
+        )
+        assert el.width_config.use_content is True
+
+    def test_color_picker_enforces_minimum_width(self):
+        """Test that st.color_picker enforces minimum width of 40px."""
+        test_cases = [
+            (10, 40),  # Below minimum -> enforced to 40
+            (40, 40),  # Exactly minimum -> stays 40
+            (100, 100),  # Above minimum -> stays as specified
+        ]
+
+        for specified_width, expected_width in test_cases:
+            with self.subTest(specified_width=specified_width):
+                st.color_picker(f"test label {specified_width}", width=specified_width)
+
+                el = self.get_delta_from_queue().new_element
+                assert (
+                    el.width_config.WhichOneof("width_spec")
+                    == WidthConfigFields.PIXEL_WIDTH.value
+                )
+                assert el.width_config.pixel_width == expected_width
+
+    def test_stable_id_with_key(self):
+        """Test that the widget ID is stable when a stable key is provided."""
+        with patch(
+            "streamlit.elements.lib.utils._register_element_id",
+            return_value=MagicMock(),
+        ):
+            # First render with certain params
+            st.color_picker(
+                label="Label 1",
+                key="color_picker_key",
+                value="#112233",
+                help="Help 1",
+                disabled=False,
+                width="content",
+                on_change=lambda: None,
+                args=("arg1", "arg2"),
+                kwargs={"kwarg1": "kwarg1"},
+                label_visibility="visible",
+            )
+            c1 = self.get_delta_from_queue().new_element.color_picker
+            id1 = c1.id
+
+            # Second render with different params but same key
+            st.color_picker(
+                label="Label 2",
+                key="color_picker_key",
+                value="#abcdef",
+                help="Help 2",
+                disabled=True,
+                width="stretch",
+                on_change=lambda: None,
+                args=("arg_1", "arg_2"),
+                kwargs={"kwarg_1": "kwarg_1"},
+                label_visibility="hidden",
+            )
+            c2 = self.get_delta_from_queue().new_element.color_picker
+            id2 = c2.id
+            assert id1 == id2
+
+    def test_bind_query_params_sets_query_param_key(self):
+        """Test that bind='query-params' with a key sets query_param_key in proto."""
+        st.color_picker("the label", key="my_color", bind="query-params")
+
+        c = self.get_delta_from_queue().new_element.color_picker
+        assert c.query_param_key == "my_color"
+
+    def test_bind_query_params_without_key_raises_exception(self):
+        """Test that bind='query-params' without a key raises an exception."""
+        with pytest.raises(StreamlitAPIException) as exc:
+            st.color_picker("the label", bind="query-params")
+
+        assert "must have a unique 'key' parameter" in str(exc.value)
+
+    def test_no_bind_does_not_set_query_param_key(self):
+        """Test that without bind parameter, query_param_key is not set."""
+        st.color_picker("the label", key="my_color")
+
+        c = self.get_delta_from_queue().new_element.color_picker
+        assert c.query_param_key == ""
+
+    def test_invalid_bind_value_raises_exception(self):
+        """Test that an invalid bind value raises StreamlitValueError."""
+        with pytest.raises(StreamlitValueError) as exc:
+            st.color_picker("the label", key="my_color", bind="invalid-value")
+
+        assert "Invalid `bind` value" in str(exc.value)
+        assert "query-params" in str(exc.value)
+
+    def test_empty_key_raises_exception(self) -> None:
+        """Test that an empty key raises an exception."""
+        with pytest.raises(StreamlitAPIException, match=r"`key`.*non-empty"):
+            st.color_picker("the label", key="")
+
+
+class TestColorPickerSerde:
+    """Tests for the ColorPickerSerde serializer/deserializer."""
+
+    def test_invalid_value_falls_back_to_default(self) -> None:
+        """Test that invalid UI values fall back to default."""
+        serde = ColorPickerSerde("#000000")
+
+        assert serde.deserialize("notacolor") == "#000000"
+        assert serde.deserialize("notacolor") != "notacolor"
+
+    def test_value_is_normalized_with_hash_prefix(self) -> None:
+        """Test that valid hex values are normalized with a # prefix."""
+        serde = ColorPickerSerde("#000000")
+
+        assert serde.deserialize("00ff00") == "#00ff00"
+
+    def test_empty_string_returns_default(self) -> None:
+        """Test that empty string returns the default value."""
+        serde = ColorPickerSerde("#ff0000")
+
+        assert serde.deserialize("") == "#ff0000"
+
+    def test_serialize_deserialize_round_trip(self) -> None:
+        """Test that serialize/deserialize round-trips correctly."""
+        serde = ColorPickerSerde("#000000")
+
+        original = "#abcdef"
+        serialized = serde.serialize(original)
+        deserialized = serde.deserialize(serialized)
+
+        assert deserialized == original
+
+    def test_double_hash_falls_back_to_default(self) -> None:
+        """Test that a double hash (##000000) falls back to default."""
+        serde = ColorPickerSerde("#ff0000")
+
+        assert serde.deserialize("##000000") == "#ff0000"

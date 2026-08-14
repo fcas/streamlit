@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,300 +14,689 @@
  * limitations under the License.
  */
 
-import React from "react"
-import { isMobile } from "react-device-detect"
-import { ChevronDown } from "baseui/icon"
-import { Select as UISelect, OnChangeParams, Option } from "baseui/select"
-import { withTheme } from "@emotion/react"
-import { hasMatch, score } from "fzy.js"
-import sortBy from "lodash/sortBy"
-
-import VirtualDropdown from "@streamlit/lib/src/components/shared/Dropdown/VirtualDropdown"
 import {
-  LabelVisibilityOptions,
+  FC,
+  memo,
+  type ReactElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
+
+import { KeyboardArrowDown } from "@emotion-icons/material-outlined"
+import { Cancel } from "@emotion-icons/material-rounded"
+import {
+  ComboBox,
+  ComboBoxStateContext,
+  I18nProvider,
+  type Key,
+  ListLayout,
+  Virtualizer,
+} from "react-aria-components"
+
+import { streamlit } from "@streamlit/protobuf"
+
+import IsSidebarContext from "~lib/components/core/IsSidebarContext"
+import { WidgetLabel } from "~lib/components/widgets/BaseWidget/WidgetLabel"
+import { WidgetLabelHelpIcon } from "~lib/components/widgets/BaseWidget/WidgetLabelHelpIcon"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
+import { useExecuteWhenChanged } from "~lib/hooks/useExecuteWhenChanged"
+import {
+  SHIFT_VIEWPORT_PADDING,
+  useFloatingOverlay,
+} from "~lib/hooks/useFloatingOverlay"
+import { convertRemToPx } from "~lib/theme/utils"
+import {
+  filterSelectOptions,
+  getSelectFilterMode,
+} from "~lib/util/fuzzyFilterSelectOptions"
+import { isMobile } from "~lib/util/isMobile"
+import {
+  getSelectPlaceholder,
   isNullOrUndefined,
-} from "@streamlit/lib/src/util/utils"
-import { Placement } from "@streamlit/lib/src/components/shared/Tooltip"
-import TooltipIcon from "@streamlit/lib/src/components/shared/TooltipIcon"
-import {
-  WidgetLabel,
-  StyledWidgetLabelHelp,
-} from "@streamlit/lib/src/components/widgets/BaseWidget"
-import { iconSizes } from "@streamlit/lib/src/theme/primitives"
-import { EmotionTheme } from "@streamlit/lib/src/theme"
+  LabelVisibilityOptions,
+} from "~lib/util/utils"
 
-const NO_OPTIONS_MSG = "No options to select."
+import {
+  StyledClearButton,
+  StyledEmptyState,
+  StyledGroup,
+  StyledInput,
+  StyledItemHighlight,
+  StyledListBox,
+  StyledListBoxItem,
+  StyledOpenButton,
+  StyledPopover,
+} from "./Selectbox.styled"
 
 export interface Props {
+  value: string | null | undefined
+  onChange: (value: string | null) => void
   disabled: boolean
-  width?: number
-  value: number | null
-  onChange: (value: number | null) => void
-  options: any[]
+  options: string[]
   label?: string | null
   labelVisibility?: LabelVisibilityOptions
   help?: string
-  placeholder?: string
+  placeholder: string
   clearable?: boolean
-  theme: EmotionTheme
+  acceptNewOptions: boolean
+  filterMode?: streamlit.SelectWidgetFilterMode | null
 }
 
-interface State {
-  // Used to work around the forced rerender when the input is empty
-  isEmpty: boolean
-  /**
-   * The value specified by the user via the UI. If the user didn't touch this
-   * widget's UI, the default value is used.
-   */
-  value: number | null
-}
-
-interface SelectOption {
+type ComboOption = {
+  id: string
   label: string
   value: string
+  isCreatable?: boolean
 }
 
-// Add a custom filterOptions method to filter options only based on labels.
-// The baseweb default method filters based on labels or indices
-// More details: https://github.com/streamlit/streamlit/issues/1010
-// Also filters using fuzzy search powered by fzy.js. Automatically handles
-// upper/lowercase.
-export function fuzzyFilterSelectOptions(
-  options: SelectOption[],
-  pattern: string
-): readonly SelectOption[] {
-  if (!pattern) {
-    return options
-  }
+const CREATABLE_ID = "__creatable__"
 
-  const filteredOptions = options.filter((opt: SelectOption) =>
-    hasMatch(pattern, opt.label)
+/**
+ * Pass-through filter for RAC's <ComboBox defaultFilter>. Streamlit's own
+ * `filterSelectOptions` runs upstream and produces `displayOptions`, so RAC
+ * must not re-filter — otherwise its built-in "contains" strategy would drop
+ * fuzzy matches like "ape" -> "Apple". See issue #16003.
+ *
+ * Defined at module scope so the prop is referentially stable across renders.
+ */
+const PASS_THROUGH_FILTER = (): boolean => true
+
+/**
+ * If `after` is `before` with extra characters inserted (at any position),
+ * return just those inserted characters; otherwise return null.
+ *
+ * Used to detect the user typing over an untouched committed label so the
+ * first keystroke starts a fresh search instead of appending behind the
+ * committed label. Works from the reported input text alone, so it is
+ * independent of caret position and browser-specific focus/selection behavior.
+ */
+export const getInsertedText = (
+  before: string,
+  after: string
+): string | null => {
+  const maxPrefix = Math.min(before.length, after.length)
+  let prefix = 0
+  while (prefix < maxPrefix && before[prefix] === after[prefix]) {
+    prefix++
+  }
+  const maxSuffix = Math.min(before.length - prefix, after.length - prefix)
+  let suffix = 0
+  while (
+    suffix < maxSuffix &&
+    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+  ) {
+    suffix++
+  }
+  // A pure insertion removes none of `before`'s characters.
+  if (before.slice(prefix, before.length - suffix) !== "") {
+    return null
+  }
+  return after.slice(prefix, after.length - suffix)
+}
+
+/**
+ * Null-render component mounted inside <ComboBox> to expose RAC's internal
+ * open/close methods via refs. Required because ComboBox v1.x has no controlled
+ * isOpen prop; we use menuTrigger="manual" and open explicitly on pointer/key
+ * events to prevent auto-open on Tab-focus (which caused spurious reopens after
+ * Streamlit reruns).
+ */
+const DropdownController = memo<{
+  openRef: React.MutableRefObject<(() => void) | null>
+  closeRef: React.MutableRefObject<(() => void) | null>
+}>(({ openRef, closeRef }) => {
+  const state = useContext(ComboBoxStateContext)
+  useEffect(() => {
+    if (state) {
+      openRef.current = () => state.open(null, "manual")
+      closeRef.current = () => state.close()
+    }
+    return () => {
+      openRef.current = null
+      closeRef.current = null
+    }
+  }, [state, openRef, closeRef])
+  return null
+})
+DropdownController.displayName = "DropdownController"
+
+/**
+ * Render a single option row for the virtualized ListBox collection.
+ *
+ * The item is received untyped because emotion's `styled(ListBox)` erases
+ * React Aria's generic item type, so we assert it back to `ComboOption`.
+ * Defined at module scope for a stable identity across renders.
+ */
+const renderOption = (item: unknown): ReactElement => {
+  const option = item as ComboOption
+  return (
+    <StyledListBoxItem
+      id={option.id}
+      textValue={option.label}
+      $isCreatable={option.isCreatable}
+    >
+      <StyledItemHighlight data-item-hl="">{option.label}</StyledItemHighlight>
+    </StyledListBoxItem>
   )
-  return sortBy(filteredOptions, (opt: SelectOption) =>
-    score(pattern, opt.label)
-  ).reverse()
 }
 
-export class Selectbox extends React.PureComponent<Props, State> {
-  public state: State = {
-    isEmpty: false,
-    value: this.props.value,
-  }
+/**
+ * Swallow paste and IME composition events so FILTER_MODE_NONE inputs stay
+ * non-editable, mirroring the character blocking in onKeyDownCapture. Paste
+ * cancellation is honored by browsers; compositionstart cancellation is
+ * best-effort (some browsers ignore preventDefault on it), so IME text may
+ * still slip in — but it is never committed as a selection.
+ */
+const preventInputEvent = (e: React.SyntheticEvent): void => {
+  e.preventDefault()
+}
 
-  componentDidUpdate(prevProps: Readonly<Props>): void {
-    if (
-      prevProps.value !== this.props.value &&
-      this.state.value !== this.props.value
-    ) {
-      this.setState((_, prevProps) => {
-        return { value: prevProps.value }
-      })
+const Selectbox: FC<Props> = ({
+  disabled,
+  value: propValue,
+  onChange,
+  options,
+  label,
+  labelVisibility,
+  help,
+  placeholder,
+  clearable,
+  acceptNewOptions,
+  filterMode: filterModeProp,
+}) => {
+  const theme = useEmotionTheme()
+  const isInSidebar = useContext(IsSidebarContext)
+
+  // Floating UI provides scroll-tracking via autoUpdate. Unlike Popover and
+  // MenuButton, we cannot replace RAC's <Popover> with FloatingPortal because
+  // ComboBox's collection system requires ListBoxItems to be inside RAC's own
+  // Popover to discover them and assign role="option". Instead, Floating UI's
+  // position is applied via the style prop and CSS !important overrides
+  // neutralize RAC's imperative style writes (see Selectbox.styled.ts).
+  //
+  // open is always true because whileElementsMounted already gates autoUpdate
+  // on both refs being mounted — the actual ComboBox open state is irrelevant
+  // here since the floating element only exists in the DOM when RAC's Popover
+  // renders it (i.e. when the dropdown is open).
+  //
+  // In the sidebar, flip/shift are bounded by the viewport
+  // (document.documentElement) rather than the sidebar's `overflow: auto`
+  // clipping rect. Otherwise the dropdown cannot flip up when the trigger sits
+  // near the bottom of the sidebar and it overflows the viewport instead (issue
+  // #16181). This mirrors the sidebar handling in elements/Popover/Popover.tsx.
+  // `document.documentElement` is used rather than `document.body` because
+  // Streamlit's `.stApp` uses `position: absolute; inset: 0`, leaving
+  // document.body sized 0x0, so a body boundary would always report overflow
+  // and re-introduce the same clipping.
+  //
+  // Unlike Popover.tsx, no `size` middleware is needed here: the option list is
+  // already height-capped by CSS (`min(maxDropdownHeight, 70vh)` with internal
+  // scroll in Selectbox.styled.ts), so the dropdown cannot overflow the way
+  // arbitrary Popover content can.
+  const overlayOptions = useMemo(() => {
+    const base = {
+      open: true,
+      placement: "bottom-start" as const,
+      offsetPx: convertRemToPx(theme.spacing.twoXS),
+      matchTriggerWidth: true,
     }
-  }
-
-  private onChange = (params: OnChangeParams): void => {
-    if (params.value.length === 0) {
-      this.setState({ value: null }, () => this.props.onChange(null))
-      return
+    if (!isInSidebar || typeof document === "undefined") {
+      return base
     }
+    const boundary = document.documentElement
+    return {
+      ...base,
+      flipOptions: { boundary },
+      shiftOptions: { boundary, padding: SHIFT_VIEWPORT_PADDING },
+    }
+  }, [theme.spacing.twoXS, isInSidebar])
 
-    const [selected] = params.value
+  const { refs, floatingStyles } = useFloatingOverlay(overlayOptions)
 
-    this.setState({ value: parseInt(selected.value, 10) }, () =>
-      this.props.onChange(this.state.value)
-    )
-  }
+  // Locally committed value (last value sent to Streamlit). Re-synced from
+  // propValue when the backend pushes an update (form-clear, session state, etc.).
+  const [value, setValue] = useState<string | null | undefined>(propValue)
+
+  // Display text in the ComboBox input. Diverges from `value` while the user types.
+  const [inputValue, setInputValue] = useState(propValue ?? "")
+
+  // True only while the user is actively filtering. Resets on commit, blur,
+  // or prop update. When false, the full option list is shown.
+  const [filterActive, setFilterActive] = useState(false)
+
+  // Wired to RAC's open/close by DropdownController. menuTrigger="manual"
+  // prevents auto-open on Tab-focus (which caused spurious reopens after reruns).
+  const openDropdownRef = useRef<(() => void) | null>(null)
+  const closeDropdownRef = useRef<(() => void) | null>(null)
+
+  // Always-current mirrors of state values, for use inside stale RAC closures
+  // that capture their dependencies at registration time.
+  const filterActiveRef = useRef(filterActive)
+  filterActiveRef.current = filterActive
+
+  const valueRef = useRef(value)
+  valueRef.current = value
+
+  // Also prevents a queued no-op setInputValue from being replayed by React's
+  // fiber after a form-reset, overwriting the reset's own state update.
+  const inputValueRef = useRef(inputValue)
+  inputValueRef.current = inputValue
+
+  // Set by handleSelectionChange when RAC commits a new selection (arrow-nav +
+  // Enter). Checked by handleInputKeyDown to avoid double-committing.
+  const racHandledEnterRef = useRef(false)
+
+  // Tracks whether the dropdown is open. RAC can fire deferred onSelectionChange
+  // callbacks after the dropdown closes; those are discarded via this ref.
+  const isOpenRef = useRef(false)
+
+  // Records isOpenRef at the moment Enter is pressed (capture phase) before
+  // RAC's handler may close the dropdown, so the bubble-phase handler can
+  // reliably determine whether the dropdown was open when Enter fired.
+  const wasOpenBeforeEnterRef = useRef(false)
+
+  useExecuteWhenChanged(() => {
+    setValue(propValue)
+    setInputValue(propValue ?? "")
+    setFilterActive(false)
+  }, [propValue])
+
+  const filterMode = useMemo(
+    () => getSelectFilterMode(filterModeProp),
+    [filterModeProp]
+  )
+
+  const selectOptions = useMemo<ComboOption[]>(
+    () => options.map((opt, i) => ({ id: String(i), label: opt, value: opt })),
+    [options]
+  )
+
+  const filteredOptions = useMemo((): ComboOption[] => {
+    if (!filterActive || !inputValue) return selectOptions
+    return filterSelectOptions(
+      selectOptions,
+      inputValue,
+      filterMode
+    ) as ComboOption[]
+  }, [selectOptions, inputValue, filterMode, filterActive])
+
+  const creatableItem = useMemo((): ComboOption | null => {
+    if (!acceptNewOptions || !filterActive || !inputValue) return null
+    const exactMatch = selectOptions.some(o => o.label === inputValue)
+    return exactMatch
+      ? null
+      : {
+          id: CREATABLE_ID,
+          label: `Add: ${inputValue}`,
+          value: inputValue,
+          isCreatable: true,
+        }
+  }, [acceptNewOptions, filterActive, inputValue, selectOptions])
+
+  const displayOptions = useMemo<ComboOption[]>(
+    () =>
+      creatableItem ? [...filteredOptions, creatableItem] : filteredOptions,
+    [filteredOptions, creatableItem]
+  )
+
+  const virtualizerLayoutOptions = useMemo(
+    () => ({
+      rowSize: convertRemToPx(theme.sizes.dropdownItemHeight),
+    }),
+    [theme.sizes.dropdownItemHeight]
+  )
+
+  // Controlled selectedKey so RAC always knows the committed item and doesn't
+  // revert the input to "" on blur before handleBlur can restore it.
+  const localSelectedKey = useMemo<string | null>(() => {
+    if (isNullOrUndefined(value)) return null
+    const found = selectOptions.find(o => o.value === value)
+    return found?.id ?? null
+  }, [value, selectOptions])
+
+  const { placeholder: resolvedPlaceholder, shouldDisable } = useMemo(
+    () => getSelectPlaceholder(placeholder, options, acceptNewOptions, false),
+    [placeholder, options, acceptNewOptions]
+  )
+
+  const selectDisabled = disabled || shouldDisable
+
+  const isFilterNone =
+    filterMode === streamlit.SelectWidgetFilterMode.FILTER_MODE_NONE
+  // Don't use `readOnly` for FILTER_MODE_NONE: it disables React Aria's internal
+  // keyboard navigation (Arrow keys, Enter) and makes Chromium close the
+  // ComboBox during the pointer-event lifecycle. Instead, suppress the mobile
+  // software keyboard with inputMode="none" (see the input below) and block
+  // character input via onKeyDown/onPaste.
+  const inputReadOnly =
+    isMobile() && options.length <= 10 && !acceptNewOptions && !isFilterNone
 
   /**
-   * Both onInputChange and onClose handle the situation where
-   * the user has hit backspace enough times that there's nothing
-   * left in the input, but we don't want the value for the input
-   * to then be invalid once they've clicked away
+   * Commit a selection: update local state and notify the parent.
+   * Does NOT close the dropdown — callers on the manual paths (keydown,
+   * clear button) close explicitly; RAC-triggered paths (option click,
+   * arrow-nav + Enter) let RAC close the dropdown naturally after
+   * onSelectionChange returns. Calling state.close() inside
+   * onSelectionChange causes RAC to fire onInputChange with the old
+   * committed label, overwriting our setInputValue update.
    */
-  private onInputChange = (
-    event: React.ChangeEvent<HTMLInputElement>
-  ): void => {
-    const currentInput = event.target.value
+  const commitSelection = useCallback(
+    (newValue: string | null): void => {
+      setValue(newValue)
+      setInputValue(newValue ?? "")
+      setFilterActive(false)
+      if (newValue !== valueRef.current) {
+        onChange(newValue)
+      }
+    },
+    [onChange]
+  )
 
-    this.setState({
-      isEmpty: !currentInput,
-    })
-  }
+  const handleSelectionChange = useCallback(
+    (key: Key | null): void => {
+      // Discard callbacks when the dropdown is closed. RAC fires
+      // onSelectionChange(currentKey) on close and via deferred pointerup
+      // listeners — both arrive after the real selection is already handled.
+      // Genuine selections always fire BEFORE onOpenChange(false), so this
+      // guard correctly lets them through.
+      if (!isOpenRef.current) return
 
-  private onClose = (): void => {
-    this.setState({
-      isEmpty: false,
-    })
-  }
+      // Mark that RAC committed a new selection so handleInputKeyDown can skip
+      // its auto-select and avoid double-committing (arrow-nav + Enter path).
+      if (key !== null) {
+        const currentKey =
+          selectOptions.find(o => o.value === valueRef.current)?.id ?? null
+        if (String(key) !== String(currentKey ?? "")) {
+          racHandledEnterRef.current = true
+        }
+      }
 
-  private filterOptions = (
-    options: readonly Option[],
-    filterValue: string
-  ): readonly Option[] =>
-    fuzzyFilterSelectOptions(options as SelectOption[], filterValue)
+      if (key === null) {
+        // RAC fires null when the typed text no longer matches the committed
+        // item. Only revert display text when the user isn't actively typing.
+        if (!filterActiveRef.current) {
+          setInputValue(valueRef.current ?? "")
+          setFilterActive(false)
+        }
+        return
+      }
 
-  public render(): React.ReactNode {
-    const style = { width: this.props.width }
-    const { label, labelVisibility, help, placeholder, theme, clearable } =
-      this.props
-    let { disabled, options } = this.props
+      const keyStr = String(key)
+      const found = selectOptions.find(o => o.id === keyStr)
+      // Read inputValue via ref for creatable items to avoid a stale closure.
+      const selected =
+        keyStr === CREATABLE_ID
+          ? inputValueRef.current
+          : (found?.value ?? null)
 
-    let value: Option[] = []
+      commitSelection(selected)
+    },
+    [commitSelection, selectOptions]
+  )
 
-    if (!isNullOrUndefined(this.state.value) && !this.state.isEmpty) {
-      value = [
-        {
-          label:
-            options.length > 0 ? options[this.state.value] : NO_OPTIONS_MSG,
-          value: this.state.value.toString(),
-        },
-      ]
+  const handleOpenChange = useCallback((open: boolean): void => {
+    isOpenRef.current = open
+  }, [])
+
+  const handleInputChange = useCallback((text: string): void => {
+    const committed = valueRef.current ?? ""
+
+    // Typing over an untouched committed label starts a fresh search: replace
+    // the label with just the newly typed characters instead of editing it in
+    // place. The ComboBox keeps the committed label in the input with the caret
+    // at the end, so without this the first keystroke would append behind it
+    // (e.g. "Banana" + "c" -> "Bananac") and match nothing.
+    let nextText = text
+    if (!filterActiveRef.current && committed !== "") {
+      const inserted = getInsertedText(committed, text)
+      // An empty insertion means no new characters were typed (e.g. RAC
+      // reporting the unchanged committed label on close/revert), which must
+      // not clear the input.
+      if (inserted !== null && inserted !== "") {
+        nextText = inserted
+      }
     }
 
-    if (options.length === 0) {
-      options = [NO_OPTIONS_MSG]
-      disabled = true
+    setInputValue(nextText)
+    // Decide filtering from the raw reported text, not from nextText: when the
+    // fresh-search diff yields a query equal to the committed label (e.g.
+    // committed "a", typing "a"), filtering must still activate. RAC reports
+    // text === committed when it reverts the input on close — that is the only
+    // case treated as a non-edit.
+    const isEdit = text !== committed
+    setFilterActive(isEdit)
+    // Update the ref synchronously, not just via setFilterActive, which
+    // refreshes it only on the next render. Otherwise a second keystroke before
+    // that render reads a stale `false` and re-strips the growing query (e.g.
+    // "ab" back to "b").
+    filterActiveRef.current = isEdit
+    if (isEdit) {
+      openDropdownRef.current?.()
     }
+  }, [])
 
-    const selectOptions: SelectOption[] = options.map(
-      (option: string, index: number) => ({
-        label: option,
-        value: index.toString(),
-      })
-    )
+  const handleBlur = useCallback((): void => {
+    // Restore display text to the committed value. Guard with inputValueRef to
+    // avoid queueing a no-op setInputValue that React would replay after a
+    // subsequent form-reset, overwriting the reset's own state update.
+    const target = valueRef.current ?? ""
+    if (inputValueRef.current !== target) {
+      setInputValue(target)
+    }
+    setFilterActive(false)
+  }, [])
 
-    // Check if we have more than 10 options in the selectbox.
-    // If that's true, we show the keyboard on mobile. If not, we hide it.
-    const showKeyboardOnMobile = options.length > 10
+  // Open on pointer-click. With menuTrigger="manual", opening on pointerDown
+  // (before focus) avoids a timing gap where focus arrives first with no open action.
+  const handleInputPointerDown = useCallback((): void => {
+    if (selectDisabled) return
+    openDropdownRef.current?.()
+  }, [selectDisabled])
 
-    return (
-      <div
-        className="row-widget stSelectbox"
-        data-testid="stSelectbox"
-        style={style}
+  /**
+   * Capture-phase keydown — fires before RAC's handler:
+   * - Records wasOpenBeforeEnterRef so the bubble-phase handler can check
+   *   whether the dropdown was open before RAC may have closed it.
+   * - Opens the dropdown on ArrowUp/Down when closed.
+   * - Blocks character input for FILTER_MODE_NONE (can't use readOnly — see above).
+   * - On Escape while filtering, discards the typed query and restores the
+   *   committed label.
+   * - On Escape when not filtering and clearable, clears the committed value.
+   */
+  const handleInputKeyDownCapture = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>): void => {
+      if (selectDisabled) return
+      if (
+        isFilterNone &&
+        (e.key.length === 1 || e.key === "Backspace" || e.key === "Delete") &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey
+      ) {
+        e.preventDefault()
+        return
+      }
+      if (e.key === "Enter") {
+        wasOpenBeforeEnterRef.current = isOpenRef.current
+      }
+      if (
+        (e.key === "ArrowDown" || e.key === "ArrowUp") &&
+        !isOpenRef.current
+      ) {
+        openDropdownRef.current?.()
+      }
+      if (e.key === "Escape") {
+        // While the user is actively filtering (typed query diverges from the
+        // committed value), Escape discards the query and restores the input
+        // to the committed label — matching pre-1.59 BaseWeb behavior and
+        // React Aria's own ComboBox contract. See #16004. This must run
+        // BEFORE the clear-on-Escape branch below, otherwise typing then
+        // pressing Escape on a clearable selectbox would wipe the committed
+        // value instead of just the typed query.
+        if (filterActiveRef.current) {
+          e.preventDefault()
+          const committed = valueRef.current ?? ""
+          setInputValue(committed)
+          inputValueRef.current = committed
+          setFilterActive(false)
+          filterActiveRef.current = false
+          closeDropdownRef.current?.()
+          return
+        }
+        if (clearable && !isNullOrUndefined(valueRef.current)) {
+          e.preventDefault()
+          commitSelection(null)
+        }
+      }
+    },
+    [clearable, commitSelection, isFilterNone, selectDisabled]
+  )
+
+  /**
+   * Bubble-phase keydown — fires after RAC's handler:
+   * - If RAC already committed a selection via arrow-nav + Enter
+   *   (racHandledEnterRef is set), skip and clear the flag.
+   * - If the creatable item is shown, commit the typed value.
+   * - Otherwise, if the dropdown was open, auto-select: prefer an exact text
+   *   match, otherwise take the first non-creatable visible option.
+   */
+  const handleInputKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>): void => {
+      if (e.key !== "Enter") return
+
+      if (racHandledEnterRef.current) {
+        racHandledEnterRef.current = false
+        return
+      }
+
+      if (creatableItem) {
+        commitSelection(inputValue)
+        closeDropdownRef.current?.()
+        return
+      }
+
+      if (!wasOpenBeforeEnterRef.current) return
+
+      if (displayOptions.length > 0) {
+        const exactMatch = displayOptions.find(
+          o => !o.isCreatable && o.value === inputValue
+        )
+        const target =
+          exactMatch ??
+          (!displayOptions[0].isCreatable ? displayOptions[0] : null)
+        if (target) {
+          commitSelection(target.value)
+          closeDropdownRef.current?.()
+        }
+      }
+    },
+    [commitSelection, creatableItem, displayOptions, inputValue]
+  )
+
+  const handleClearValue = useCallback((): void => {
+    commitSelection(null)
+    closeDropdownRef.current?.()
+  }, [commitSelection])
+
+  return (
+    <div className="stSelectbox" data-testid="stSelectbox">
+      <WidgetLabel
+        label={label}
+        labelVisibility={labelVisibility}
+        disabled={selectDisabled}
       >
-        <WidgetLabel
-          label={label}
-          labelVisibility={labelVisibility}
-          disabled={disabled}
+        {help && <WidgetLabelHelpIcon content={help} label={label} />}
+      </WidgetLabel>
+      <I18nProvider locale="en-US">
+        <ComboBox
+          selectedKey={localSelectedKey}
+          inputValue={inputValue}
+          onSelectionChange={handleSelectionChange}
+          onInputChange={handleInputChange}
+          onOpenChange={handleOpenChange}
+          isDisabled={selectDisabled}
+          allowsCustomValue={acceptNewOptions}
+          allowsEmptyCollection
+          onBlur={handleBlur}
+          menuTrigger="manual"
+          aria-label={label ?? "Selectbox"}
+          // Streamlit owns the filtering (fuzzy / contains / prefix / none),
+          // and passes the already-filtered list to <StyledListBox items=...>.
+          // Without this pass-through, RAC applies its own "contains" filter on
+          // top, dropping fuzzy matches whose query is not a contiguous
+          // substring (e.g. "ape" would not match "Apple"). See issue #16003.
+          defaultFilter={PASS_THROUGH_FILTER}
         >
-          {help && (
-            <StyledWidgetLabelHelp>
-              <TooltipIcon content={help} placement={Placement.TOP_RIGHT} />
-            </StyledWidgetLabelHelp>
-          )}
-        </WidgetLabel>
-        <UISelect
-          disabled={disabled}
-          labelKey="label"
-          aria-label={label || ""}
-          onChange={this.onChange}
-          onInputChange={this.onInputChange}
-          onClose={this.onClose}
-          options={selectOptions}
-          filterOptions={this.filterOptions}
-          clearable={clearable || false}
-          escapeClearsValue={clearable || false}
-          value={value}
-          valueKey="value"
-          placeholder={placeholder}
-          overrides={{
-            Root: {
-              style: () => ({
-                lineHeight: 1.4,
-              }),
-            },
-            Dropdown: { component: VirtualDropdown },
-            ClearIcon: {
-              props: {
-                overrides: {
-                  Svg: {
-                    style: {
-                      color: theme.colors.darkGray,
-                      // Since the close icon is an SVG, and we can't control its viewbox nor its attributes,
-                      // Let's use a scale transform effect to make it bigger.
-                      // The width property only enlarges its bounding box, so it's easier to click.
-                      transform: "scale(1.25)",
-                      width: theme.spacing.twoXL,
-                      ":hover": {
-                        fill: theme.colors.bodyText,
-                      },
-                    },
-                  },
-                },
-              },
-            },
-            ControlContainer: {
-              style: () => ({
-                // Baseweb requires long-hand props, short-hand leads to weird bugs & warnings.
-                borderLeftWidth: "1px",
-                borderRightWidth: "1px",
-                borderTopWidth: "1px",
-                borderBottomWidth: "1px",
-              }),
-            },
-
-            IconsContainer: {
-              style: () => ({
-                paddingRight: ".5rem",
-              }),
-            },
-
-            ValueContainer: {
-              style: () => ({
-                // Baseweb requires long-hand props, short-hand leads to weird bugs & warnings.
-                paddingRight: ".5rem",
-                paddingLeft: ".5rem",
-                paddingBottom: ".5rem",
-                paddingTop: ".5rem",
-              }),
-            },
-
-            Input: {
-              props: {
-                // Change the 'readonly' prop to hide the mobile keyboard if options < 10
-                readOnly:
-                  isMobile && showKeyboardOnMobile === false
-                    ? "readonly"
-                    : null,
-              },
-              style: () => ({
-                lineHeight: 1.4,
-              }),
-            },
-
-            // Nudge the dropdown menu by 1px so the focus state doesn't get cut off
-            Popover: {
-              props: {
-                overrides: {
-                  Body: {
-                    style: () => ({
-                      marginTop: "1px",
-                    }),
-                  },
-                },
-              },
-            },
-
-            SelectArrow: {
-              component: ChevronDown,
-
-              props: {
-                overrides: {
-                  Svg: {
-                    style: () => ({
-                      width: iconSizes.xl,
-                      height: iconSizes.xl,
-                    }),
-                  },
-                },
-              },
-            },
-          }}
-        />
-      </div>
-    )
-  }
+          <DropdownController
+            openRef={openDropdownRef}
+            closeRef={closeDropdownRef}
+          />
+          <StyledGroup ref={refs.setReference}>
+            <StyledInput
+              placeholder={resolvedPlaceholder}
+              readOnly={inputReadOnly}
+              // inputMode="none" suppresses the mobile software keyboard while
+              // keeping the input focusable (unlike readOnly — see above).
+              // $typingDisabled hides the caret and shows a pointer cursor.
+              inputMode={isFilterNone ? "none" : undefined}
+              $typingDisabled={isFilterNone}
+              onPointerDown={handleInputPointerDown}
+              onKeyDownCapture={handleInputKeyDownCapture}
+              onKeyDown={handleInputKeyDown}
+              onPaste={isFilterNone ? preventInputEvent : undefined}
+              onCompositionStart={isFilterNone ? preventInputEvent : undefined}
+              $placeholderColor={
+                selectDisabled ? theme.colors.fadedText40 : undefined
+              }
+            />
+            {clearable && !isNullOrUndefined(value) && (
+              <StyledClearButton
+                aria-label="Clear value"
+                slot={null}
+                onPress={handleClearValue}
+              >
+                <Cancel size={theme.iconSizes.base} aria-hidden="true" />
+              </StyledClearButton>
+            )}
+            <StyledOpenButton aria-label="Open">
+              <KeyboardArrowDown
+                size={theme.iconSizes.lg}
+                aria-hidden="true"
+              />
+            </StyledOpenButton>
+          </StyledGroup>
+          <StyledPopover
+            ref={refs.setFloating}
+            data-testid="stSelectboxVirtualDropdown"
+            placement="bottom left"
+            isNonModal
+            $isInSidebar={isInSidebar}
+            offset={0}
+            style={floatingStyles}
+          >
+            <Virtualizer
+              layout={ListLayout}
+              layoutOptions={virtualizerLayoutOptions}
+            >
+              <StyledListBox
+                aria-label={label ?? "Selectbox options"}
+                items={displayOptions}
+                renderEmptyState={() => (
+                  <StyledEmptyState>No results</StyledEmptyState>
+                )}
+              >
+                {renderOption}
+              </StyledListBox>
+            </Virtualizer>
+          </StyledPopover>
+        </ComboBox>
+      </I18nProvider>
+    </div>
+  )
 }
 
-export default withTheme(Selectbox)
+export default memo(Selectbox)

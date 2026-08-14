@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,19 +14,21 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
-import { StyledElement } from "./styled-components"
+import { ReactElement } from "react"
+
 import Checkmark from "@streamlit/app/src/assets/svg/checkmark.svg"
 
-export interface IDeployListElementProps {
+import { StyledElement } from "./styled-components"
+
+interface IDeployListElementProps {
   children?: React.ReactNode
   extraSpacing?: boolean
 }
 
 function DeployListElement(props: IDeployListElementProps): ReactElement {
-  const { children, extraSpacing } = props
+  const { children } = props
   return (
-    <StyledElement extraSpacing={extraSpacing}>
+    <StyledElement>
       <img src={Checkmark} alt={"Checkmark"} />
       <span>{children}</span>
     </StyledElement>

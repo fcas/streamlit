@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,97 +14,211 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
-import { DownloadButton as DownloadButtonProto } from "@streamlit/lib/src/proto"
+import {
+  memo,
+  ReactElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react"
+
+import { DownloadButton as DownloadButtonProto } from "@streamlit/protobuf"
+
+import { BackendOperationContext } from "~lib/components/core/BackendOperationContext"
+import { LibConfigContext } from "~lib/components/core/LibConfigContext"
 import BaseButton, {
-  BaseButtonTooltip,
   BaseButtonKind,
   BaseButtonSize,
-} from "@streamlit/lib/src/components/shared/BaseButton"
-import { WidgetStateManager } from "@streamlit/lib/src/WidgetStateManager"
-import StreamlitMarkdown from "@streamlit/lib/src/components/shared/StreamlitMarkdown"
-import { StreamlitEndpoints } from "@streamlit/lib/src/StreamlitEndpoints"
-import { LibContext } from "@streamlit/lib/src/components/core/LibContext"
+} from "~lib/components/shared/BaseButton/BaseButton"
+import { BaseButtonTooltip } from "~lib/components/shared/BaseButton/BaseButtonTooltip"
+import { DynamicButtonLabel } from "~lib/components/shared/BaseButton/DynamicButtonLabel"
+import { mapProtoIconPosition } from "~lib/components/shared/BaseButton/iconPosition"
+import { useResolvedWrap } from "~lib/components/shared/BaseButton/useResolvedWrap"
+import { useRegisterShortcut } from "~lib/hooks/useRegisterShortcut"
+import useTimeout from "~lib/hooks/useTimeout"
+import { StreamlitEndpoints } from "~lib/StreamlitEndpoints"
+import { StyledErrorMessage } from "~lib/styled-components"
+import createDownloadLinkElement from "~lib/util/createDownloadLinkElement"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
 
 export interface Props {
   endpoints: StreamlitEndpoints
   disabled: boolean
   element: DownloadButtonProto
   widgetMgr: WidgetStateManager
-  width: number
   fragmentId?: string
 }
 
-export function createDownloadLink(
-  endpoints: StreamlitEndpoints,
-  url: string,
-  enforceDownloadInNewTab: boolean
-): HTMLAnchorElement {
-  const link = document.createElement("a")
-  const uri = endpoints.buildMediaURL(url)
-  link.setAttribute("href", uri)
-  if (enforceDownloadInNewTab) {
-    link.setAttribute("target", "_blank")
-  } else {
-    link.setAttribute("target", "_self")
-  }
-  link.setAttribute("download", "")
-  return link
-}
-
 function DownloadButton(props: Props): ReactElement {
-  const { disabled, element, widgetMgr, width, endpoints, fragmentId } = props
-  const style = { width }
-  const {
-    libConfig: { enforceDownloadInNewTab = false }, // Default to false, if no libConfig, e.g. for tests
-  } = React.useContext(LibContext)
+  const { disabled, element, widgetMgr, endpoints, fragmentId } = props
+  const { help, label, icon, ignoreRerun, type, url, deferredFileId } = element
+  const shortcut = element.shortcut ? element.shortcut : undefined
 
-  const kind =
-    element.type === "primary"
-      ? BaseButtonKind.PRIMARY
-      : BaseButtonKind.SECONDARY
+  // wrap defaults to auto (no wrap in horizontal layouts, wrap otherwise). When
+  // wrap resolves to no-wrap, reveal the full label on hover via a native title,
+  // skipped when help is set since help provides the tooltip.
+  const wrap = useResolvedWrap(element.wrap)
+  const addTitleTooltip = !wrap && !help
 
-  const handleDownloadClick: () => void = () => {
-    // Downloads are only done on links, so create a hidden one and click it
-    // for the user.
-    widgetMgr.setTriggerValue(element, { fromUi: true }, fragmentId)
-    const link = createDownloadLink(
-      endpoints,
-      element.url,
-      enforceDownloadInNewTab
-    )
-    link.click()
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  // Default to false, if no libConfig, e.g. for tests
+  const { enforceDownloadInNewTab = false } = useContext(LibConfigContext)
+  const { backendOperationClient } = useContext(BackendOperationContext)
+
+  let kind = BaseButtonKind.SECONDARY
+  if (type === "primary") {
+    kind = BaseButtonKind.PRIMARY
+  } else if (type === "tertiary") {
+    kind = BaseButtonKind.TERTIARY
   }
 
-  // When useContainerWidth true & has help tooltip,
-  // we need to pass the container width down to the button
-  const fluidWidth = element.help ? width : true
+  const downloadUrl = useMemo(
+    () => endpoints.buildDownloadUrl(url),
+    [endpoints, url]
+  )
+
+  useEffect(() => {
+    const isDeferred = Boolean(deferredFileId?.length)
+    if (!isDeferred) {
+      // Since we use a hidden link to download, we can't use the onerror event
+      // to catch src url load errors. Catch with direct check instead.
+      void endpoints.checkSourceUrlResponse(downloadUrl, "Download Button")
+    }
+  }, [downloadUrl, endpoints, deferredFileId])
+
+  const handleDeferredDownload = useCallback(async (): Promise<void> => {
+    if (!backendOperationClient || !deferredFileId) {
+      setError("Deferred download not properly configured")
+      return
+    }
+
+    setIsLoading(true)
+    setError(null)
+
+    try {
+      const response =
+        await backendOperationClient.requestDeferredFile(deferredFileId)
+
+      const resolvedDownloadUrl = endpoints.buildDownloadUrl(response.url)
+
+      // Proactively check the resolved URL for load errors to surface metrics.
+      void endpoints.checkSourceUrlResponse(
+        resolvedDownloadUrl,
+        "Download Button"
+      )
+
+      // Trigger download with the returned URL
+      const link = createDownloadLinkElement({
+        filename: "",
+        url: resolvedDownloadUrl,
+        enforceDownloadInNewTab,
+      })
+      link.click()
+    } catch (err) {
+      const errorMessage =
+        err instanceof Error ? err.message : "Download failed"
+      setError(errorMessage)
+    } finally {
+      setIsLoading(false)
+    }
+  }, [
+    backendOperationClient,
+    deferredFileId,
+    endpoints,
+    enforceDownloadInNewTab,
+  ])
+
+  const handleDownloadClick = useCallback((): void => {
+    if (disabled) {
+      return
+    }
+
+    if (!ignoreRerun) {
+      // eslint-disable-next-line @typescript-eslint/no-floating-promises -- TODO: Fix this
+      widgetMgr.setTriggerValue(element, { fromUi: true }, fragmentId)
+    }
+
+    const isDeferred = Boolean(deferredFileId?.length)
+    if (isDeferred) {
+      // Handle deferred download
+      void handleDeferredDownload()
+    } else {
+      // Downloads are only done on links, so create a hidden one and click it
+      // for the user.
+      const link = createDownloadLinkElement({
+        filename: "",
+        url: downloadUrl,
+        enforceDownloadInNewTab,
+      })
+      link.click()
+    }
+  }, [
+    disabled,
+    ignoreRerun,
+    widgetMgr,
+    element,
+    fragmentId,
+    deferredFileId,
+    handleDeferredDownload,
+    downloadUrl,
+    enforceDownloadInNewTab,
+  ])
+
+  useRegisterShortcut({
+    shortcut,
+    disabled,
+    onActivate: handleDownloadClick,
+  })
+
+  const { clear: clearErrorTimeout, restart: restartErrorTimeout } =
+    useTimeout(
+      () => {
+        setError(null)
+      },
+      5000,
+      { autoStart: false }
+    )
+
+  // Clear error after 5 seconds
+  useEffect(() => {
+    if (error) {
+      restartErrorTimeout()
+    } else {
+      clearErrorTimeout()
+    }
+  }, [clearErrorTimeout, error, restartErrorTimeout])
 
   return (
-    <div
-      className="row-widget stDownloadButton"
-      data-testid="stDownloadButton"
-      style={style}
-    >
-      <BaseButtonTooltip help={element.help}>
+    <div className="stDownloadButton" data-testid="stDownloadButton">
+      <BaseButtonTooltip help={help} containerWidth={true}>
         <BaseButton
           kind={kind}
           size={BaseButtonSize.SMALL}
-          disabled={disabled}
+          disabled={disabled || isLoading}
           onClick={handleDownloadClick}
-          fluidWidth={element.useContainerWidth ? fluidWidth : false}
+          containerWidth={true}
         >
-          <StreamlitMarkdown
-            source={element.label}
-            allowHTML={false}
-            isLabel
-            largerLabel
-            disableLinks
+          <DynamicButtonLabel
+            icon={isLoading ? "spinner" : icon}
+            iconPosition={mapProtoIconPosition(element.iconPosition)}
+            label={label}
+            shortcut={shortcut}
+            wrap={wrap}
+            addTitleTooltip={addTitleTooltip}
           />
         </BaseButton>
       </BaseButtonTooltip>
+      {error && (
+        <StyledErrorMessage data-testid="stDownloadButtonError">
+          {error}
+        </StyledErrorMessage>
+      )}
     </div>
   )
 }
 
-export default DownloadButton
+export default memo(DownloadButton)

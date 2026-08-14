@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,30 +13,41 @@
 # limitations under the License.
 
 import threading
-from typing import Any
 
-import numpy as np
-import pandas as pd
-from parameterized import parameterized
+import pytest
 
 import streamlit as st
 from streamlit.elements import exception
 from streamlit.proto.Exception_pb2 import Exception as ExceptionProto
 from streamlit.runtime.caching.cache_errors import (
-    UnevaluatedDataFrameError,
     UnhashableParamError,
     UnserializableReturnValueError,
+    get_cached_func_name_md,
     get_return_value_type,
 )
 from tests import testutil
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
-from tests.streamlit.modin_mocks import DataFrame as ModinDataFrame
-from tests.streamlit.modin_mocks import Series as ModinSeries
-from tests.streamlit.pyspark_mocks import DataFrame as PysparkDataFrame
-from tests.streamlit.snowpandas_mocks import DataFrame as SnowpandasDataFrame
-from tests.streamlit.snowpandas_mocks import Series as SnowpandasSeries
-from tests.streamlit.snowpark_mocks import DataFrame as SnowparkDataFrame
-from tests.streamlit.snowpark_mocks import Table as SnowparkTable
+
+
+def test_get_cached_func_name_md_with_name_attr() -> None:
+    """Test get_cached_func_name_md returns function name when __name__ exists."""
+
+    def my_func() -> None:
+        pass
+
+    assert get_cached_func_name_md(my_func) == "`my_func()`"
+
+
+def test_get_cached_func_name_md_without_name_attr() -> None:
+    """Test get_cached_func_name_md falls back to type name for non-functions."""
+    result = get_cached_func_name_md(42)
+    assert result == "`int`"
+
+
+def test_get_return_value_type_with_module() -> None:
+    """Test get_return_value_type returns module.type for objects with __module__."""
+    result = get_return_value_type(threading.Lock())
+    assert "lock" in result.lower() or "Lock" in result
 
 
 class CacheErrorsTest(DeltaGeneratorTestCase):
@@ -46,8 +57,6 @@ class CacheErrorsTest(DeltaGeneratorTestCase):
     are testing them word-for-word as much as possible. Even though this
     *feels* like an antipattern, it isn't: we're making sure the codepaths
     that pull useful debug info from the code are working.
-
-    TODO: parameterize these tests for both memo + singleton
     """
 
     maxDiff = None
@@ -57,13 +66,13 @@ class CacheErrorsTest(DeltaGeneratorTestCase):
         def unhashable_type_func(lock: threading.Lock):
             return str(lock)
 
-        with self.assertRaises(UnhashableParamError) as cm:
+        with pytest.raises(UnhashableParamError) as cm:
             unhashable_type_func(threading.Lock())
 
         ep = ExceptionProto()
-        exception.marshall(ep, cm.exception)
+        exception.marshall(ep, cm.value)
 
-        self.assertEqual(ep.type, "UnhashableParamError")
+        assert ep.type == "UnhashableParamError"
 
         expected_message = """
 Cannot hash argument 'lock' (of type `_thread.lock`) in 'unhashable_type_func'.
@@ -78,65 +87,25 @@ def unhashable_type_func(_lock, ...):
 ```
                     """
 
-        self.assertEqual(
-            testutil.normalize_md(expected_message), testutil.normalize_md(ep.message)
+        assert testutil.normalize_md(expected_message) == testutil.normalize_md(
+            ep.message
         )
-        # Stack trace doesn't show in test :(
-        # self.assertNotEqual(len(ep.stack_trace), 0)
-        self.assertEqual(ep.message_is_markdown, True)
-        self.assertEqual(ep.is_warning, False)
+        assert ep.message_is_markdown
+        assert not ep.is_warning
 
     def test_unserializable_return_value_error(self):
         @st.cache_data
         def unserializable_return_value_func():
             return threading.Lock()
 
-        with self.assertRaises(UnserializableReturnValueError) as cm:
+        with pytest.raises(UnserializableReturnValueError) as cm:
             unserializable_return_value_func()
 
         ep = ExceptionProto()
-        exception.marshall(ep, cm.exception)
+        exception.marshall(ep, cm.value)
 
-        self.assertEqual(ep.type, "UnserializableReturnValueError")
+        assert ep.type == "UnserializableReturnValueError"
 
-        expected_message = f"""
-            Cannot serialize the return value (of type {get_return_value_type(return_value=threading.Lock())}) in `unserializable_return_value_func()`.
-            `st.cache_data` uses [pickle](https://docs.python.org/3/library/pickle.html) to
-            serialize the function’s return value and safely store it in the cache without mutating the original object. Please convert the return value to a pickle-serializable type.
-            If you want to cache unserializable objects such as database connections or Tensorflow
-            sessions, use `st.cache_resource` instead (see [our docs](https://docs.streamlit.io/library/advanced-features/caching) for differences)."""
-
-        self.assertEqual(
-            testutil.normalize_md(expected_message), testutil.normalize_md(ep.message)
-        )
-        self.assertEqual(ep.message_is_markdown, True)
-        self.assertEqual(ep.is_warning, False)
-
-    @parameterized.expand(
-        [
-            (ModinDataFrame(pd.DataFrame(np.random.randn(2, 2))),),
-            (ModinSeries(pd.Series(np.random.randn(2))),),
-            (PysparkDataFrame(pd.DataFrame(np.random.randn(2, 2))),),
-            (SnowpandasDataFrame(pd.DataFrame(np.random.randn(2, 2))),),
-            (SnowpandasSeries(pd.Series(np.random.randn(2))),),
-            (SnowparkDataFrame(pd.DataFrame(np.random.randn(2, 2))),),
-            (SnowparkTable(pd.DataFrame(np.random.randn(2, 2))),),
-        ]
-    )
-    def test_unevaluated_dataframe_error(self, data: Any):
-        @st.cache_data
-        def unevaluated_dataframe_func():
-            return data
-
-        with self.assertRaises(UnevaluatedDataFrameError) as cm:
-            unevaluated_dataframe_func()
-
-        ep = ExceptionProto()
-        exception.marshall(ep, cm.exception)
-
-        self.assertEqual(ep.type, "UnevaluatedDataFrameError")
-
-        expected_message = "Please call `collect()` or `to_pandas()` on the dataframe before returning it"
-        self.assertTrue(expected_message in ep.message)
-        self.assertEqual(ep.message_is_markdown, True)
-        self.assertEqual(ep.is_warning, False)
+        assert "Cannot serialize the return value" in ep.message
+        assert ep.message_is_markdown
+        assert not ep.is_warning

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,18 +13,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { Block as BlockProto, streamlit } from "@streamlit/protobuf"
 
-import { ScriptRunState } from "@streamlit/lib/src/ScriptRunState"
-import { BlockNode, AppNode } from "@streamlit/lib/src/AppNode"
-import {
-  FormsData,
-  WidgetStateManager,
-} from "@streamlit/lib/src/WidgetStateManager"
-import { FileUploadClient } from "@streamlit/lib/src/FileUploadClient"
-import { ComponentRegistry } from "@streamlit/lib/src/components/widgets/CustomComponent"
-import { SessionInfo } from "@streamlit/lib/src/SessionInfo"
-import { StreamlitEndpoints } from "@streamlit/lib/src/StreamlitEndpoints"
-import { EmotionTheme, getDividerColors } from "@streamlit/lib/src/theme"
+import { AppNode, BlockNode } from "~lib/AppNode"
+import { Direction } from "~lib/components/core/Layout/utils"
+import { ComponentRegistry } from "~lib/components/widgets/CustomComponent/ComponentRegistry"
+import { FileUploadClient } from "~lib/FileUploadClient"
+import { ElementsSetVisitor } from "~lib/render-tree/visitors/ElementsSetVisitor"
+import { ScriptRunState } from "~lib/ScriptRunState"
+import { StreamlitEndpoints } from "~lib/StreamlitEndpoints"
+import { getDividerColors } from "~lib/theme/getColors"
+import type { EmotionTheme } from "~lib/theme/types"
+import { isValidElementId } from "~lib/util/utils"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+export function getClassnamePrefix(direction: Direction): string {
+  return direction === Direction.HORIZONTAL
+    ? "stHorizontalBlock"
+    : "stVerticalBlock"
+}
 
 export function shouldComponentBeEnabled(
   elementType: string,
@@ -46,9 +53,14 @@ export function isElementStale(
   }
 
   if (scriptRunState === ScriptRunState.RUNNING) {
-    if (fragmentIdsThisRun && fragmentIdsThisRun.length) {
+    if (fragmentIdsThisRun?.length) {
+      // if the fragmentId is set, we only want to mark elements as stale
+      // that belong to the same fragmentId and have a different scriptRunId.
+      // If they have the same scriptRunId, they were just updated.
       return Boolean(
-        node.fragmentId && fragmentIdsThisRun.includes(node.fragmentId)
+        node.fragmentId &&
+        fragmentIdsThisRun.includes(node.fragmentId) &&
+        node.scriptRunId !== scriptRunId
       )
     }
     return node.scriptRunId !== scriptRunId
@@ -78,13 +90,13 @@ export function assignDividerColor(
   const allColorMap = getDividerColors(theme)
   const allColorKeys = Object.keys(allColorMap)
 
-  // Limited colors for auto assignment
-  const { blue, green, orange, red, violet } = allColorMap
-  const autoColorMap = { blue, green, orange, red, violet }
+  // Limited colors for auto assignment - exclude gray/grey & rainbow
+  const { blue, green, orange, red, violet, yellow } = allColorMap
+  const autoColorMap = { blue, green, orange, red, violet, yellow }
   const autoColorKeys = Object.keys(autoColorMap)
   let dividerIndex = 0
 
-  Array.from(node.getElements()).forEach(element => {
+  for (const element of ElementsSetVisitor.collectElements(node)) {
     const divider = element.heading?.divider
     if (element.type === "heading" && divider) {
       if (divider === "auto") {
@@ -98,7 +110,7 @@ export function assignDividerColor(
         element.heading.divider = allColorMap[divider]
       }
     }
-  })
+  }
 }
 export interface BaseBlockProps {
   /**
@@ -106,11 +118,6 @@ export interface BaseBlockProps {
    * used by various Streamlit elements.
    */
   endpoints: StreamlitEndpoints
-
-  /**
-   * The app's SessionInfo instance. Exposes session-specific properties.
-   */
-  sessionInfo: SessionInfo
 
   /**
    * The app's WidgetStateManager instance. Used by all widget elements to
@@ -127,44 +134,102 @@ export interface BaseBlockProps {
   uploadClient: FileUploadClient
 
   /**
-   * The app's ComponentRegistry instance. Dispatches "Custom Component"
-   * iframe messages to ComponentInstances.
-   */
-  componentRegistry: ComponentRegistry
-
-  /**
-   * The ID of the current "script run". When a Streamlit script is re-run
-   * (usually as a result of the user interacting with a widget), the Streamlit
-   * backend sends a new scriptRunId to the frontend. When the script run ends,
-   * the frontend discards "stale" elements (that is, elements with a non-current
-   * scriptRunId).
-   */
-  scriptRunId: string
-
-  /**
-   * The app's current ScriptRunState. This is used in combination with
-   * scriptRunId to prune stale elements. It's also used by the app to
-   * display the "running man" indicator when the app's script is being re-run.
-   */
-  scriptRunState: ScriptRunState
-
-  /**
    * If true, all widgets will be disabled and the app will be non-interactive.
    * This is generally set when the frontend is disconnected from the backend.
    */
   widgetsDisabled: boolean
 
   /**
-   * Data about all forms in the app. The WidgetStateManager creates its own
-   * internal FormsData instance, and calls a callback (`formsDataChanged`)
-   * when forms are updated. This FormsData instance should be updated
-   * from that callback.
-   */
-  formsData: FormsData
-
-  /**
    * If true , the element should not allow going into fullscreen. Right now we plan
    * to use it, for example, in Dialogs to prevent fullscreen issues.
    */
   disableFullscreenMode?: boolean
+
+  /**
+   * The app's ComponentRegistry instance. Dispatches "Custom Component"
+   * iframe messages to ComponentInstances.
+   */
+  componentRegistry: ComponentRegistry
+}
+
+/**
+ * Converts a user-specified key to a valid CSS class name.
+ *
+ * @param key - The key to convert.
+ * @returns A valid CSS class name.
+ */
+export function convertKeyToClassName(key: string | undefined | null): string {
+  if (!key) {
+    return ""
+  }
+  const className = key.trim().replace(/[^a-zA-Z0-9_-]/g, "-")
+  return "st-key-" + className
+}
+
+/**
+ * Returns the user-specified key extracted from the element id, or undefined if the id does
+ * not have a user-specified key.
+ */
+export function getKeyFromId(
+  elementId: string | undefined | null
+): string | undefined {
+  if (!elementId || !isValidElementId(elementId)) {
+    return undefined
+  }
+
+  // Split the elementId by hyphens
+  const parts = elementId.split("-")
+  // Extract all parts after the second hyphen
+  const userKey = parts.slice(2).join("-")
+  return userKey === "None" ? undefined : userKey
+}
+
+export function getColumnGapConfig(
+  columnProto: BlockProto.IColumn
+): streamlit.IGapConfig {
+  const gapConfig = columnProto.gapConfig
+  if (typeof gapConfig?.pixelGap === "number") {
+    return { pixelGap: gapConfig.pixelGap }
+  }
+  if (gapConfig?.gapSize) {
+    return { gapSize: gapConfig.gapSize }
+  }
+  return { gapSize: streamlit.GapSize.SMALL }
+}
+
+export function checkFlexContainerBackwardsCompatibile(
+  blockProto: BlockProto
+): boolean {
+  if (
+    blockProto.flexContainer ||
+    blockProto.vertical ||
+    blockProto.horizontal
+  ) {
+    return true
+  }
+  return false
+}
+
+export function shouldActivateScrollToBottom(blockNode: BlockNode): boolean {
+  const hasFixedPixelHeight = blockNode.deltaBlock.heightConfig?.pixelHeight
+  if (!hasFixedPixelHeight) {
+    return false
+  }
+
+  // When autoscroll is explicitly set, use that value directly.
+  const { autoscroll } = blockNode.deltaBlock
+  if (autoscroll !== null && autoscroll !== undefined) {
+    return autoscroll
+  }
+
+  // Default: auto-scroll when container has chat messages.
+  return blockNode.children.some(
+    node => node instanceof BlockNode && node.deltaBlock.type === "chatMessage"
+  )
+}
+
+export function getBorderBackwardsCompatible(blockProto: BlockProto): boolean {
+  return (
+    blockProto.flexContainer?.border || blockProto.vertical?.border || false
+  )
 }

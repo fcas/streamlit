@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,11 +14,11 @@
 
 import streamlit as st
 
-st.link_button("the label", url="https://streamlit.io")
+st.link_button("Default Link", url="https://streamlit.io")
 
-st.link_button("disabled", url="https://streamlit.io", disabled=True)
+st.link_button("Disabled Link", url="https://streamlit.io", disabled=True)
 
-st.link_button("primary", url="https://streamlit.io", type="primary")
+st.link_button("Primary Link", url="https://streamlit.io", type="primary")
 
 st.link_button(
     "primary disabled",
@@ -30,7 +30,7 @@ st.link_button(
 st.link_button(
     "Container **full width** *markdown*",
     "https://streamlit.io",
-    use_container_width=True,
+    width="stretch",
     help="help text",
 )
 
@@ -38,6 +38,106 @@ st.link_button(
     "Container **full width** *markdown* ~~primary~~",
     "https://streamlit.io",
     type="primary",
-    use_container_width=True,
+    width="stretch",
     help="help text here",
+)
+
+st.link_button(
+    "Link Button with emoji icon",
+    "https://streamlit.io",
+    icon="🎈",
+)
+
+st.link_button(
+    "Link Button with Material icon",
+    "https://streamlit.io",
+    icon=":material/bolt:",
+)
+
+st.link_button("Tertiary link button", url="https://streamlit.io", type="tertiary")
+
+st.link_button(
+    "Disabled tertiary link",
+    url="https://streamlit.io",
+    type="tertiary",
+    disabled=True,
+)
+
+st.link_button(
+    "Tertiary link - container width",
+    url="https://streamlit.io",
+    type="tertiary",
+    width="stretch",
+)
+
+st.link_button(
+    "Link Button with help",
+    url="https://streamlit.io",
+    help="help text",
+)
+
+st.link_button(
+    "Link Button with shortcut",
+    url="https://streamlit.io",
+    shortcut="Ctrl+Alt+Z",
+)
+
+with st.expander("Link Button Width Examples", expanded=True):
+    st.link_button("Content Width (Default)", "https://example.com", width="content")
+    st.link_button("Stretch Width", "https://example.com", width="stretch")
+    st.link_button("400px Width", "https://example.com", width=400)
+
+
+st.link_button(
+    "Icon Right",
+    "https://streamlit.io",
+    icon=":material/bolt:",
+    icon_position="right",
+)
+
+
+def on_click_callback() -> None:
+    st.session_state.link_button_click_count = (
+        st.session_state.get("link_button_click_count", 0) + 1
+    )
+
+
+callback_link_clicked = st.link_button(
+    "Link Button with on_click callback",
+    "https://streamlit.io",
+    key="on_click_link_button",
+    on_click=on_click_callback,
+)
+st.write("Link Button with on_click value:", callback_link_clicked)
+if "link_button_click_count" in st.session_state:
+    st.write(
+        "Link Button callback times clicked:",
+        st.session_state.link_button_click_count,
+    )
+
+rerun_link_clicked = st.link_button(
+    "Link Button with rerun",
+    "https://streamlit.io",
+    key="rerun_link_button",
+    on_click="rerun",
+)
+st.write("Link Button with rerun value:", rerun_link_clicked)
+
+# Link button with a dangerous javascript: URL. The frontend must neutralize
+# this to "#" to prevent XSS when the button is clicked.
+st.link_button(
+    "Dangerous Link",
+    "javascript:alert('xss')",
+    key="dangerous_link_button",
+)
+
+# wrap=False keeps the button on one row and ellipsizes an overflowing label,
+# exposing the full label via a native title. A fixed width narrower than the
+# label forces the truncation.
+st.link_button(
+    "Regenerate the complete quarterly report now",
+    "https://streamlit.io",
+    width=200,
+    wrap=False,
+    key="wrap_false_link_button",
 )

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 import styled from "@emotion/styled"
 
-import { LabelVisibilityOptions } from "@streamlit/lib/src/util/utils"
+import { LabelVisibilityOptions } from "~lib/util/utils"
 
 export interface StyledWidgetProps {
   disabled?: boolean | null
@@ -40,12 +40,17 @@ export const StyledWidgetLabel = styled.label<StyledWidgetProps>(
   })
 )
 
-export const StyledWidgetLabelHelp = styled.div(() => ({
+/**
+ * @deprecated Please utilize `WidgetLabelHelpIcon` instead of using this
+ * directly in order to support a11y best practices and keep behavior consistent
+ * across widgets.
+ */
+export const StyledWidgetLabelHelp = styled.div({
   display: "flex",
   flexDirection: "row",
   justifyContent: "flex-end",
   flex: 1,
-}))
+})
 
 export const StyledWidgetInstructions = styled.div(({ theme }) => ({
   fontSize: theme.fontSizes.twoSm,
@@ -53,11 +58,16 @@ export const StyledWidgetInstructions = styled.div(({ theme }) => ({
   margin: theme.spacing.none,
   textAlign: "right",
   position: "absolute",
-  bottom: 0,
-  right: theme.spacing.halfSmFont,
+  bottom: theme.spacing.threeXS,
+  right: `calc(${theme.fontSizes.mdLg} * 0.5)`,
 }))
 
-export const StyledWidgetLabelHelpInline = styled.label(({ theme }) => ({
+/**
+ * @deprecated Please utilize `WidgetLabelHelpIconInline` instead of using this
+ * directly in order to support a11y best practices and keep behavior consistent
+ * across widgets.
+ */
+export const StyledWidgetLabelHelpInline = styled.span(({ theme }) => ({
   marginLeft: theme.spacing.xs,
   position: "relative",
   display: "flex",

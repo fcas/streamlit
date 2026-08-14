@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,278 +14,572 @@
  * limitations under the License.
  */
 
-import React from "react"
-import uniqueId from "lodash/uniqueId"
-import { Input as UIInput } from "baseui/input"
-import { TextInput as TextInputProto } from "@streamlit/lib/src/proto"
-import { FormClearHelper } from "@streamlit/lib/src/components/widgets/Form"
 import {
-  WidgetStateManager,
-  Source,
-} from "@streamlit/lib/src/WidgetStateManager"
-import InputInstructions from "@streamlit/lib/src/components/shared/InputInstructions/InputInstructions"
+  FocusEvent,
+  memo,
+  MouseEvent,
+  ReactElement,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
+
+import { ErrorOutline } from "@emotion-icons/material-outlined"
+import { Cancel } from "@emotion-icons/material-rounded"
+import { getLogger } from "loglevel"
+import { TextField } from "react-aria-components"
+
+import { TextInput as TextInputProto } from "@streamlit/protobuf"
+
 import {
-  WidgetLabel,
-  StyledWidgetLabelHelp,
-} from "@streamlit/lib/src/components/widgets/BaseWidget"
-import TooltipIcon from "@streamlit/lib/src/components/shared/TooltipIcon"
-import { Placement } from "@streamlit/lib/src/components/shared/Tooltip"
+  DynamicIcon,
+  isMaterialIcon,
+} from "~lib/components/shared/Icon/DynamicIcon"
+import Icon from "~lib/components/shared/Icon/Icon"
+import InputInstructions from "~lib/components/shared/InputInstructions/InputInstructions"
+import Tooltip, { Placement } from "~lib/components/shared/Tooltip/Tooltip"
+import { WidgetLabel } from "~lib/components/widgets/BaseWidget/WidgetLabel"
+import { WidgetLabelHelpIcon } from "~lib/components/widgets/BaseWidget/WidgetLabelHelpIcon"
 import {
-  isInForm,
-  labelVisibilityProtoValueToEnum,
-} from "@streamlit/lib/src/util/utils"
-import { breakpoints } from "@streamlit/lib/src/theme/primitives"
-import { StyledTextInput } from "./styled-components"
+  useBasicWidgetState,
+  ValueWithSource,
+} from "~lib/hooks/useBasicWidgetState"
+import { useCalculatedDimensions } from "~lib/hooks/useCalculatedDimensions"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
+import useOnInputChange from "~lib/hooks/useOnInputChange"
+import useUpdateUiValue from "~lib/hooks/useUpdateUiValue"
+import { convertRemToPx } from "~lib/theme/utils"
+import { isEnterKeyPressed } from "~lib/util/inputUtils"
+import { isInForm, labelVisibilityProtoValueToEnum } from "~lib/util/utils"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import {
+  StyledClearButton,
+  StyledEndEnhancers,
+  StyledErrorEnhancer,
+  StyledInputElement,
+  StyledInputInstructionsContainer,
+  StyledInputRoot,
+  StyledPasswordToggle,
+  StyledStartEnhancer,
+  StyledTextInput,
+  StyledVisuallyHidden,
+} from "./styled-components"
+import {
+  compileTextInputValidationRegex,
+  getInvalidTextInputMessage,
+  INVALID_TEXT_INPUT_MESSAGE,
+  passesTextInputValidation,
+} from "./validation"
 
 export interface Props {
   disabled: boolean
   element: TextInputProto
   widgetMgr: WidgetStateManager
-  width: number
   fragmentId?: string
 }
 
-interface State {
-  /**
-   * True if the user-specified state.value has not yet been synced to the WidgetStateManager.
-   */
-  dirty: boolean
+const LOG = getLogger("TextInput")
 
+function TextInput({
+  disabled,
+  element,
+  widgetMgr,
+  fragmentId,
+}: Props): ReactElement {
   /**
    * The value specified by the user via the UI. If the user didn't touch this
    * widget's UI, the default value is used.
    */
-  value: string | null
-}
+  const [uiValue, setUiValue] = useState<string | null>(
+    () => getStateFromWidgetMgr(widgetMgr, element) ?? null
+  )
 
-class TextInput extends React.PureComponent<Props, State> {
-  private readonly formClearHelper = new FormClearHelper()
-
-  private readonly id: string
-
-  public state: State = {
-    dirty: false,
-    value: this.initialValue,
-  }
-
-  constructor(props: Props) {
-    super(props)
-    this.id = uniqueId("text_input_")
-  }
-
-  private get initialValue(): string | null {
-    // If WidgetStateManager knew a value for this widget, initialize to that.
-    // Otherwise, use the default value from the widget protobuf.
-    const storedValue = this.props.widgetMgr.getStringValue(this.props.element)
-    return storedValue ?? this.props.element.default ?? null
-  }
-
-  public componentDidMount(): void {
-    if (this.props.element.setValue) {
-      this.updateFromProtobuf()
-    } else {
-      this.commitWidgetValue({ fromUi: false })
-    }
-  }
-
-  public componentDidUpdate(): void {
-    this.maybeUpdateFromProtobuf()
-  }
-
-  public componentWillUnmount(): void {
-    this.formClearHelper.disconnect()
-  }
-
-  private maybeUpdateFromProtobuf(): void {
-    const { setValue } = this.props.element
-    if (setValue) {
-      this.updateFromProtobuf()
-    }
-  }
-
-  private updateFromProtobuf(): void {
-    const { value } = this.props.element
-    this.props.element.setValue = false
-    this.setState({ value: value ?? null }, () => {
-      this.commitWidgetValue({ fromUi: false })
-    })
-  }
+  const { width, elementRef } = useCalculatedDimensions()
 
   /**
-   * Commits the current state value to the WidgetStateManager.
-   *
-   * @param source - Whether or not from the UI
-   * @param updateState - Optional flag to determine if the state should be updated
-   *                      to reflect that the value is no longer 'dirty' or modified.
-   *                      By default, this is true, meaning the state WILL be updated.
+   * True if the user-specified state.value has not yet been synced to the WidgetStateManager.
    */
-  private commitWidgetValue = (source: Source, updateState = true): void => {
-    const { widgetMgr, element, fragmentId } = this.props
-    widgetMgr.setStringValue(element, this.state.value, source, fragmentId)
-    if (updateState) {
-      this.setState({ dirty: false })
-    }
-  }
+  const [dirty, setDirty] = useState(false)
+
+  /** Controls visibility of the password plain-text toggle. */
+  const [showPassword, setShowPassword] = useState(false)
+
+  // Tracks whether the user's current value failed validation. We store a
+  // boolean rather than the message string so the displayed message always
+  // reflects the latest `element.validateMessage`: the message can change on
+  // rerun while the widget identity stays stable (only the regex is part of
+  // the widget ID), and a stored string would otherwise go stale.
+  const [hasUserError, setHasUserError] = useState(false)
+
+  const onFormCleared = useCallback(() => {
+    setUiValue(element.default ?? null)
+    setDirty(true)
+    setHasUserError(false)
+  }, [element.default])
+
+  const queryParamBinding = element.queryParamKey
+    ? {
+        paramKey: element.queryParamKey,
+        valueType: "string_value" as const,
+        // Text input is clearable (empty string is a valid value)
+        clearable: true,
+      }
+    : undefined
+
+  const [value, setValueWithSource] = useBasicWidgetState<
+    string | null,
+    TextInputProto
+  >({
+    getStateFromWidgetMgr,
+    getDefaultStateFromProto,
+    getCurrStateFromProto,
+    updateWidgetMgrState,
+    element,
+    widgetMgr,
+    fragmentId,
+    formClearBehavior: "resetValueAndRunCallback",
+    onFormCleared,
+    queryParamBinding,
+  })
+
+  useUpdateUiValue(value, uiValue, setUiValue, dirty)
 
   /**
-   * If we're part of a clear_on_submit form, this will be called when our
-   * form is submitted. Restore our default value and update the WidgetManager.
+   * Whether the input is currently focused.
    */
-  private onFormCleared = (): void => {
-    this.setState(
-      (_, prevProps) => {
-        return { value: prevProps.element.default ?? null }
-      },
-      () => this.commitWidgetValue({ fromUi: true })
-    )
-  }
+  const [focused, setFocused] = useState(false)
 
-  private onBlur = (): void => {
-    if (this.state.dirty) {
-      this.commitWidgetValue({ fromUi: true })
-    }
-  }
+  const theme = useEmotionTheme()
+  const id = useId()
+  const errorId = `${id}-error`
+  const { placeholder, formId, icon, maxChars } = element
+  const inForm = isInForm({ formId })
 
-  private onChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
-  ): void => {
-    const { value } = e.target
-    const { element } = this.props
-    const { maxChars } = element
+  const isPassword = element.type === TextInputProto.Type.PASSWORD
+  const isSearch = element.type === TextInputProto.Type.SEARCH
+  // Show a Streamlit-styled clear (×) button for search inputs holding a value,
+  // replacing the browser's native (and visually inconsistent) search-clear
+  // control, which we hide via CSS.
+  const showClearButton = isSearch && !disabled && Boolean(uiValue)
 
-    if (maxChars !== 0 && value.length > maxChars) {
-      return
-    }
+  const compiledValidationResult = useMemo(
+    () => compileTextInputValidationRegex(element.validateRegex),
+    [element.validateRegex]
+  )
+  const validateRegex =
+    compiledValidationResult instanceof RegExp
+      ? compiledValidationResult
+      : undefined
+  const configError =
+    typeof compiledValidationResult === "string"
+      ? compiledValidationResult
+      : null
+  const hasValidationConfig = Boolean(element.validateRegex)
+  // The user error is only ever set while validation is configured, but derive
+  // the displayed error defensively so it's never shown without an active
+  // config. The user-error message is derived from the current
+  // `element.validateMessage` so it stays in sync when only the message changes.
+  const userError = hasUserError
+    ? element.validateMessage ||
+      (validateRegex
+        ? getInvalidTextInputMessage(validateRegex)
+        : INVALID_TEXT_INPUT_MESSAGE)
+    : null
+  const displayedError = hasValidationConfig
+    ? (configError ?? userError)
+    : null
 
-    // we immediately update its widgetValue on text changes in forms
-    // see here for why: https://github.com/streamlit/streamlit/issues/7101
-    // The widgetValue won't be passed to the Python script until the form
-    // is submitted, so this won't cause the script to re-run.
-    if (isInForm(this.props.element)) {
-      // make sure dirty is true so that enter to submit form text shows
-      this.setState({ dirty: true, value }, () => {
-        this.commitWidgetValue({ fromUi: true }, false)
-      })
-    }
-    // If the TextInput is *not* part of a form, we mark it dirty but don't
-    // update its value in the WidgetMgr. This means that individual keypresses
-    // won't trigger a script re-run.
-    else {
-      // make sure dirty is true so that enter to apply text shows
-      this.setState({ dirty: true, value })
-    }
-  }
+  const commitWidgetValue = useCallback((): void => {
+    setDirty(false)
+    setValueWithSource({ value: uiValue, fromUi: true })
+  }, [uiValue, setValueWithSource])
 
-  private onKeyPress = (
-    e: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>
-  ): void => {
-    if (e.key === "Enter") {
-      if (this.state.dirty) {
-        this.commitWidgetValue({ fromUi: true })
+  const clearUserValidationError = useCallback((): void => {
+    setHasUserError(false)
+  }, [])
+
+  const isUserValueInvalid = useCallback(
+    (nextValue: string | null): boolean => {
+      if (!validateRegex) {
+        return false
       }
-      if (isInForm(this.props.element)) {
-        this.props.widgetMgr.submitForm(this.props.element.formId)
-      }
+
+      return !passesTextInputValidation(nextValue, validateRegex)
+    },
+    [validateRegex]
+  )
+
+  // Runs validation for the current value, updates the displayed user error,
+  // and returns whether the value may be committed.
+  const validateBeforeCommit = useCallback((): boolean => {
+    // Empty values always bypass validation — including when the regex config
+    // itself is broken — so users can still clear the field or submit an empty
+    // form input. The config error remains visible via `displayedError`.
+    if (uiValue === null || uiValue === "") {
+      setHasUserError(false)
+      return true
     }
+
+    if (configError) {
+      return false
+    }
+
+    const invalid = isUserValueInvalid(uiValue)
+    setHasUserError(invalid)
+    return !invalid
+  }, [configError, isUserValueInvalid, uiValue])
+
+  const tryCommitOutsideForm = useCallback((): boolean => {
+    if (!dirty) {
+      return true
+    }
+
+    if (!validateBeforeCommit()) {
+      return false
+    }
+
+    commitWidgetValue()
+    return true
+  }, [commitWidgetValue, dirty, validateBeforeCommit])
+
+  const formSubmitValidatorRef = useRef<() => boolean>(() => true)
+  formSubmitValidatorRef.current = () => {
+    if (!validateBeforeCommit()) {
+      return false
+    }
+
+    if (dirty) {
+      widgetMgr.setStringValue(element, uiValue, { fromUi: true }, fragmentId)
+      setDirty(false)
+    }
+
+    return true
   }
 
-  private getTypeString(): string | undefined {
-    return this.props.element.type === TextInputProto.Type.PASSWORD
-      ? "password"
-      : "text"
-  }
+  // Show "Please enter" instructions if in a form & allowed, or not in form and state is dirty.
+  const allowEnterToSubmit = inForm
+    ? widgetMgr.allowFormEnterToSubmit(formId)
+    : dirty
 
-  public render(): React.ReactNode {
-    const { dirty, value } = this.state
-    const { element, width, disabled, widgetMgr } = this.props
-    const { placeholder } = element
+  const shouldShowInstructions =
+    focused && width > convertRemToPx(theme.breakpoints.hideWidgetDetails)
 
-    // Manage our form-clear event handler.
-    this.formClearHelper.manageFormClearListener(
+  const handleFocus = useCallback((): void => {
+    setFocused(true)
+  }, [])
+
+  const handleBlur = useCallback(
+    (e: FocusEvent<HTMLInputElement>): void => {
+      // When keyboard Tab moves focus to the password toggle, focus stays
+      // within the widget — don't commit yet, the user is still composing.
+      if (elementRef.current?.contains(e.relatedTarget)) {
+        setFocused(false)
+        return
+      }
+
+      if (inForm) {
+        // Inside a form, intermediate commits (blur, or Enter without submit)
+        // intentionally skip validation: the value only stages into the form's
+        // pending state and isn't sent to the server until submit, where the
+        // registered form submit validator gates the entire form. Deferring
+        // field-level errors to submit time is the intended form UX, so don't
+        // run the regex check here.
+        if (dirty) {
+          commitWidgetValue()
+        }
+      } else {
+        tryCommitOutsideForm()
+      }
+
+      setFocused(false)
+    },
+    [commitWidgetValue, dirty, elementRef, inForm, tryCommitOutsideForm]
+  )
+
+  const handleToggleShowPassword = useCallback((): void => {
+    setShowPassword(prev => !prev)
+  }, [])
+
+  // Clear the search input and commit the empty value so results update
+  // immediately (empty values bypass validation).
+  const handleClear = useCallback((): void => {
+    setDirty(false)
+    setUiValue("")
+    setHasUserError(false)
+    setValueWithSource({ value: "", fromUi: true })
+  }, [setValueWithSource])
+
+  const onChange = useOnInputChange({
+    formId,
+    maxChars,
+    setDirty,
+    setUiValue,
+    setValueWithSource,
+    additionalAction: clearUserValidationError,
+  })
+
+  const handleKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLInputElement>): void => {
+      if (!isEnterKeyPressed(event)) {
+        return
+      }
+
+      event.preventDefault()
+
+      if (inForm) {
+        if (allowEnterToSubmit) {
+          // No explicit commit is needed here: `useOnInputChange` already
+          // pushes the latest value to the form's widget state on every
+          // keystroke, and the registered form submit validator commits the
+          // final value when validation is configured. Clear dirty only when
+          // submit succeeds so `useUpdateUiValue` can sync post-submit
+          // script-driven value changes (e.g. session_state updates in a
+          // callback). On validation failure, dirty stays true.
+          if (widgetMgr.submitForm(formId, fragmentId)) {
+            setDirty(false)
+          }
+          return
+        }
+
+        // See `handleBlur`: in-form commits intentionally defer validation to
+        // form submit, so the staged value is committed without the regex check.
+        if (dirty) {
+          commitWidgetValue()
+        }
+        return
+      }
+
+      tryCommitOutsideForm()
+    },
+    [
+      allowEnterToSubmit,
+      commitWidgetValue,
+      dirty,
+      formId,
+      fragmentId,
+      inForm,
+      tryCommitOutsideForm,
       widgetMgr,
-      element.formId,
-      this.onFormCleared
-    )
+    ]
+  )
 
-    return (
-      <StyledTextInput
-        className="row-widget stTextInput"
-        data-testid="stTextInput"
-        width={width}
+  // Surface an invalid `validate` regex to the developer via the console. A
+  // given regex is fixed for a widget's identity, so this logs once per distinct
+  // config error.
+  useEffect(() => {
+    if (configError) {
+      LOG.error(configError)
+    }
+  }, [configError])
+
+  useEffect(() => {
+    if (!inForm || !hasValidationConfig) {
+      return undefined
+    }
+
+    const validator = (): boolean => formSubmitValidatorRef.current()
+    widgetMgr.addFormSubmitValidator(formId, element.id, validator)
+
+    return () => {
+      widgetMgr.removeFormSubmitValidator(formId, element.id)
+    }
+  }, [element.id, formId, hasValidationConfig, inForm, widgetMgr])
+
+  return (
+    <StyledTextInput
+      className="stTextInput"
+      data-testid="stTextInput"
+      ref={elementRef}
+    >
+      <WidgetLabel
+        label={element.label}
+        disabled={disabled}
+        labelVisibility={labelVisibilityProtoValueToEnum(
+          element.labelVisibility?.value
+        )}
+        htmlFor={id}
       >
-        <WidgetLabel
-          label={element.label}
-          disabled={disabled}
-          labelVisibility={labelVisibilityProtoValueToEnum(
-            element.labelVisibility?.value
-          )}
-          htmlFor={this.id}
+        {element.help && (
+          <WidgetLabelHelpIcon content={element.help} label={element.label} />
+        )}
+      </WidgetLabel>
+      {/*
+       * Keep React Aria out of native constraint validation so a native
+       * `type="email"`/`"url"` `typeMismatch` does not create a second invalid
+       * state alongside our regex `validate` tooltip. TextInput already owns
+       * `aria-invalid` and the error UI, so we also deliberately do NOT set
+       * `isInvalid` here.
+       */}
+      <TextField isDisabled={disabled} validationBehavior="aria">
+        <StyledInputRoot
+          data-testid="stTextInputRootElement"
+          $isFocused={focused}
+          $hasIcon={!!icon}
+          $hasError={Boolean(displayedError)}
         >
-          {element.help && (
-            <StyledWidgetLabelHelp>
-              <TooltipIcon
-                content={element.help}
-                placement={Placement.TOP_RIGHT}
+          {icon && (
+            <StyledStartEnhancer $isMaterialIcon={isMaterialIcon(icon)}>
+              <DynamicIcon
+                data-testid="stTextInputIcon"
+                iconValue={icon}
+                size="base"
               />
-            </StyledWidgetLabelHelp>
+            </StyledStartEnhancer>
           )}
-        </WidgetLabel>
-        <UIInput
-          value={value ?? ""}
-          placeholder={placeholder}
-          onBlur={this.onBlur}
-          onChange={this.onChange}
-          onKeyPress={this.onKeyPress}
-          aria-label={element.label}
-          disabled={disabled}
-          id={this.id}
-          type={this.getTypeString()}
-          autoComplete={element.autocomplete}
-          overrides={{
-            Input: {
-              style: {
-                // Issue: https://github.com/streamlit/streamlit/issues/2495
-                // The input won't shrink in Firefox,
-                // unless the line below is provided.
-                // See https://stackoverflow.com/a/33811151
-                minWidth: 0,
-                "::placeholder": {
-                  opacity: "0.7",
-                },
-                lineHeight: "1.4",
-                // Baseweb requires long-hand props, short-hand leads to weird bugs & warnings.
-                paddingRight: ".5rem",
-                paddingLeft: ".5rem",
-                paddingBottom: ".5rem",
-                paddingTop: ".5rem",
-              },
-            },
-            Root: {
-              props: {
-                "data-testid": "textInputRootElement",
-              },
-              style: {
-                // Baseweb requires long-hand props, short-hand leads to weird bugs & warnings.
-                borderLeftWidth: "1px",
-                borderRightWidth: "1px",
-                borderTopWidth: "1px",
-                borderBottomWidth: "1px",
-              },
-            },
-          }}
-        />
-        {/* Hide the "Please enter to apply" text in small widget sizes */}
-        {width > breakpoints.hideWidgetDetails && (
+          <StyledInputElement
+            id={id}
+            data-testid="stTextInputField"
+            aria-label={element.label}
+            aria-invalid={displayedError ? true : undefined}
+            aria-describedby={displayedError ? errorId : undefined}
+            value={uiValue ?? ""}
+            placeholder={placeholder}
+            type={showPassword ? "text" : getTypeString(element)}
+            // Label the mobile keyboard's return key for search inputs. This is
+            // the one type-aligned keyboard hint we set; other types rely on
+            // the native input `type` alone.
+            enterKeyHint={
+              element.type === TextInputProto.Type.SEARCH
+                ? "search"
+                : undefined
+            }
+            autoComplete={element.autocomplete}
+            onFocus={handleFocus}
+            onBlur={handleBlur}
+            onChange={onChange}
+            onKeyDown={handleKeyDown}
+          />
+          <StyledEndEnhancers>
+            {displayedError && (
+              <StyledErrorEnhancer data-testid="stTextInputErrorIcon">
+                <Tooltip
+                  content={displayedError}
+                  placement={Placement.TOP_RIGHT}
+                  error
+                >
+                  <Icon content={ErrorOutline} size="base" />
+                </Tooltip>
+              </StyledErrorEnhancer>
+            )}
+            {showClearButton && (
+              <StyledClearButton
+                type="button"
+                data-testid="stTextInputClearButton"
+                aria-label="Clear entry"
+                tabIndex={-1}
+                // Prevent mousedown from moving focus off the input before the
+                // click fires, which would otherwise commit the dirty value via
+                // handleBlur and cause a spurious extra rerun.
+                onMouseDown={preventFocusLoss}
+                onClick={handleClear}
+              >
+                <Cancel size={theme.iconSizes.base} aria-hidden="true" />
+              </StyledClearButton>
+            )}
+            {isPassword && (
+              <StyledPasswordToggle
+                type="button"
+                onMouseDown={preventFocusLoss}
+                onClick={handleToggleShowPassword}
+                aria-label={showPassword ? "Hide password" : "Show password"}
+                aria-pressed={showPassword}
+                disabled={disabled}
+              >
+                <DynamicIcon
+                  iconValue={
+                    showPassword
+                      ? ":material/visibility_off:"
+                      : ":material/visibility:"
+                  }
+                  size="base"
+                />
+              </StyledPasswordToggle>
+            )}
+          </StyledEndEnhancers>
+        </StyledInputRoot>
+      </TextField>
+      {displayedError && (
+        // The error message is shown visually in a tooltip on hover. The tooltip
+        // trigger isn't focusable, so we also expose the message to assistive
+        // tech via a visually hidden, aria-describedby-linked alert.
+        <StyledVisuallyHidden id={errorId} role="alert">
+          {displayedError}
+        </StyledVisuallyHidden>
+      )}
+      {shouldShowInstructions && (
+        <StyledInputInstructionsContainer
+          $hasErrorIcon={Boolean(displayedError)}
+          $hasClearButton={showClearButton}
+          $hasPasswordToggle={isPassword}
+        >
           <InputInstructions
             dirty={dirty}
-            value={value ?? ""}
-            maxLength={element.maxChars}
-            inForm={isInForm({ formId: element.formId })}
+            value={uiValue ?? ""}
+            maxLength={maxChars}
+            inForm={inForm}
+            allowEnterToSubmit={allowEnterToSubmit}
           />
-        )}
-      </StyledTextInput>
-    )
-  }
+        </StyledInputInstructionsContainer>
+      )}
+    </StyledTextInput>
+  )
 }
 
-export default TextInput
+function getStateFromWidgetMgr(
+  widgetMgr: WidgetStateManager,
+  element: TextInputProto
+): string | null {
+  return widgetMgr.getStringValue(element) ?? null
+}
+
+function getDefaultStateFromProto(element: TextInputProto): string | null {
+  return element.default ?? null
+}
+
+function getCurrStateFromProto(element: TextInputProto): string | null {
+  return element.value ?? null
+}
+
+function updateWidgetMgrState(
+  element: TextInputProto,
+  widgetMgr: WidgetStateManager,
+  vws: ValueWithSource<string | null>,
+  fragmentId: string | undefined
+): void {
+  widgetMgr.setStringValue(
+    element,
+    vws.value,
+    { fromUi: vws.fromUi },
+    fragmentId
+  )
+}
+
+/**
+ * Maps each `TextInputProto.Type` enum value to its native DOM `<input type>`.
+ * `PHONE` is the only entry whose DOM type (`"tel"`) differs from its name.
+ */
+const DOM_INPUT_TYPE_BY_PROTO: Record<number, string> = {
+  [TextInputProto.Type.DEFAULT]: "text",
+  [TextInputProto.Type.PASSWORD]: "password",
+  [TextInputProto.Type.EMAIL]: "email",
+  [TextInputProto.Type.URL]: "url",
+  [TextInputProto.Type.PHONE]: "tel",
+  [TextInputProto.Type.SEARCH]: "search",
+}
+
+function getTypeString(element: TextInputProto): string {
+  return DOM_INPUT_TYPE_BY_PROTO[element.type] ?? "text"
+}
+
+// Prevents the toggle button from stealing focus from the input on mousedown,
+// avoiding a premature dirty-value commit via handleBlur. Extracted at module
+// level so the reference is stable across renders.
+function preventFocusLoss(e: MouseEvent): void {
+  e.preventDefault()
+}
+
+export default memo(TextInput)

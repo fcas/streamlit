@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,27 +15,53 @@
  */
 
 import styled from "@emotion/styled"
-import { keyframes } from "@emotion/react"
-import {
-  getWrappedHeadersStyle,
-  hasLightBackgroundColor,
-} from "@streamlit/lib/src/theme/utils"
-export interface StyledSidebarProps {
+
+import { EmotionTheme, hasLightBackgroundColor } from "@streamlit/lib"
+
+/**
+ * Returns the horizontal spacing for the sidebar, taking into consideration
+ * the scrollbar gutters (one on each side) which are present when the OS
+ * doesn't support overlay scrollbars.
+ *
+ * @param theme The theme to use.
+ * @returns The horizontal spacing for the sidebar.
+ */
+const getSidebarHorizontalSpacing = (
+  theme: EmotionTheme,
+  scrollbarGutterSize: number
+): string => {
+  // This should be max(0px, ...), but there's a Chrome bug that
+  // causes content to clip when scrollbar-gutter is set to "stable both-edges".
+  // So we change the min from 0px to scrollbarGutterSize to account for that.
+  // Chrome bug: https://issues.chromium.org/issues/40064879
+  return `max(
+    ${scrollbarGutterSize}px,
+    calc(${theme.spacing.xl} - ${scrollbarGutterSize}px)
+  )`
+}
+
+interface StyledSidebarProps {
   isCollapsed: boolean
   adjustTop: boolean
   sidebarWidth: string
+  windowInnerWidth: number
 }
 
 export const StyledSidebar = styled.section<StyledSidebarProps>(
-  ({ theme, isCollapsed, adjustTop, sidebarWidth }) => {
-    const minWidth = isCollapsed ? 0 : Math.min(244, window.innerWidth)
-    const maxWidth = isCollapsed ? 0 : Math.min(550, window.innerWidth * 0.9)
+  ({ theme, isCollapsed, adjustTop, sidebarWidth, windowInnerWidth }) => {
+    const minWidth = isCollapsed ? 0 : Math.min(200, windowInnerWidth)
+    const maxWidth = isCollapsed ? 0 : Math.min(600, windowInnerWidth * 0.9)
 
     return {
-      // Nudge the sidebar by 2px so the header decoration doesn't go below it
       position: "relative",
-      top: adjustTop ? "2px" : "0px",
+      // Nudge the sidebar by 2px so the header decoration doesn't go below it
+      top: adjustTop ? theme.sizes.headerDecorationHeight : theme.spacing.none,
       backgroundColor: theme.colors.bgColor,
+      // Since the sidebar can have a different theme (+ background)
+      // we need to explicitly set the font color and color scheme
+      // here again so that it is inherited correctly by all sidebar elements:
+      color: theme.colors.bodyText,
+      colorScheme: hasLightBackgroundColor(theme) ? "light" : "dark",
       zIndex: theme.zIndices.header + 1,
 
       minWidth,
@@ -48,9 +74,9 @@ export const StyledSidebar = styled.section<StyledSidebarProps>(
       },
 
       [`@media (max-width: ${theme.breakpoints.md})`]: {
-        boxShadow: `-2rem 0 2rem 2rem ${
-          isCollapsed ? "transparent" : "#00000029"
-        }`,
+        boxShadow: isCollapsed
+          ? "-2rem 0 2rem 2rem transparent"
+          : theme.shadows.sidebar,
       },
 
       [`@media print`]: {
@@ -66,297 +92,158 @@ export const StyledSidebar = styled.section<StyledSidebarProps>(
   }
 )
 
-export const StyledSidebarNavContainer = styled.div(() => ({
-  position: "relative",
-}))
-
-export interface StyledSidebarNavItemsProps {
-  isExpanded: boolean
-  isOverflowing: boolean
-  hasSidebarElements: boolean
+interface StyledSidebarUserContentProps {
+  hasPageNavAbove: boolean
 }
 
-export const StyledSidebarNavItems = styled.ul<StyledSidebarNavItemsProps>(
-  ({ isExpanded, isOverflowing, hasSidebarElements, theme }) => {
-    const isExpandedMaxHeight = isExpanded ? "75vh" : "33vh"
-    const maxHeight = hasSidebarElements ? isExpandedMaxHeight : "100vh"
+export const StyledSidebarUserContent =
+  styled.div<StyledSidebarUserContentProps>(({ hasPageNavAbove, theme }) => ({
+    paddingTop: hasPageNavAbove ? theme.spacing.twoXL : 0,
+    paddingBottom: theme.sizes.sidebarTopSpace,
+  }))
 
-    return {
-      maxHeight,
-      listStyle: "none",
-      overflow: ["auto", "overlay"],
-      margin: 0,
-      paddingTop: theme.spacing.lg,
-      paddingBottom: theme.spacing.lg,
-
-      "@media print": {
-        paddingTop: theme.spacing.threeXL,
-      },
-
-      "&::before": isOverflowing
-        ? {
-            content: '" "',
-            backgroundImage: `linear-gradient(0deg, transparent, ${theme.colors.bgColor})`,
-            width: "100%",
-            height: "2rem",
-            position: "absolute",
-            top: 0,
-            left: 0,
-            right: 0,
-            pointerEvents: "none",
-          }
-        : null,
-
-      "&::after": isOverflowing
-        ? {
-            content: '" "',
-            backgroundImage: `linear-gradient(0deg, ${theme.colors.bgColor}, transparent)`,
-            height: "2rem",
-            position: "absolute",
-            bottom: 0,
-            left: 0,
-            right: 0,
-            pointerEvents: "none",
-          }
-        : null,
-    }
-  }
-)
-
-export interface StyledSidebarNavSeparatorContainerProps {
-  isExpanded: boolean
-  isOverflowing: boolean
-}
-
-const bounceAnimation = keyframes`
-  from, to {
-    transform: translateY(0);
-  }
-
-  50% {
-    transform: translateY(-0.25rem);
-  }
-`
-
-export const StyledSidebarNavSeparatorContainer =
-  styled.div<StyledSidebarNavSeparatorContainerProps>(
-    ({ isExpanded, isOverflowing, theme }) => ({
-      cursor: isExpanded || isOverflowing ? "pointer" : "default",
-      position: "absolute",
-      height: theme.spacing.lg,
-      left: 0,
-      right: 0,
-      bottom: 0,
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      color: theme.colors.fadedText60,
-      borderBottom: `1px solid ${theme.colors.fadedText10}`,
-      transition: "color 500ms",
-
-      ...((isExpanded || isOverflowing) && {
-        "&:hover": {
-          color: theme.colors.bodyText,
-          background: `linear-gradient(0deg, ${theme.colors.darkenedBgMix15}, transparent)`,
-
-          "& > *": {
-            animation: `${bounceAnimation} 0.5s ease infinite`,
-          },
-        },
-      }),
-    })
-  )
-
-export const StyledSidebarNavLinkContainer = styled.div(() => ({
-  display: "flex",
-  flexDirection: "column",
-}))
-
-export interface StyledSidebarNavLinkProps {
-  isActive: boolean
-}
-
-export const StyledSidebarNavLink = styled.a<StyledSidebarNavLinkProps>(
-  ({ isActive, theme }) => {
-    const defaultPageLinkStyles = {
-      textDecoration: "none",
-      fontWeight: isActive ? 600 : 400,
-    }
-
-    return {
-      ...defaultPageLinkStyles,
-      display: "flex",
-      flexDirection: "row",
-      alignItems: "center",
-      gap: theme.spacing.sm,
-      borderRadius: theme.spacing.twoXS,
-
-      paddingLeft: theme.spacing.sm,
-      paddingRight: theme.spacing.sm,
-      marginLeft: theme.spacing.lg,
-      marginRight: theme.spacing.lg,
-      marginTop: theme.spacing.threeXS,
-      marginBottom: theme.spacing.threeXS,
-      lineHeight: theme.lineHeights.menuItem,
-
-      backgroundColor: isActive ? theme.colors.darkenedBgMix15 : "transparent",
-
-      "&:hover": {
-        backgroundColor: isActive
-          ? theme.colors.darkenedBgMix25
-          : theme.colors.darkenedBgMix15,
-      },
-
-      "&:active,&:visited,&:hover": {
-        ...defaultPageLinkStyles,
-      },
-
-      "&:focus": {
-        outline: "none",
-      },
-
-      "&:focus-visible": {
-        backgroundColor: theme.colors.darkenedBgMix15,
-      },
-
-      [`@media print`]: {
-        paddingLeft: theme.spacing.none,
-      },
-    }
-  }
-)
-
-export const StyledSidebarLinkText = styled.span<StyledSidebarNavLinkProps>(
-  ({ isActive, theme }) => ({
-    color: isActive ? theme.colors.bodyText : theme.colors.fadedText60,
-    overflow: "hidden",
-    whiteSpace: "nowrap",
-    textOverflow: "ellipsis",
-    display: "table-cell",
-  })
-)
-
-export const StyledSidebarUserContent = styled.div(({ theme }) => ({
-  paddingTop: theme.spacing.lg,
-  paddingBottom: theme.sizes.sidebarTopSpace,
-  paddingLeft: theme.spacing.twoXL,
-  paddingRight: theme.spacing.twoXL,
-
-  ...getWrappedHeadersStyle(theme),
-}))
-
-export interface StyledSidebarContentProps {
-  hideScrollbar: boolean
+interface StyledSidebarContentProps {
+  scrollbarGutterSize: number
 }
 
 export const StyledSidebarContent = styled.div<StyledSidebarContentProps>(
-  ({ hideScrollbar }) => ({
+  ({ theme, scrollbarGutterSize }) => ({
     position: "relative",
     height: "100%",
     width: "100%",
-    overflow: hideScrollbar ? "hidden" : ["auto", "overlay"],
+    overflow: "auto",
+    /**
+     * Ensure that space is reserved for scrollbars, even when they are not
+     * visible. This is necessary to prevent layout shifts when the scrollbars
+     * appear and disappear.
+     *
+     * We utilize both-edges so that things look visually centered and aligned.
+     *
+     * @see https://github.com/streamlit/streamlit/issues/10310
+     */
+    scrollbarGutter: "stable both-edges",
+    paddingLeft: getSidebarHorizontalSpacing(theme, scrollbarGutterSize),
+    paddingRight: getSidebarHorizontalSpacing(theme, scrollbarGutterSize),
   })
 )
 
+export const RESIZE_HANDLE_WIDTH = "8px"
+
 export const StyledResizeHandle = styled.div(({ theme }) => ({
   position: "absolute",
-  width: "8px",
+  width: RESIZE_HANDLE_WIDTH,
   height: "100%",
   cursor: "col-resize",
   zIndex: theme.zIndices.sidebarMobile,
+  backgroundImage: theme.showSidebarBorder
+    ? `linear-gradient(to right, transparent 20%, ${theme.colors.borderColor} 28%, transparent 36%)`
+    : "none",
 
   "&:hover": {
-    backgroundImage: `linear-gradient(to right, transparent 20%, ${theme.colors.fadedText20} 28%, transparent 36%)`,
+    backgroundImage: `linear-gradient(to right, transparent 20%, ${theme.colors.borderColor} 28%, transparent 44%)`,
   },
 }))
 
 export const StyledSidebarHeaderContainer = styled.div(({ theme }) => ({
   display: "flex",
   justifyContent: "space-between",
-  alignItems: "start",
-  padding: `${theme.spacing.xl} ${theme.spacing.twoXL} ${theme.spacing.twoXL} ${theme.spacing.twoXL}`,
+  alignItems: "center",
+  marginBottom: theme.spacing.lg,
+  height: theme.sizes.headerHeight,
 }))
 
-export const StyledLogoLink = styled.a(({}) => ({
+export const StyledLogoLink = styled.a({
   "&:hover": {
     opacity: "0.7",
   },
-}))
+})
 
-export const StyledLogo = styled.img(({ theme }) => ({
-  height: "1.5rem",
-  maxWidth: "15rem",
-  margin: "0.25rem 0.5rem 0.25rem 0",
-  zIndex: theme.zIndices.header,
-}))
+export const StyledLogoButton = styled.button({
+  // Reset button styles
+  background: "none",
+  border: "none",
+  padding: 0,
+  cursor: "pointer",
+  "&:hover": {
+    opacity: "0.7",
+  },
+})
 
-export const StyledNoLogoSpacer = styled.div(({}) => ({
-  height: "2.0rem",
-}))
-
-export interface StyledSidebarOpenContainerProps {
-  chevronDownshift: number
-  isCollapsed: boolean
+interface StyledLogoProps {
+  size: string
+  sidebarWidth?: string
 }
 
-export const StyledSidebarOpenContainer =
-  styled.div<StyledSidebarOpenContainerProps>(
-    ({ theme, chevronDownshift, isCollapsed }) => ({
-      position: "fixed",
-      top: chevronDownshift ? `${chevronDownshift}px` : theme.spacing.xl,
-      left: isCollapsed ? theme.spacing.twoXL : `-${theme.spacing.twoXL}`,
-      zIndex: theme.zIndices.header,
-      display: "flex",
-      justifyContent: "center",
-      alignItems: "start",
+function translateLogoHeight(theme: EmotionTheme, size: string): string {
+  if (size === "small") {
+    return theme.sizes.smallLogoHeight
+  } else if (size === "large") {
+    return theme.sizes.largeLogoHeight
+  }
+  // Default logo size
+  return theme.sizes.defaultLogoHeight
+}
 
-      transition: "left 300ms",
-      transitionDelay: "left 300ms",
+export const StyledLogo = styled.img<StyledLogoProps>(({ theme, size }) => ({
+  height: translateLogoHeight(theme, size),
+  // Extra margin to align small logo with sidebar collapse arrow
+  marginTop: size == "small" ? theme.spacing.xs : theme.spacing.twoXS,
+  marginBottom: size == "small" ? theme.spacing.xs : theme.spacing.twoXS,
+  marginLeft: theme.spacing.none,
+  zIndex: theme.zIndices.header,
+  objectFit: "contain",
+  objectPosition: "left",
+  verticalAlign: "middle",
+  maxWidth: `100%`,
+}))
 
-      [`@media print`]: {
-        position: "static",
-      },
-    })
-  )
-
-export const StyledOpenSidebarButton = styled.div(({ theme }) => {
-  const isLightTheme = hasLightBackgroundColor(theme)
-
-  return {
+export const StyledIconLogo = styled.div<StyledLogoProps>(
+  ({ theme, size }) => ({
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "flex-start",
+    height: translateLogoHeight(theme, size),
+    marginTop: size == "small" ? theme.spacing.xs : theme.spacing.twoXS,
+    marginBottom: size == "small" ? theme.spacing.xs : theme.spacing.twoXS,
+    marginLeft: theme.spacing.none,
     zIndex: theme.zIndices.header,
-    color: isLightTheme ? theme.colors.gray70 : theme.colors.bodyText,
+    fontSize: translateLogoHeight(theme, size),
+    lineHeight: theme.lineHeights.none,
+    color: theme.colors.bodyText,
+  })
+)
 
-    button: {
-      "&:hover": {
-        backgroundColor: theme.colors.darkenedBgMix25,
-      },
-    },
+export const StyledNoLogoSpacer = styled.div(({ theme }) => ({
+  height: theme.sizes.largeLogoHeight,
+}))
 
-    [`@media print`]: {
-      display: "none",
-    },
-  }
-})
+interface StyledCollapseSidebarButtonProps {
+  showSidebarCollapse: boolean
+}
 
-export const StyledCollapseSidebarButton = styled.div(({ theme }) => {
-  const isLightTheme = hasLightBackgroundColor(theme)
+export const StyledCollapseSidebarButton =
+  styled.div<StyledCollapseSidebarButtonProps>(
+    ({ showSidebarCollapse, theme }) => {
+      return {
+        display: "inline",
+        visibility: showSidebarCollapse ? "visible" : "hidden",
+        marginLeft: theme.spacing.sm,
+        transition: "left 300ms",
+        transitionDelay: "left 300ms",
+        color: hasLightBackgroundColor(theme)
+          ? theme.colors.fadedText60
+          : theme.colors.bodyText,
+        lineHeight: "0",
 
-  return {
-    display: "auto",
-    transition: "left 300ms",
-    transitionDelay: "left 300ms",
-    color: isLightTheme ? theme.colors.gray70 : theme.colors.bodyText,
-    lineHeight: "0",
+        [`@media print`]: {
+          // Always hide the collapse button on print:
+          visibility: "hidden",
+        },
 
-    button: {
-      padding: "0.25rem",
-      "&:hover": {
-        backgroundColor: theme.colors.darkenedBgMix25,
-      },
-    },
-
-    [`@media print`]: {
-      display: "none",
-    },
-  }
-})
+        [`@media (max-width: ${theme.breakpoints.sm})`]: {
+          // Always show the collapse button on small screens:
+          visibility: "visible",
+        },
+      }
+    }
+  )

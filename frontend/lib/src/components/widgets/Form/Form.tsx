@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,85 +14,51 @@
  * limitations under the License.
  */
 
-import React, { ReactElement, ReactNode, useEffect, useState } from "react"
-import AlertElement from "@streamlit/lib/src/components/elements/AlertElement"
-import { Kind } from "@streamlit/lib/src/components/shared/AlertContainer"
-import { ScriptRunState } from "@streamlit/lib/src/ScriptRunState"
-import { WidgetStateManager } from "@streamlit/lib/src/WidgetStateManager"
-import { StyledErrorContainer, StyledForm } from "./styled-components"
+import { memo, ReactElement, ReactNode, useEffect } from "react"
+
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import { StyledForm } from "./styled-components"
 
 export interface Props {
   formId: string
   clearOnSubmit: boolean
-  width: number
-  hasSubmitButton: boolean
-  scriptRunState: ScriptRunState
+  enterToSubmit: boolean
   children?: ReactNode
   widgetMgr: WidgetStateManager
   border: boolean
+  // TODO(lawilby): This prop drill-down can be removed once
+  // we are using a portal to render the toolbars. But we want to
+  // do a patch to reduce the impact on existing usages of st.form.
+  overflow?: React.CSSProperties["overflow"]
 }
 
-export const MISSING_SUBMIT_BUTTON_WARNING =
-  "**Missing Submit Button**" +
-  "\n\nThis form has no submit button, which means that user interactions will " +
-  "never be sent to your Streamlit app." +
-  "\n\nTo create a submit button, use the `st.form_submit_button()` function." +
-  "\n\nFor more information, refer to the " +
-  "[documentation for forms](https://docs.streamlit.io/library/api-reference/control-flow/st.form)."
-
-export function Form(props: Props): ReactElement {
+function Form(props: Props): ReactElement {
   const {
     formId,
     widgetMgr,
-    hasSubmitButton,
     children,
-    width,
-    scriptRunState,
     clearOnSubmit,
+    enterToSubmit,
     border,
+    overflow,
   } = props
 
-  // Tell WidgetStateManager if this form is `clearOnSubmit` so that it can
-  // do the right thing when the form is submitted.
+  // Tell WidgetStateManager if this form is `clearOnSubmit` and `enterToSubmit`
   useEffect(() => {
-    widgetMgr.setFormClearOnSubmit(formId, clearOnSubmit)
-  }, [widgetMgr, formId, clearOnSubmit])
-
-  // Determine if we need to show the "missing submit button" warning.
-  // If we have a submit button, we don't show the warning, of course.
-  // If we *don't* have a submit button, then we only mutate the showWarning
-  // flag when our scriptRunState is NOT_RUNNING. (If the script is still
-  // running, there might be an incoming SubmitButton delta that we just
-  // haven't seen yet.)
-  const [showWarning, setShowWarning] = useState(false)
-
-  if (hasSubmitButton && showWarning) {
-    setShowWarning(false)
-  } else if (
-    !hasSubmitButton &&
-    !showWarning &&
-    scriptRunState === ScriptRunState.NOT_RUNNING
-  ) {
-    setShowWarning(true)
-  }
-
-  let submitWarning: ReactElement | undefined
-  if (showWarning) {
-    submitWarning = (
-      <StyledErrorContainer>
-        <AlertElement
-          body={MISSING_SUBMIT_BUTTON_WARNING}
-          kind={Kind.ERROR}
-          width={width}
-        />
-      </StyledErrorContainer>
-    )
-  }
+    widgetMgr.setFormSubmitBehaviors(formId, clearOnSubmit, enterToSubmit)
+  }, [widgetMgr, formId, clearOnSubmit, enterToSubmit])
 
   return (
-    <StyledForm border={border} data-testid="stForm">
+    <StyledForm
+      className="stForm"
+      data-testid="stForm"
+      border={border}
+      overflow={overflow}
+    >
       {children}
-      {submitWarning}
     </StyledForm>
   )
 }
+
+export default memo(Form)

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-import React, { FC } from "react"
-import { render } from "@streamlit/lib/src/test_util"
+import { FC } from "react"
+
 import { screen } from "@testing-library/react"
-import "@testing-library/jest-dom"
+
+import { render } from "~lib/test_util"
 
 import Particles, { ParticleProps, Props } from "./Particles"
 
@@ -27,18 +28,18 @@ const DummyParticle: FC<React.PropsWithChildren<ParticleProps>> = () => (
 
 const getProps = (): Props => ({
   className: "particles",
+  scriptRunId: "51522269",
   numParticles: 10,
   numParticleTypes: 5,
   ParticleComponent: DummyParticle,
-  scriptRunId: "51522269",
 })
 
 describe("Particles element", () => {
-  jest.useFakeTimers()
+  vi.useFakeTimers()
 
   beforeEach(() => {
-    jest.clearAllMocks()
-    jest.clearAllTimers()
+    vi.clearAllMocks()
+    vi.clearAllTimers()
   })
 
   it("renders without crashing", () => {
@@ -47,17 +48,9 @@ describe("Particles element", () => {
 
     const particleElement = screen.getByTestId("particles")
     expect(particleElement).toBeInTheDocument()
+    expect(particleElement).toHaveClass("particles")
 
-    // eslint-disable-next-line testing-library/no-node-access
     const particleComponents = particleElement.children
     expect(particleComponents.length).toBe(10)
-  })
-
-  it("renders as hidden element", () => {
-    const props = getProps()
-    render(<Particles {...props} />)
-
-    const particleElement = screen.getByTestId("particles")
-    expect(particleElement).toHaveClass("stHidden")
   })
 })

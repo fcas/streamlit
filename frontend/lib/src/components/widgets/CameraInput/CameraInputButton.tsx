@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,18 +14,19 @@
  * limitations under the License.
  */
 
-import React, { MouseEvent, ReactElement, ReactNode } from "react"
+import { memo, MouseEvent, ReactElement, ReactNode } from "react"
 
 import ProgressBar, {
   Size as ProgressBarSize,
-} from "@streamlit/lib/src/components/shared/ProgressBar"
+} from "~lib/components/shared/ProgressBar/ProgressBar"
+
 import {
   StyledCameraInputBaseButton,
   StyledProgressBar,
 } from "./styled-components"
 
 export interface CameraInputButtonProps {
-  onClick?: (event: MouseEvent<HTMLButtonElement>) => any
+  onClick?: (event: MouseEvent<HTMLButtonElement>) => void
   disabled?: boolean
   progress?: number | null
   children?: ReactNode
@@ -45,36 +46,17 @@ function CameraInputButton({
       data-testid="stCameraInputButton"
     >
       {children}
-      {progress && (
+      {progress ? (
         <StyledProgressBar>
           <ProgressBar
             value={progress}
             size={ProgressBarSize.EXTRASMALL}
-            overrides={{
-              Bar: {
-                style: {
-                  borderTopLeftRadius: "0px",
-                  borderTopRightRadius: "0px",
-                },
-              },
-              BarProgress: {
-                style: {
-                  borderTopLeftRadius: "0px",
-                  borderTopRightRadius: "0px",
-                },
-              },
-              BarContainer: {
-                style: {
-                  borderTopLeftRadius: "0px",
-                  borderTopRightRadius: "0px",
-                },
-              },
-            }}
+            squareTopCorners
           />
         </StyledProgressBar>
-      )}
+      ) : null}
     </StyledCameraInputBaseButton>
   )
 }
 
-export default CameraInputButton
+export default memo(CameraInputButton)

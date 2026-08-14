@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,16 +14,17 @@
  * limitations under the License.
  */
 
-import React from "react"
+import { useCallback } from "react"
 
 import { DataEditorProps } from "@glideapps/glide-data-grid"
+import { getLogger } from "loglevel"
 
 import {
   BaseColumn,
   toSafeString,
-} from "@streamlit/lib/src/components/widgets/DataFrame/columns"
-import { isNullOrUndefined } from "@streamlit/lib/src/util/utils"
-import { logError, logWarning } from "@streamlit/lib/src/util/log"
+} from "~lib/components/widgets/DataFrame/columns"
+import createDownloadLinkElement from "~lib/util/createDownloadLinkElement"
+import { isNullOrUndefined } from "~lib/util/utils"
 
 // Delimiter between cells
 const CSV_DELIMITER = ","
@@ -39,8 +40,9 @@ const CSV_UTF8_BOM = "\ufeff"
 const CSV_SPECIAL_CHARS_REGEX = new RegExp(
   `[${[CSV_DELIMITER, CSV_QUOTE_CHAR, CSV_ROW_DELIMITER].join("")}]`
 )
+const LOG = getLogger("useDataExporter")
 
-export function toCsvRow(rowValues: any[]): string {
+export function toCsvRow(rowValues: unknown[]): string {
   return (
     rowValues.map(cell => escapeValue(cell)).join(CSV_DELIMITER) +
     CSV_ROW_DELIMITER
@@ -52,7 +54,7 @@ export function toCsvRow(rowValues: any[]): string {
  *
  * Makes sure that the value is a string, and special characters are escaped correctly.
  */
-function escapeValue(value: any): string {
+function escapeValue(value: unknown): string {
   if (isNullOrUndefined(value)) {
     return ""
   }
@@ -100,13 +102,19 @@ async function writeCsv(
   // Write UTF-8 BOM for excel compatibility:
   await writable.write(textEncoder.encode(CSV_UTF8_BOM))
 
-  // Write headers:
-  const headers: string[] = columns.map(column => column.name)
+  // Write headers (skip button columns as they are not exportable):
+  const headers: string[] = columns
+    .filter(column => column.kind !== "button")
+    .map(column => column.name)
   await writable.write(textEncoder.encode(toCsvRow(headers)))
 
   for (let row = 0; row < numRows; row++) {
-    const rowData: any[] = []
-    columns.forEach((column: BaseColumn, col: number, _map) => {
+    const rowData: unknown[] = []
+    // Button columns are skipped because they are not exportable, but we still
+    // iterate the full columns array so the loop index stays aligned with the
+    // positions getCellContent expects.
+    columns.forEach((column: BaseColumn, col: number) => {
+      if (column.kind === "button") return
       rowData.push(column.getCellValue(getCellContent([col, row])))
     })
     // Write row to CSV:
@@ -130,7 +138,7 @@ function useDataExporter(
   numRows: number,
   enforceDownloadInNewTab: boolean
 ): DataExporterReturn {
-  const exportToCsv = React.useCallback(async () => {
+  const exportToCsv = useCallback(async () => {
     const timestamp = new Date().toISOString().slice(0, 16).replace(":", "-")
     const suggestedName = `${timestamp}_export.csv`
     try {
@@ -139,9 +147,8 @@ function useDataExporter(
       // in all of the common browser, but might cause some trouble in
       // less common browsers. To not crash the whole app, we just lazy import
       // this here.
-      const nativeFileSystemAdapter = await import(
-        "native-file-system-adapter"
-      )
+      const nativeFileSystemAdapter =
+        await import("native-file-system-adapter")
       const fileHandle = await nativeFileSystemAdapter.showSaveFilePicker({
         suggestedName,
         types: [{ accept: { "text/csv": [".csv"] } }],
@@ -158,7 +165,7 @@ function useDataExporter(
       }
 
       try {
-        logWarning(
+        LOG.warn(
           "Failed to export data as CSV with FileSystem API, trying fallback method",
           error
         )
@@ -166,7 +173,7 @@ function useDataExporter(
         let csvContent = ""
 
         const inMemoryWriter = new WritableStream({
-          write: async chunk => {
+          write: chunk => {
             csvContent += new TextDecoder("utf-8").decode(chunk)
           },
           close: async () => {},
@@ -184,29 +191,27 @@ function useDataExporter(
           type: "text/csv;charset=utf-8;",
         })
         const url = URL.createObjectURL(blob)
-        const link = document.createElement("a")
-        // Open the download link in a new tab to ensure that this is working in embedded
-        // setups that limit the URL that an iframe can navigate to (e.g. via CSP)
-        if (enforceDownloadInNewTab) {
-          link.setAttribute("target", "_blank")
-        } else {
-          link.setAttribute("target", "_self")
-        }
+
+        const link = createDownloadLinkElement({
+          enforceDownloadInNewTab,
+          url,
+          filename: suggestedName,
+        })
 
         link.style.display = "none"
-        link.href = url
-        link.download = suggestedName
+
         document.body.appendChild(link) // Required for FF
         link.click()
         document.body.removeChild(link) // Clean up
         URL.revokeObjectURL(url) // Free up memory
-      } catch (error) {
-        logError("Failed to export data as CSV", error)
+      } catch (e) {
+        LOG.error("Failed to export data as CSV", e)
       }
     }
   }, [columns, numRows, getCellContent, enforceDownloadInNewTab])
 
   return {
+    // eslint-disable-next-line @typescript-eslint/no-misused-promises
     exportToCsv,
   }
 }

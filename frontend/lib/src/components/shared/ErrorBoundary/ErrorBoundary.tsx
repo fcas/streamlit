@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,27 +14,32 @@
  * limitations under the License.
  */
 
-import React from "react"
-import ErrorElement from "@streamlit/lib/src/components/shared/ErrorElement"
-import { logError } from "@streamlit/lib/src/util/log"
+import { PureComponent } from "react"
 
-export interface Props {
+import { getLogger } from "loglevel"
+
+import { StyledInlineCode } from "~lib/components/elements/CodeBlock/styled-components"
+import ErrorElement from "~lib/components/shared/ErrorElement/ErrorElement"
+
+interface Props {
   width?: number
 }
 
-export interface State {
+interface State {
   error?: Error | null
 }
+
+const LOG = getLogger("ErrorBoundary")
 
 /**
  * A component that catches errors that take place when React is asynchronously
  * rendering child components.
  */
-class ErrorBoundary extends React.PureComponent<
+class ErrorBoundary extends PureComponent<
   React.PropsWithChildren<Props>,
   State
 > {
-  public state: State = {
+  public override state: State = {
     error: null,
   }
 
@@ -45,11 +50,11 @@ class ErrorBoundary extends React.PureComponent<
     }
   }
 
-  public componentDidCatch = (error: Error): void => {
-    logError(`${error.name}: ${error.message}\n${error.stack}`)
+  public override componentDidCatch = (error: Error): void => {
+    LOG.error(`${error.name}: ${error.message}\n${error.stack}`)
   }
 
-  public render(): React.ReactNode {
+  public override render(): React.ReactNode {
     const { error } = this.state
 
     if (error) {
@@ -63,9 +68,10 @@ class ErrorBoundary extends React.PureComponent<
                 Cannot load Streamlit frontend code. This can happen when you
                 update Streamlit while a Streamlit app is running.
                 <br />
-                To fix this, simply reload this app by pressing <kbd>
-                  F5
-                </kbd>, <kbd>Ctrl+R</kbd>, or <kbd>Cmd+R</kbd>.
+                To fix this, simply reload this app by pressing{" "}
+                <StyledInlineCode>F5</StyledInlineCode>,{" "}
+                <StyledInlineCode>Ctrl+R</StyledInlineCode>, or{" "}
+                <StyledInlineCode>Cmd+R</StyledInlineCode>.
                 <br />
                 If the error persists, try force-clearing your browser's cache
                 as described{" "}

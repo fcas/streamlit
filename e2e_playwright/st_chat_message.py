@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,21 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from PIL import Image
 
 import streamlit as st
 
+STATIC_DIR = Path(__file__).parent / "static"
 np.random.seed(0)
-
 
 # Generate a random dataframe
 df = pd.DataFrame(
     np.random.randn(5, 5),
-    columns=("col_%d" % i for i in range(5)),
+    columns=[f"col_{i}" for i in range(5)],
 )
-
 
 with st.chat_message("user"):
     st.write("Hello…")
@@ -53,13 +54,13 @@ at. Ut et dui molestie, iaculis magna sed.
 """
     )
 
-with st.chat_message("dog", avatar="https://static.streamlit.io/examples/dog.jpg"):
+with st.chat_message("dog", avatar="/app/static/dog.jpg"):
     st.write("Woof woof! I'm a dog and I like charts:")
-    st.line_chart(df, use_container_width=True)
+    st.line_chart(df, width="stretch")
 
-cat = st.chat_message("cat", avatar="https://static.streamlit.io/examples/cat.jpg")
+cat = st.chat_message("cat", avatar="/app/static/cat.jpg")
 cat.write("I'm a cat and I like this dataset:")
-cat.dataframe(df, use_container_width=True)
+cat.dataframe(df, width="stretch")
 cat.text_input("What's your name?")
 
 
@@ -78,6 +79,14 @@ st.chat_message("assistant", avatar=image2).write("Blue local image")
 st.chat_message("assistant", avatar=image2).write(
     "Another message with the same blue avatar."
 )
+
+# Test avatar using local image file path (use solid color PNG to avoid
+# JPEG compression rendering differences across browsers, especially webkit)
+AVATAR_IMAGE_PATH = STATIC_DIR / "test-avatar-solid.png"
+st.chat_message("user", avatar=str(AVATAR_IMAGE_PATH)).write(
+    "Custom avatar using str path"
+)
+st.chat_message("user", avatar=AVATAR_IMAGE_PATH).write("Custom avatar using Path")
 
 with st.chat_message("user", avatar=":material/airline_seat_recline_extra:"):
     st.write("Hello from USER, non-emoji icon.")
@@ -117,3 +126,19 @@ with st.chat_message("assistant"):
 
 assistant_message = {"role": "assistant", "content": llm_response, "sources": sources}
 st.session_state.messages.append(assistant_message)
+
+with st.chat_message("assistant"):
+    st.write("This message contains another message:")
+    st.chat_message("user", avatar="🧑").write("This is a nested chat message.")
+
+with st.chat_message("user", width=300):
+    st.write("Width = 300px")
+    st.write("This chat message has a fixed width of 300 pixels.")
+
+with st.chat_message("user", width="content"):
+    st.write("Width = content")
+    st.write("This chat message expands to fit its content.")
+
+with st.chat_message("user", width="stretch"):
+    st.write("Width = stretch")
+    st.write("This chat message stretches to fill available space in its container.")

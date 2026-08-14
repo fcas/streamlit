@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,10 +17,9 @@
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import mimetypes
 import os.path
-from typing import Final, NamedTuple
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 from streamlit.logger import get_logger
 from streamlit.runtime.media_file_storage import (
@@ -28,14 +27,28 @@ from streamlit.runtime.media_file_storage import (
     MediaFileStorage,
     MediaFileStorageError,
 )
-from streamlit.runtime.stats import CacheStat, CacheStatsProvider, group_stats
-from streamlit.util import HASHLIB_KWARGS
+from streamlit.runtime.stats import (
+    CACHE_MEMORY_FAMILY,
+    CacheStat,
+    StatsProvider,
+    group_cache_stats,
+)
+from streamlit.util import create_fast_hasher
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 _LOGGER: Final = get_logger(__name__)
 
+# Threshold for partial hashing. Files larger than this use head+middle+tail
+# fingerprinting instead of hashing the entire content, providing ~50-100x speedup
+# for large files.
+_PARTIAL_HASH_THRESHOLD: Final = 1_048_576  # 1 MiB
+_PARTIAL_HASH_SAMPLE_SIZE: Final = 65_536  # 64 KiB for head, middle, and tail
+
 # Mimetype -> filename extension map for the `get_extension_for_mimetype`
 # function. We use Python's `mimetypes.guess_extension` for most mimetypes,
-# but (as of Python 3.9) `mimetypes.guess_extension("audio/wav")` returns None,
+# but (as of Python 3.12) `mimetypes.guess_extension("audio/wav")` returns None,
 # so we handle it ourselves.
 PREFERRED_MIMETYPE_EXTENSION_MAP: Final = {
     "audio/wav": ".wav",
@@ -46,6 +59,13 @@ PREFERRED_MIMETYPE_EXTENSION_MAP: Final = {
 def _calculate_file_id(data: bytes, mimetype: str, filename: str | None = None) -> str:
     """Hash data, mimetype, and an optional filename to generate a stable file ID.
 
+    For large files (>1 MiB), uses partial hashing (length + head + middle + tail)
+    for performance. This provides ~50-100x speedup for large files. Note that for
+    files above the threshold, this is a fingerprint, not a cryptographic hash:
+    two files with identical length, head, middle, and tail but different bytes
+    elsewhere will produce the same ID. This tradeoff is acceptable for media file
+    caching where such collisions are extremely rare in practice.
+
     Parameters
     ----------
     data
@@ -55,12 +75,28 @@ def _calculate_file_id(data: bytes, mimetype: str, filename: str | None = None) 
     filename
         Any string. Will be converted to bytes and used to compute a hash.
     """
-    filehash = hashlib.new("sha224", **HASHLIB_KWARGS)
-    filehash.update(data)
-    filehash.update(bytes(mimetype.encode()))
+    filehash = create_fast_hasher()
+
+    # Always include length prefix to:
+    # 1. Prevent cross-class collisions between small files and large files
+    #    that happen to have matching content patterns.
+    # 2. Distinguish large files with identical samples but different lengths.
+    filehash.update(f"{len(data)}:".encode())
+
+    if len(data) > _PARTIAL_HASH_THRESHOLD:
+        # For large files, hash length + head + middle + tail (64 KiB each).
+        # This avoids hashing multi-MB payloads while still detecting most changes.
+        filehash.update(data[:_PARTIAL_HASH_SAMPLE_SIZE])
+        mid_start = (len(data) - _PARTIAL_HASH_SAMPLE_SIZE) // 2
+        filehash.update(data[mid_start : mid_start + _PARTIAL_HASH_SAMPLE_SIZE])
+        filehash.update(data[-_PARTIAL_HASH_SAMPLE_SIZE:])
+    else:
+        filehash.update(data)
+
+    filehash.update(mimetype.encode())
 
     if filename is not None:
-        filehash.update(bytes(filename.encode()))
+        filehash.update(filename.encode())
 
     return filehash.hexdigest()
 
@@ -89,9 +125,9 @@ class MemoryFile(NamedTuple):
         return len(self.content)
 
 
-class MemoryMediaFileStorage(MediaFileStorage, CacheStatsProvider):
-    def __init__(self, media_endpoint: str):
-        """Create a new MemoryMediaFileStorage instance
+class MemoryMediaFileStorage(MediaFileStorage, StatsProvider):
+    def __init__(self, media_endpoint: str) -> None:
+        """Create a new MemoryMediaFileStorage instance.
 
         Parameters
         ----------
@@ -102,6 +138,10 @@ class MemoryMediaFileStorage(MediaFileStorage, CacheStatsProvider):
         self._files_by_id: dict[str, MemoryFile] = {}
         self._media_endpoint = media_endpoint
 
+    @property
+    def stats_families(self) -> Sequence[str]:
+        return (CACHE_MEMORY_FAMILY,)
+
     def load_and_get_id(
         self,
         path_or_data: str | bytes,
@@ -111,10 +151,11 @@ class MemoryMediaFileStorage(MediaFileStorage, CacheStatsProvider):
     ) -> str:
         """Add a file to the manager and return its ID."""
         file_data: bytes
-        if isinstance(path_or_data, str):
-            file_data = self._read_file(path_or_data)
-        else:
-            file_data = path_or_data
+        file_data = (
+            self._read_file(path_or_data)
+            if isinstance(path_or_data, str)
+            else path_or_data
+        )
 
         # Because our file_ids are stable, if we already have a file with the
         # given ID, we don't need to create a new one.
@@ -131,7 +172,7 @@ class MemoryMediaFileStorage(MediaFileStorage, CacheStatsProvider):
     def get_file(self, filename: str) -> MemoryFile:
         """Return the MemoryFile with the given filename. Filenames are of the
         form "file_id.extension". (Note that this is *not* the optional
-        user-specified filename for download files.)
+        user-specified filename for download files.).
 
         Raises a MediaFileStorageError if no such file exists.
         """
@@ -166,18 +207,25 @@ class MemoryMediaFileStorage(MediaFileStorage, CacheStatsProvider):
         except Exception as ex:
             raise MediaFileStorageError(f"Error opening '{filename}'") from ex
 
-    def get_stats(self) -> list[CacheStat]:
+    def get_stats(
+        self,
+        family_names: Sequence[str] | None = None,  # noqa: ARG002
+    ) -> dict[str, list[CacheStat]]:
         # We operate on a copy of our dict, to avoid race conditions
         # with other threads that may be manipulating the cache.
         files_by_id = self._files_by_id.copy()
 
-        stats: list[CacheStat] = []
-        for file_id, file in files_by_id.items():
-            stats.append(
-                CacheStat(
-                    category_name="st_memory_media_file_storage",
-                    cache_name="",
-                    byte_length=len(file.content),
-                )
+        stats: list[CacheStat] = [
+            CacheStat(
+                category_name="st_memory_media_file_storage",
+                cache_name="",
+                byte_length=len(file.content),
             )
-        return group_stats(stats)
+            for file in files_by_id.values()
+        ]
+        if not stats:
+            return {}
+        # In general, get_stats methods need to be able to return only requested stat
+        # families, but this method only returns a single family, and we're guaranteed
+        # that it was one of those requested if we make it here.
+        return {CACHE_MEMORY_FAMILY: group_cache_stats(stats)}

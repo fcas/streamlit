@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,62 +14,76 @@
  * limitations under the License.
  */
 
-import React from "react"
-import "@testing-library/jest-dom"
 import { screen } from "@testing-library/react"
-import { ScriptRunState } from "@streamlit/lib/src/ScriptRunState"
-import { render } from "@streamlit/lib/src/test_util"
-import { WidgetStateManager } from "@streamlit/lib/src/WidgetStateManager"
-import { Form, Props } from "./Form"
+
+import { ScriptRunState } from "~lib/ScriptRunState"
+import { renderWithContexts } from "~lib/test_util"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import Form, { Props } from "./Form"
 
 describe("Form", () => {
   function getProps(props: Partial<Props> = {}): Props {
     return {
       formId: "mockFormId",
-      width: 100,
-      hasSubmitButton: false,
-      scriptRunState: ScriptRunState.RUNNING,
       clearOnSubmit: false,
+      enterToSubmit: true,
       widgetMgr: new WidgetStateManager({
-        sendRerunBackMsg: jest.fn(),
-        formsDataChanged: jest.fn(),
+        sendRerunBackMsg: vi.fn(),
+        formsDataChanged: vi.fn(),
       }),
       border: false,
       ...props,
     }
   }
+
   it("renders without crashing", () => {
-    render(<Form {...getProps()} />)
-    expect(screen.getByTestId("stForm")).toBeInTheDocument()
+    renderWithContexts(<Form {...getProps()} />)
+    const formElement = screen.getByTestId("stForm")
+    expect(formElement).toBeVisible()
+    expect(formElement).toHaveClass("stForm")
   })
 
-  it("shows error if !hasSubmitButton && scriptRunState==NOT_RUNNING", () => {
-    const props = getProps({
-      hasSubmitButton: false,
-      scriptRunState: ScriptRunState.RUNNING,
+  it("does not render a missing submit button warning when the form has no submit button", () => {
+    // The frontend no longer surfaces a "Missing Submit Button" error. The
+    // requirement to include at least one submit button for a functional form
+    // is documented instead (see the st.form / st.form_submit_button
+    // docstrings). Even after the script finishes with no submit button
+    // registered, no warning should be shown.
+    renderWithContexts(<Form {...getProps()} />, {
+      scriptRunContext: {
+        scriptRunState: ScriptRunState.NOT_RUNNING,
+      },
     })
-    const { rerender } = render(<Form {...props} />)
 
-    // We have no Submit Button, but the app is still running
-    expect(screen.queryByTestId("stFormSubmitButton")).not.toBeInTheDocument()
-
-    // When the app stops running, we show an error if the submit button
-    // is still missing.
-    rerender(
-      <Form {...getProps({ scriptRunState: ScriptRunState.NOT_RUNNING })} />
-    )
-    expect(screen.getByText("Missing Submit Button")).toBeInTheDocument()
-
-    // If the app restarts, we continue to show the error...
-    rerender(
-      <Form {...getProps({ scriptRunState: ScriptRunState.RUNNING })} />
-    )
-    expect(screen.getByText("Missing Submit Button")).toBeInTheDocument()
-
-    // Until we get a submit button, and the error is removed immediately,
-    // regardless of ScriptRunState.
-    rerender(<Form {...getProps({ hasSubmitButton: true })} />)
-    expect(screen.getByTestId("stForm")).toBeInTheDocument()
+    expect(screen.getByTestId("stForm")).toBeVisible()
     expect(screen.queryByText("Missing Submit Button")).not.toBeInTheDocument()
+  })
+
+  it("registers the form's submit behaviors with the widget manager", () => {
+    const widgetMgr = new WidgetStateManager({
+      sendRerunBackMsg: vi.fn(),
+      formsDataChanged: vi.fn(),
+    })
+    const setFormSubmitBehaviorsSpy = vi.spyOn(
+      widgetMgr,
+      "setFormSubmitBehaviors"
+    )
+
+    renderWithContexts(
+      <Form
+        {...getProps({
+          widgetMgr,
+          clearOnSubmit: true,
+          enterToSubmit: false,
+        })}
+      />
+    )
+
+    expect(setFormSubmitBehaviorsSpy).toHaveBeenCalledWith(
+      "mockFormId",
+      true,
+      false
+    )
   })
 })

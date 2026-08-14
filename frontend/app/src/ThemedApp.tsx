@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,27 +14,42 @@
  * limitations under the License.
  */
 
-import React from "react"
-
-import FontFaceDeclaration from "@streamlit/app/src/components/FontFaceDeclaration"
-import { CUSTOM_THEME_NAME, RootStyleProvider } from "@streamlit/lib"
+import FontFaceDeclaration from "@streamlit/app/src/components/FontFaceDeclaration/FontFaceDeclaration"
+import FontSources from "@streamlit/app/src/components/FontSources/FontSources"
+import {
+  PortalProvider,
+  RootStyleProvider,
+  WindowDimensionsProvider,
+} from "@streamlit/lib"
 
 import AppWithScreencast from "./App"
-import { StyledDataFrameOverlay } from "@streamlit/app/src/styled-components"
 import { useThemeManager } from "./util/useThemeManager"
 
-const ThemedApp = (): JSX.Element => {
-  const [themeManager, fontFaces] = useThemeManager()
+interface ThemedAppProps {
+  streamlitExecutionStartedAt: number
+}
+
+const ThemedApp = ({
+  streamlitExecutionStartedAt,
+}: ThemedAppProps): JSX.Element => {
+  const [themeManager, fontFaces, fontSources] = useThemeManager()
   const { activeTheme } = themeManager
-  const hasCustomFonts =
-    activeTheme.name === CUSTOM_THEME_NAME && fontFaces.length > 0
 
   return (
     <RootStyleProvider theme={activeTheme}>
-      {hasCustomFonts && <FontFaceDeclaration fontFaces={fontFaces} />}
-      <AppWithScreencast theme={themeManager} />
-      {/* The data grid requires one root level portal element for rendering cell overlays */}
-      <StyledDataFrameOverlay id="portal" data-testid="portal" />
+      <WindowDimensionsProvider>
+        {/* The data grid requires one root level portal element for rendering cell overlays */}
+        <PortalProvider>
+          {fontFaces.length > 0 && (
+            <FontFaceDeclaration fontFaces={fontFaces} />
+          )}
+          {fontSources && <FontSources fontSources={fontSources} />}
+          <AppWithScreencast
+            theme={themeManager}
+            streamlitExecutionStartedAt={streamlitExecutionStartedAt}
+          />
+        </PortalProvider>
+      </WindowDimensionsProvider>
     </RootStyleProvider>
   )
 }

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -23,23 +23,16 @@ st.markdown(
 
 st.markdown("This <b>HTML tag</b> is escaped!")
 
-st.markdown("This <b>HTML tag</b> is not escaped!", unsafe_allow_html=True)
+st.markdown(
+    ":streamlit: :material/info: This <b>HTML tag</b> `is` :red[not] escaped!",
+    unsafe_allow_html=True,
+)
 
 st.markdown("[text]")
 
 st.markdown("[link](href)")
 
 st.markdown("[][]")
-
-st.markdown("Inline math with $\KaTeX$")
-
-st.markdown(
-    """
-$$
-ax^2 + bx + c = 0
-$$
-"""
-)
 
 st.markdown(
     """
@@ -56,35 +49,6 @@ st.markdown(
     ":green-background[LaTeX math within green background: $ax^2 + bx + c = 0$]"
 )
 
-st.markdown(
-    """
-Many different markdown formats in one block:
-
-Inline math with $\KaTeX$
-
-$$
-ax^2 + bx + c = 0
-$$
-
-# Some header 1
-
-| Col1      | Col2        |
-| --------- | ----------- |
-| Some      | Data        |
-
-Some text
-- :blue[blue], :green[green], :red[red], :violet[violet], :orange[orange], :gray[gray], :grey[grey], :rainbow[rainbow]
-- :blue-background[blue], :green-background[green], :red-background[red], :violet-background[violet], :orange-background[orange], :gray-background[gray], :grey-background[grey], :rainbow-background[rainbow]
-
-:blue-background[**Bold text within blue background**], :red-background[*Italic text within red background*]
-
-:rainbow-background[[Link](http://example.com) within rainbow background], :green-background[LaTeX math within green background: $ax^2 + bx + c = 0$]
-
-:violet-background[This is a repeating multiline string that wraps within purple background. This is a repeating multiline string that wraps within purple background.]
-
-"""
-)
-
 
 # Headers in markdown tests (originally from the typography-test suite).
 
@@ -99,7 +63,7 @@ with st.container():
     )
 
 
-def draw_header_test(join_output):
+def draw_header_test(join_output: bool) -> None:
     strings = [
         "# Header header1",
         "## Header header2",
@@ -180,23 +144,465 @@ with st.container():
 
 "---"
 
-st.latex(r"\LaTeX")
+with st.container():
+    st.text("Headers with bold syntax")
 
-try:
-    import sympy
+    strings = [
+        "# Bold **header1**",
+        "## Bold **header2**",
+        "### Bold **header3**",
+        "#### Bold **header4**",
+        "##### Bold **header5**",
+        "###### Bold **header6**",
+    ]
+    for string in strings:
+        st.markdown(string)
 
-    a, b = sympy.symbols("a b")
-    out = a + b
-except:
-    out = "a + b"
+"---"
 
-st.latex(out)
+with st.container(key="latex_elements"):
+    st.latex(r"\LaTeX")
 
-st.latex(
+    st.latex(
+        r"""
+        a + ar + a r^2 + a r^3 + \cdots + a r^{n-1} =
+        \sum_{k=0}^{n-1} ar^k =
+        a \left(\frac{1-r^{n}}{1-r}\right)
+        """,
+        help="foo",
+    )
+
+    try:
+        import sympy
+
+        a, b = sympy.symbols("a b")
+        out = a + b
+    except Exception:
+        out = "a + b"
+
+    st.latex(out)
+
+    st.latex(
+        "this is a very long formula this is a very long formula this is a very long "
+        "formula this is a very long formula this is a very long formula"
+    )
+
+    st.latex(
+        "this is a very long formula this is a very long formula this is a very long "
+        "formula this is a very long formula this is a very long formula",
+        help="foo",
+    )
+
+    st.latex(
+        r"""
+    \text{This is a longer LaTeX equation demonstrating fixed width: }
+    \int_{a}^{b} f(x) \, dx = F(b) - F(a) \text{ where } F'(x) = f(x)
+    \text{ and } a \leq x \leq b
+""",
+        width=300,
+    )
+    st.latex("ax^2 + bx + c = 0", width="stretch")
+    st.latex("ax^2 + bx + c = 0", width="content")
+
+"---"
+
+with st.container(key="badge_elements"):
+    st.badge("Simple badge")
+    st.badge("Green badge with emoji", icon="🚀", color="green")
+    st.badge("Red badge with material icon", icon=":material/warning:", color="red")
+    st.badge(
+        "This is a very long badge that should be ellipsized when it exceeds the container width. "
+        "It contains enough text to demonstrate how badges handle overflow and text wrapping in the "
+        "Streamlit interface.",
+    )
+    st.markdown(
+        ":blue-badge[Blue markdown badge] :green-badge[🌱 Green markdown badge] :yellow-badge[Yellow markdown badge]"
+    )
+
+"---"
+
+col1, _ = st.columns(2)
+with col1:
+    st.markdown(
+        "Images in markdown should stay inside the container width and not be distorted:\n\n"
+        "![image](./app/static/streamlit-logo.png)"
+    )
+
+"---"
+
+st.container(key="mixed_markdown").markdown(
     r"""
-    a + ar + a r^2 + a r^3 + \cdots + a r^{n-1} =
-    \sum_{k=0}^{n-1} ar^k =
-    a \left(\frac{1-r^{n}}{1-r}\right)
-    """,
-    help="This is example tooltip displayed on latex.",
+Inline math with $\KaTeX$
+
+$$
+ax^2 + bx + c = 0
+$$
+
+$$
+this is a very long formula this is a very long formula this is a very long formula
+this is a very long formula this is a very long formula
+$$
+
+> This is a **blockquote**
+
+### :material/home: :streamlit: Some header
+
+| Col1      | Col2        |
+| --------- | ----------- |
+| Some      | :material/description: :streamlit: Data        |
+
+- :small[small], :small[:red[small red]], :blue[blue], :green[green], :yellow[yellow], :red[red], :violet[violet],
+  :orange[orange], :gray[gray], :grey[grey], :rainbow[rainbow], :primary[primary]
+- :blue-background[blue], :green-background[green], :yellow-background[yellow], :red-background[red],
+  :violet-background[violet], :orange-background[orange], :gray-background[gray],
+  :grey-background[grey], :primary-background[primary], :rainbow-background[rainbow]
+- :color[custom foreground]{foreground="#FF5733"}, :color[custom background]{background="#4287f5"},
+  :color[both colors]{foreground="#FFFFFF" background="#000000"}
+- [x] :blue-badge[blue], :green-badge[green], :yellow-badge[yellow], :red-badge[red], :violet-badge[violet],
+  :orange-badge[orange], :gray-badge[gray], :grey-badge[grey], :primary-badge[primary]
+- [ ] Material icons :red[:material/local_fire_department:] :green-background[:material/celebration: Yay]
+  and Streamlit logo :streamlit: :red-background[:streamlit:]
+- <- -> <-> -- >= <= ~= https://example.com-> `code <- -> <-> -- >= <= ~=` $a <- -> <-> -- >= <= ~= b$
+
+:blue-background[**Bold and blue**], :red-background[*Italic and red*],
+:rainbow-background[[Link](http://example.com) and rainbow],
+:green-background[LaTeX and green: $ax^2 + bx + c = 0$]
+
+:violet-background[This is a repeating multiline string that wraps within purple background.
+This is a repeating multiline string that wraps within purple background.]
+"""
 )
+
+"---"
+
+# Performance test comparison between st.markdown and st.text
+
+element = st.radio("Element to use", ["st.markdown", "st.text"])
+text = "ABCabc" * 10000
+if st.button("Run element"):
+    if element == "st.text":
+        st.text(text)
+    else:
+        st.markdown(text)
+    st.write("DONE")
+
+
+# Width Examples
+st.markdown(
+    "**Content width:** This is regular markdown text with "
+    "content-based sizing that adapts to its content width.",
+    width="content",
+)
+
+st.markdown(
+    "**Fixed width (200px):** This is markdown text with a fixed width of "
+    "200 pixels. The text will wrap to fit within this constrained width.",
+    width=200,
+)
+
+st.markdown(
+    "**Stretch width:** This is markdown text that stretches to fill the "
+    "full width of the container, regardless of content length.",
+    width="stretch",
+)
+
+st.caption(
+    "This is a caption with content-based width sizing that adapts "
+    "to the caption text length.",
+    width="content",
+)
+
+st.caption(
+    "This is a caption with a fixed width of 300 pixels. Caption text will "
+    "wrap within this constraint.",
+    width=300,
+)
+
+st.caption(
+    "This is a caption that stretches to fill the full container width.",
+    width="stretch",
+)
+
+st.badge("Default badge", width="content")
+
+st.badge("Fixed 100px badge", width=100)
+
+st.badge("Stretch badge", width="stretch")
+
+
+with st.container(border=True, width=150, key="long_word"):
+    st.markdown("A_LONG_WORD_THAT_SHOULD_BREAK_WORDS_IN_THE_CONTAINER")
+
+# Text alignment tests
+st.header("Text Alignment Tests")
+
+# Test each alignment type with text, table, and nested list combined
+st.subheader("Left Alignment (Default)")
+st.markdown(
+    """
+Left aligned text is the default behavior. This demonstrates standard left alignment.
+This is a longer paragraph that demonstrates text justification properly. The text
+stretches to fill the available width.
+
+| Table 1 Col 1 | Column 2 | Column 3 |
+|---------------|----------|----------|
+| Data A        | Data B   | Data C   |
+
+| Table 2 Col 1 | Column 2 |
+|---------------|----------|
+| Data D        | Data E   |
+
+Here is a nested list:
+
+- Left item 1
+- Left item 2
+  - Nested A
+  - Nested B
+    - Deeply nested 1
+
+1. First
+2. Second
+3. Third
+
+Some text after the lists.
+""",
+    text_alignment="left",
+    help="This is a help tooltip!",
+)
+
+st.subheader("Center Alignment")
+st.markdown(
+    """
+Center aligned text with some content to demonstrate alignment properly. This is a
+longer paragraph that demonstrates text justification properly. The text stretches to
+fill the available width.
+
+| Table 1 Col 1 | Column 2 | Column 3 |
+|---------------|----------|----------|
+| Data A        | Data B   | Data C   |
+
+| Table 2 Col 1 | Column 2 |
+|---------------|----------|
+| Data D        | Data E   |
+
+Here is a nested list:
+
+- Center item 1
+- Center item 2
+  - Nested A
+  - Nested B
+    - Deeply nested 1
+
+1. First
+2. Second
+3. Third
+
+Some text after the lists.
+""",
+    text_alignment="center",
+    help="This is a help tooltip!",
+)
+
+st.subheader("Right Alignment")
+st.markdown(
+    """
+Right aligned text content demonstrates right-side alignment. This is a longer
+paragraph that demonstrates text justification properly. The text stretches to fill
+the available width.
+
+| Table 1 Col 1 | Column 2 | Column 3 |
+|---------------|----------|----------|
+| Data A        | Data B   | Data C   |
+
+| Table 2 Col 1 | Column 2 |
+|---------------|----------|
+| Data D        | Data E   |
+
+Here is a nested list:
+
+- Right item 1
+- Right item 2
+  - Nested A
+  - Nested B
+    - Deeply nested 1
+
+1. First
+2. Second
+3. Third
+
+Some text after the lists.
+""",
+    text_alignment="right",
+    help="This is a help tooltip!",
+)
+
+st.subheader("Justify Alignment")
+st.markdown(
+    """
+Justified text alignment. This is a longer paragraph that demonstrates text
+justification properly. The text stretches to fill the available width. This is a
+longer paragraph that demonstrates text justification properly.
+
+| Table 1 Col 1 | Column 2 | Column 3 |
+|---------------|----------|----------|
+| Data A        | Data B   | Data C   |
+
+| Table 2 Col 1 | Column 2 |
+|---------------|----------|
+| Data D        | Data E   |
+
+Here is a nested list:
+
+- Justify item 1
+- Justify item 2
+  - Nested A
+  - Nested B
+    - Deeply nested 1
+
+1. First
+2. Second
+3. Third
+""",
+    text_alignment="justify",
+    help="This is a help tooltip!",
+)
+
+st.markdown(
+    "Short text",
+    text_alignment="center",
+    width="stretch",
+    help="This is a help tooltip!",
+)
+
+st.caption(
+    """
+Centered caption text. This should be long to demonstrate justification properly.
+This is a longer paragraph that demonstrates text justification properly.
+The text stretches to fill the available width.""",
+    text_alignment="center",
+    help="This is a help tooltip!",
+)
+st.caption(
+    """Right aligned caption this should be long to
+demonstrate justification properly. This is a longer paragraph that demonstrates
+text justification properly. The text stretches to fill the available width.""",
+    text_alignment="right",
+    help="This is a help tooltip!",
+)
+st.caption(
+    """Justified caption text this should be long to
+demonstrate justification properly. This is a longer paragraph that demonstrates
+text justification properly. The text stretches to fill the available width.""",
+    text_alignment="justify",
+    help="This is a help tooltip!",
+)
+
+# anchors=False hides the anchor link icon while preserving heading IDs so URL
+# fragments still deep-link.
+st.container(key="markdown_anchors_default").markdown(
+    "# Anchors Default Heading\n## Anchors Default Subheading"
+)
+st.container(key="markdown_anchors_disabled").markdown(
+    "# Anchors Disabled Heading\n## Anchors Disabled Subheading", anchors=False
+)
+
+# Test for gh-13339: Tooltip with newlines should render correctly
+st.header("Tooltip with Newlines (gh-13339)")
+
+st.container(key="markdown_newlines_tooltip").markdown(
+    "Markdown with newlines in tooltip",
+    help="Line 1\n\nLine 2\n\nLine 3",
+)
+
+st.container(key="caption_newlines_tooltip").caption(
+    "Caption with newlines in tooltip",
+    help="Line 1\n\nLine 2\n\nLine 3",
+)
+
+st.container(key="markdown_center_newlines_tooltip").markdown(
+    "Center aligned with newlines in tooltip",
+    text_alignment="center",
+    help="Line 1\n\nLine 2\n\nLine 3",
+)
+
+st.container(key="markdown_spaces_around_newlines").markdown(
+    "Markdown with spaces around newlines",
+    help="Line 1 \n\n Line 2 \n\n Line 3",
+)
+
+st.container(key="markdown_bracket_in_tooltip").markdown(
+    "Markdown with closing bracket in tooltip",
+    help="Line 1 ] Line 2 ] Line 3",
+)
+
+# Regression test for gh-15211: help icon must render next to single-line HTML
+# instead of leaking the literal `:help[]` directive text into the output.
+st.container(key="markdown_html_help").markdown(
+    "<p>an example</p>",
+    unsafe_allow_html=True,
+    help="HTML help tooltip!",
+)
+
+st.container(key="markdown_multiline_html_help").markdown(
+    "<div><p>line one</p><p>line two</p></div>",
+    unsafe_allow_html=True,
+    help="HTML help tooltip!",
+)
+
+# Complex markdown in tooltip - comprehensive test
+st.header("Complex Tooltip Case")
+
+st.container(key="markdown_complex_tooltip").markdown(
+    "Tooltip with complex markdown",
+    help="""**Bold**, *italic*, and `code` with brackets [x]
+
+Links: [Streamlit](https://streamlit.io) Colors: :red[red] :blue[blue]
+
+Emoji: 🎉 Array: array[index] Dict: dict[key]""",
+)
+
+# Shimmer directive test
+with st.container(key="shimmer_elements"):
+    st.markdown(
+        "Normal text before :red[:shimmer[:material/hourglass_empty: :blue[Please] **wait**...]] and after"
+    )
+
+# Mermaid diagram support tests - verifies mermaid works within markdown context
+st.header("Mermaid Charts")
+
+with st.container(key="mermaid_elements"):
+    # Markdown with mermaid embedded - tests that markdown before/after mermaid works
+    st.markdown(
+        """
+Here is a **flowchart** showing a simple decision process:
+
+```mermaid
+graph TD
+    A[Start] --> B{Decision}
+    B -->|Yes| C[OK]
+    B -->|No| D[Cancel]
+```
+
+The diagram above demonstrates mermaid rendering within markdown.
+"""
+    )
+
+    # Second mermaid type to verify different diagram types work
+    st.markdown(
+        """
+```mermaid
+sequenceDiagram
+    User->>App: Click
+    App-->>User: Response
+```
+"""
+    )
+
+    # Invalid mermaid syntax (should show error)
+    st.markdown(
+        """
+```mermaid
+this is not valid mermaid syntax
+```
+"""
+    )

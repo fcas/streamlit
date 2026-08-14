@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,33 +15,42 @@
  */
 
 import styled from "@emotion/styled"
-import {
-  StyledIcon,
-  StyledEmojiIcon,
-} from "@streamlit/lib/src/components/shared/Icon/styled-components"
-import { StyledMaterialIcon } from "@streamlit/lib/src/components/shared/Icon/Material/styled-components"
 
-export const StyledAlertContent = styled.div(({ theme }) => ({
+import { StyledCodeBlock } from "~lib/components/elements/CodeBlock/styled-components"
+
+export const StyledAlertContent = styled.div<{ $hasTitle?: boolean }>(
+  ({ theme, $hasTitle }) => ({
+    display: "flex",
+    // Vertical layout when there's a title, horizontal when there's not
+    flexDirection: $hasTitle ? "column" : "row",
+    gap: $hasTitle ? theme.spacing.twoXS : theme.spacing.sm,
+    width: "100%",
+
+    [`${StyledCodeBlock} code`]: {
+      paddingRight: theme.spacing.lg,
+    },
+  })
+)
+
+export const StyledAlertHeader = styled.div(({ theme }) => ({
   display: "flex",
+  alignItems: "flex-start",
   gap: theme.spacing.sm,
-  width: "100%",
+}))
 
-  [StyledEmojiIcon as any]: {
-    position: "relative",
-    top: "2px",
-  },
+export const StyledAlertIcon = styled.div(({ theme }) => ({
+  position: "relative",
+  top: theme.spacing.threeXS,
+  flexShrink: 0,
+}))
 
-  [StyledIcon as any]: {
-    position: "relative",
-    top: "2px",
-  },
-
-  [StyledMaterialIcon as any]: {
-    position: "relative",
-    top: "2px",
-  },
-
-  ".stCodeBlock code": {
-    paddingRight: "1rem",
+export const StyledAlertTitle = styled.strong(({ theme }) => ({
+  fontSize: theme.fontSizes.md,
+  "& p": {
+    fontWeight: theme.fontWeights.bold,
   },
 }))
+
+export const StyledAlertBody = styled.div({
+  width: "100%",
+})

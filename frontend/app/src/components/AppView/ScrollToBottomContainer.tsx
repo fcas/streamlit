@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,13 @@
  * limitations under the License.
  */
 
-import React, { ReactElement, ReactNode } from "react"
-import { StyledAppViewMain } from "./styled-components"
+import { ReactElement, ReactNode } from "react"
+
 import { useScrollToBottom } from "@streamlit/lib"
 
-export interface Props {
+import { StyledAppViewMain } from "./styled-components"
+
+interface Props {
   className: string
   tabIndex: number
   isEmbedded: boolean
@@ -28,7 +30,7 @@ export interface Props {
 
 export default function ScrollToBottomContainer(props: Props): ReactElement {
   const { className, tabIndex, children, isEmbedded, disableScrolling } = props
-  const scrollContainerRef = useScrollToBottom()
+  const scrollContainerRef = useScrollToBottom(true)
 
   return (
     <StyledAppViewMain
@@ -37,7 +39,7 @@ export default function ScrollToBottomContainer(props: Props): ReactElement {
       isEmbedded={isEmbedded}
       disableScrolling={disableScrolling}
       ref={scrollContainerRef}
-      data-testid="ScrollToBottomContainer"
+      data-testid="stAppScrollToBottomContainer"
     >
       {children}
     </StyledAppViewMain>

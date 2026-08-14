@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,15 +13,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+import { getLogger } from "loglevel"
 
-import { logWarning } from "@streamlit/lib/src/util/log"
-import { StreamlitEndpoints } from "@streamlit/lib/src/StreamlitEndpoints"
+import { StreamlitEndpoints } from "~lib/StreamlitEndpoints"
+import { isNullOrUndefined } from "~lib/util/utils"
+
+import type { IframeMessage } from "./componentUtils"
 import { ComponentMessageType } from "./enums"
 
-export type ComponentMessageListener = (
+type ComponentMessageListener = (
   type: ComponentMessageType,
-  data: any
+  data: IframeMessage
 ) => void
+
+const LOG = getLogger("ComponentRegistry")
 
 /**
  * Dispatches iframe messages to ComponentInstances.
@@ -47,7 +52,7 @@ export class ComponentRegistry {
     listener: ComponentMessageListener
   ): void => {
     if (this.msgListeners.has(source)) {
-      logWarning(`MessageEventSource registered multiple times!`, source)
+      LOG.warn(`MessageEventSource registered multiple times!`, source)
     }
 
     this.msgListeners.set(source, listener)
@@ -56,8 +61,36 @@ export class ComponentRegistry {
   public deregisterListener = (source: MessageEventSource): void => {
     const removed = this.msgListeners.delete(source)
     if (!removed) {
-      logWarning(`Could not deregister unregistered MessageEventSource!`)
+      LOG.warn(`Could not deregister unregistered MessageEventSource!`)
     }
+  }
+
+  /**
+   * Check the source of a custom component for successful response
+   * If the response is not ok, or fetch otherwise fails, send an error to the host.
+   */
+  public checkSourceUrlResponse = (
+    sourceUrl: string,
+    customComponentName: string
+  ): Promise<void> => {
+    return this.endpoints.checkSourceUrlResponse(
+      sourceUrl,
+      "Custom Component",
+      customComponentName
+    )
+  }
+
+  public sendTimeoutError = (
+    source: string,
+    customComponentName: string
+  ): void => {
+    this.endpoints.sendClientErrorToHost(
+      "Custom Component",
+      "Request Timeout",
+      "Your app is having trouble loading the component.",
+      source,
+      customComponentName
+    )
   }
 
   /** Return a URL for fetching a resource for the given component. */
@@ -65,25 +98,33 @@ export class ComponentRegistry {
     return this.endpoints.buildComponentURL(componentName, path)
   }
 
-  private onMessageEvent = (event: MessageEvent): void => {
+  /** Return a URL for fetching a resource for the given bidirectional component. */
+  public getBidiComponentURL = (
+    componentName: string,
+    path: string
+  ): string => {
+    return this.endpoints.buildBidiComponentURL(componentName, path)
+  }
+
+  private readonly onMessageEvent = (event: MessageEvent): void => {
     if (
-      event.data == null ||
-      !event.data.hasOwnProperty("isStreamlitMessage")
+      isNullOrUndefined(event.data) ||
+      !Object.hasOwn(event.data, "isStreamlitMessage")
     ) {
       // Disregard messages that don't come from components.
       return
     }
 
-    if (event.source == null) {
+    if (isNullOrUndefined(event.source)) {
       // This should not be possible.
-      logWarning(`Received component message with no eventSource!`, event.data)
+      LOG.warn(`Received component message with no eventSource!`, event.data)
       return
     }
 
     // Get the ComponentInstance associated with the event
     const listener = this.msgListeners.get(event.source)
-    if (listener == null || typeof listener !== "function") {
-      logWarning(
+    if (isNullOrUndefined(listener) || typeof listener !== "function") {
+      LOG.warn(
         `Received component message for unregistered ComponentInstance!`,
         event.data
       )
@@ -91,8 +132,8 @@ export class ComponentRegistry {
     }
 
     const { type } = event.data
-    if (type == null) {
-      logWarning(`Received Streamlit message with no type!`, event.data)
+    if (isNullOrUndefined(type)) {
+      LOG.warn(`Received Streamlit message with no type!`, event.data)
       return
     }
 

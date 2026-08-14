@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,14 +14,16 @@
  * limitations under the License.
  */
 
-import { renderHook, act } from "@testing-library/react-hooks"
-import { NumberCell, GridCell } from "@glideapps/glide-data-grid"
+import { GridCell, NumberCell } from "@glideapps/glide-data-grid"
+import { act, renderHook } from "@testing-library/react"
+import { Field, Int64, Utf8 } from "apache-arrow"
 
 import {
   BaseColumn,
   NumberColumn,
   TextColumn,
-} from "@streamlit/lib/src/components/widgets/DataFrame/columns"
+} from "~lib/components/widgets/DataFrame/columns"
+import { DataFrameCellType } from "~lib/dataframes/arrowTypeUtils"
 
 import useColumnSort from "./useColumnSort"
 
@@ -32,12 +34,20 @@ const MOCK_COLUMNS: BaseColumn[] = [
     title: "column_1",
     indexNumber: 0,
     arrowType: {
-      pandas_type: "int64",
-      numpy_type: "int64",
+      type: DataFrameCellType.DATA,
+      arrowField: new Field("column_1", new Int64(), true),
+      pandasType: {
+        field_name: "column_1",
+        name: "column_1",
+        pandas_type: "int64",
+        numpy_type: "int64",
+        metadata: null,
+      },
     },
     isEditable: false,
     isHidden: false,
     isIndex: false,
+    isPinned: false,
     isStretched: false,
   }),
   TextColumn({
@@ -46,12 +56,20 @@ const MOCK_COLUMNS: BaseColumn[] = [
     title: "column_2",
     indexNumber: 1,
     arrowType: {
-      pandas_type: "unicode",
-      numpy_type: "object",
+      type: DataFrameCellType.DATA,
+      arrowField: new Field("column_c2_1", new Utf8(), true),
+      pandasType: {
+        field_name: "column_c2_1",
+        name: "column_c2_1",
+        pandas_type: "unicode",
+        numpy_type: "object",
+        metadata: null,
+      },
     },
     isEditable: false,
     isHidden: false,
     isIndex: false,
+    isPinned: false,
     isStretched: false,
   }),
 ]
@@ -76,11 +94,7 @@ const MOCK_PROPS = {
 describe("useColumnSort hook", () => {
   it("should correctly sort numbers ascending and descending order", () => {
     const { result } = renderHook(() =>
-      useColumnSort(
-        MOCK_PROPS.numRows,
-        MOCK_PROPS.columns,
-        MOCK_PROPS.getCellContent
-      )
+      useColumnSort({ mode: "client", ...MOCK_PROPS })
     )
     // Select number column
     const SELECTED_COLUMN = 0
@@ -88,7 +102,7 @@ describe("useColumnSort hook", () => {
     // Sort the first time for ascending order
     act(() => {
       const { sortColumn } = result.current
-      sortColumn?.(MOCK_COLUMNS[SELECTED_COLUMN].indexNumber)
+      sortColumn?.(MOCK_COLUMNS[SELECTED_COLUMN].indexNumber, "auto")
     })
 
     // Column header should contain ascending sort icon
@@ -126,7 +140,7 @@ describe("useColumnSort hook", () => {
     // Sort again for descending order
     act(() => {
       const { sortColumn } = result.current
-      sortColumn?.(MOCK_COLUMNS[SELECTED_COLUMN].indexNumber)
+      sortColumn?.(MOCK_COLUMNS[SELECTED_COLUMN].indexNumber, "auto")
     })
 
     // Column header should contain descending sort icon
@@ -149,11 +163,7 @@ describe("useColumnSort hook", () => {
 
   it("should correctly sort text ascending and descending order", () => {
     const { result } = renderHook(() =>
-      useColumnSort(
-        MOCK_PROPS.numRows,
-        MOCK_PROPS.columns,
-        MOCK_PROPS.getCellContent
-      )
+      useColumnSort({ mode: "client", ...MOCK_PROPS })
     )
     // Select number column
     const SELECTED_COLUMN = 1
@@ -161,7 +171,7 @@ describe("useColumnSort hook", () => {
     // Sort the first time for ascending order
     act(() => {
       const { sortColumn } = result.current
-      sortColumn?.(MOCK_COLUMNS[SELECTED_COLUMN].indexNumber)
+      sortColumn?.(MOCK_COLUMNS[SELECTED_COLUMN].indexNumber, "auto")
     })
 
     // Column header should contain ascending sort icon
@@ -184,7 +194,7 @@ describe("useColumnSort hook", () => {
     // Sort again for descending order
     act(() => {
       const { sortColumn } = result.current
-      sortColumn?.(MOCK_COLUMNS[SELECTED_COLUMN].indexNumber)
+      sortColumn?.(MOCK_COLUMNS[SELECTED_COLUMN].indexNumber, "auto")
     })
 
     // Column header should contain descending sort icon
@@ -203,5 +213,203 @@ describe("useColumnSort hook", () => {
       /// Sort as text array
       Array.from(sortedDataDesc).sort().reverse()
     )
+  })
+
+  it("should sort in descending order when direction is set to desc", () => {
+    const { result } = renderHook(() =>
+      useColumnSort({ mode: "client", ...MOCK_PROPS })
+    )
+    const SELECTED_COLUMN = 0
+
+    // Sort explicitly descending
+    act(() => {
+      const { sortColumn } = result.current
+      sortColumn?.(MOCK_COLUMNS[SELECTED_COLUMN].indexNumber, "desc")
+    })
+
+    // Column header should contain descending sort icon
+    expect(result.current.columns[SELECTED_COLUMN].title).toContain("↓")
+
+    const sortedDataDesc = []
+    for (let i = 0; i < MOCK_PROPS.numRows; i++) {
+      sortedDataDesc.push(
+        (result.current.getCellContent([SELECTED_COLUMN, i]) as NumberCell)
+          .data
+      )
+    }
+
+    // Verify data is sorted in descending order
+    expect(Array.from(sortedDataDesc)).toEqual(
+      Array.from(sortedDataDesc)
+        .sort((a, b) => {
+          if (a === undefined) return -1
+          if (b === undefined) return 1
+          return a - b
+        })
+        .reverse()
+    )
+  })
+
+  it("should sort in ascending order when direction is set to asc", () => {
+    const { result } = renderHook(() =>
+      useColumnSort({ mode: "client", ...MOCK_PROPS })
+    )
+    const SELECTED_COLUMN = 0
+
+    // Change to ascending explicitly
+    act(() => {
+      const { sortColumn } = result.current
+      sortColumn?.(MOCK_COLUMNS[SELECTED_COLUMN].indexNumber, "asc")
+    })
+
+    // Column header should contain ascending sort icon
+    expect(result.current.columns[SELECTED_COLUMN].title).toContain("↑")
+
+    const sortedDataAsc = []
+    for (let i = 0; i < MOCK_PROPS.numRows; i++) {
+      sortedDataAsc.push(
+        (result.current.getCellContent([SELECTED_COLUMN, i]) as NumberCell)
+          .data
+      )
+    }
+
+    // Verify data is sorted in ascending order
+    expect(Array.from(sortedDataAsc)).toEqual(
+      Array.from(sortedDataAsc).sort((a, b) => {
+        if (a === undefined) return -1
+        if (b === undefined) return 1
+        return a - b
+      })
+    )
+  })
+
+  it("should respect autoReset parameter when sorting", () => {
+    const { result } = renderHook(() =>
+      useColumnSort({ mode: "client", ...MOCK_PROPS })
+    )
+    const SELECTED_COLUMN = 0
+
+    // Sort ascending
+    act(() => {
+      const { sortColumn } = result.current
+      sortColumn?.(MOCK_COLUMNS[SELECTED_COLUMN].indexNumber, "asc")
+    })
+
+    // Column header should contain ascending sort icon
+    expect(result.current.columns[SELECTED_COLUMN].title).toContain("↑")
+
+    // Sort ascending again with autoReset true - should remove sorting
+    act(() => {
+      const { sortColumn } = result.current
+      sortColumn?.(MOCK_COLUMNS[SELECTED_COLUMN].indexNumber, "asc", true)
+    })
+
+    // Column header should not contain any sort icon
+    expect(result.current.columns[SELECTED_COLUMN].title).not.toContain("↑")
+    expect(result.current.columns[SELECTED_COLUMN].title).not.toContain("↓")
+  })
+
+  describe("server mode (lazy dataframes)", () => {
+    const serverProps = { mode: "server" as const, ...MOCK_PROPS }
+
+    it("starts with no sort state and identity row mapping", () => {
+      const { result } = renderHook(() => useColumnSort(serverProps))
+      expect(result.current.serverSortState).toBeUndefined()
+      expect(result.current.getOriginalIndex(42)).toBe(42)
+      expect(result.current.columns[0].title).toBe("column_1")
+    })
+
+    it("exposes the backend column name and direction when sorted", () => {
+      const { result } = renderHook(() => useColumnSort(serverProps))
+      act(() => result.current.sortColumn(0, "auto"))
+      expect(result.current.serverSortState).toEqual({
+        column: "column_1",
+        descending: false,
+      })
+      expect(result.current.columns[0].title).toContain("↑")
+    })
+
+    it("uses the Arrow field name, not the display title, as the sort key", () => {
+      // column_2's display title ("column_2") differs from its backend Arrow
+      // field name ("column_c2_1"). The server sort key must be the field name
+      // so the backend can match it against the source schema (e.g. renamed
+      // columns or multi-level headers).
+      const { result } = renderHook(() => useColumnSort(serverProps))
+      act(() => result.current.sortColumn(1, "auto"))
+      expect(result.current.serverSortState).toEqual({
+        column: "column_c2_1",
+        descending: false,
+      })
+    })
+
+    it("toggles asc -> desc -> none on repeated auto clicks", () => {
+      const { result } = renderHook(() => useColumnSort(serverProps))
+
+      act(() => result.current.sortColumn(0, "auto"))
+      expect(result.current.serverSortState).toEqual({
+        column: "column_1",
+        descending: false,
+      })
+
+      act(() => result.current.sortColumn(0, "auto"))
+      expect(result.current.serverSortState).toEqual({
+        column: "column_1",
+        descending: true,
+      })
+
+      act(() => result.current.sortColumn(0, "auto"))
+      expect(result.current.serverSortState).toBeUndefined()
+    })
+
+    it("does not run the client-side sorter (identity row mapping)", () => {
+      // In server mode the backend returns sorted rows, so getOriginalIndex
+      // must stay identity even while a sort is active.
+      const { result } = renderHook(() => useColumnSort(serverProps))
+      act(() => result.current.sortColumn(0, "desc"))
+      expect(result.current.getOriginalIndex(7)).toBe(7)
+    })
+
+    it("clears sorting permanently when the active column is hidden", () => {
+      const { result, rerender } = renderHook(
+        ({ columns }: { columns: BaseColumn[] }) =>
+          useColumnSort({ ...serverProps, columns }),
+        { initialProps: { columns: MOCK_COLUMNS } }
+      )
+
+      act(() => result.current.sortColumn(0, "asc"))
+      expect(result.current.serverSortState?.column).toBe("column_1")
+
+      rerender({ columns: [MOCK_COLUMNS[1]] })
+      expect(result.current.serverSortState).toBeUndefined()
+
+      rerender({ columns: MOCK_COLUMNS })
+      expect(result.current.serverSortState).toBeUndefined()
+      expect(result.current.columns[0].title).toBe("column_1")
+    })
+
+    it("ignores columns without a backend field name (index columns)", () => {
+      const indexColumn = {
+        ...MOCK_COLUMNS[0],
+        id: "index-0",
+        name: "",
+        title: "",
+      } as BaseColumn
+      const { result } = renderHook(() =>
+        useColumnSort({
+          ...serverProps,
+          columns: [indexColumn, ...MOCK_COLUMNS],
+        })
+      )
+      act(() => result.current.sortColumn(0, "auto"))
+      // No backend name -> no sort and no header indicator.
+      expect(result.current.serverSortState).toBeUndefined()
+      expect(result.current.columns[0].title).toBe("")
+    })
+
+    it("ignores out-of-range column indices", () => {
+      const { result } = renderHook(() => useColumnSort(serverProps))
+      act(() => result.current.sortColumn(99, "auto"))
+      expect(result.current.serverSortState).toBeUndefined()
+    })
   })
 })

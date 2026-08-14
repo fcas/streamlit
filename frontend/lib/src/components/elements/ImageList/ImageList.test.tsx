@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,32 +14,54 @@
  * limitations under the License.
  */
 
-import React from "react"
-import "@testing-library/jest-dom"
 import { screen } from "@testing-library/react"
-import { render } from "@streamlit/lib/src/test_util"
 
-import { ImageList as ImageListProto } from "@streamlit/lib/src/proto"
-import { mockEndpoints } from "@streamlit/lib/src/mocks/mocks"
-import { ImageList, ImageListProps } from "./ImageList"
+import { ImageList as ImageListProto, streamlit } from "@streamlit/protobuf"
+
+import * as UseResizeObserver from "~lib/hooks/useResizeObserver"
+import { mockEndpoints } from "~lib/mocks/mocks"
+import { render, renderWithContexts } from "~lib/test_util"
+
+import ImageList, { ImageListProps } from "./ImageList"
+
+// Mock StreamlitConfig using global mock state (see vitest.setup.ts)
+vi.mock("@streamlit/utils", async () => {
+  const actual = await vi.importActual("@streamlit/utils")
+  return {
+    ...actual,
+    get StreamlitConfig() {
+      return globalThis.__mockStreamlitConfig
+    },
+  }
+})
 
 describe("ImageList Element", () => {
-  const buildMediaURL = jest.fn().mockReturnValue("https://mock.media.url")
+  const buildMediaURL = vi.fn().mockReturnValue("https://mock.media.url")
+  const sendClientErrorToHost = vi.fn()
 
   const getProps = (
-    elementProps: Partial<ImageListProto> = {}
+    elementProps: Partial<ImageListProto> = {},
+    widthConfig?: streamlit.IWidthConfig | null
   ): ImageListProps => ({
     element: ImageListProto.create({
       imgs: [
         { caption: "a", url: "/media/mockImage1.jpeg" },
         { caption: "b", url: "/media/mockImage2.jpeg" },
       ],
-      width: -1,
       ...elementProps,
     }),
-    endpoints: mockEndpoints({ buildMediaURL: buildMediaURL }),
-    width: 0,
-    isFullScreen: false,
+    widthConfig,
+    endpoints: mockEndpoints({
+      buildMediaURL: buildMediaURL,
+      sendClientErrorToHost: sendClientErrorToHost,
+    }),
+  })
+
+  beforeEach(() => {
+    vi.spyOn(UseResizeObserver, "useResizeObserver").mockReturnValue({
+      elementRef: { current: null },
+      values: [250],
+    })
   })
 
   it("renders without crashing", () => {
@@ -48,14 +70,148 @@ describe("ImageList Element", () => {
     expect(screen.getAllByRole("img")).toHaveLength(2)
   })
 
-  it("renders explicit width for each image", () => {
-    const props = getProps({ width: 300 })
-    render(<ImageList {...props} />)
+  describe("Link parameter", () => {
+    it("renders image wrapped in link when link is provided", () => {
+      const props = getProps({
+        imgs: [{ caption: "a", url: "/media/mockImage1.jpeg" }],
+        link: "https://streamlit.io",
+      })
+      render(<ImageList {...props} />)
 
-    const images = screen.getAllByRole("img")
-    expect(images).toHaveLength(2)
-    images.forEach(image => {
-      expect(image).toHaveStyle("width: 300px")
+      const link = screen.getByTestId("stImageLink")
+      expect(link).toBeVisible()
+      expect(link).toHaveAttribute("href", "https://streamlit.io")
+      expect(link).toHaveAttribute("target", "_blank")
+      expect(link).toHaveAttribute("rel", "noreferrer")
+      expect(link).toHaveAttribute("aria-label", "a")
+
+      // Image should be inside the link
+      const image = screen.getByRole("img")
+      expect(link).toContainElement(image)
+    })
+
+    it("uses link URL as aria-label when no caption is provided", () => {
+      const props = getProps({
+        imgs: [{ url: "/media/mockImage1.jpeg" }],
+        link: "https://streamlit.io",
+      })
+      render(<ImageList {...props} />)
+
+      const link = screen.getByTestId("stImageLink")
+      expect(link).toHaveAttribute("aria-label", "https://streamlit.io")
+    })
+
+    it("does not render link wrapper when link is not provided", () => {
+      const props = getProps({
+        imgs: [{ caption: "a", url: "/media/mockImage1.jpeg" }],
+      })
+      render(<ImageList {...props} />)
+
+      expect(screen.queryByTestId("stImageLink")).not.toBeInTheDocument()
+      expect(screen.getByRole("img")).toBeVisible()
+    })
+
+    it("does not render link wrapper when link is empty string", () => {
+      const props = getProps({
+        imgs: [{ caption: "a", url: "/media/mockImage1.jpeg" }],
+        link: "",
+      })
+      render(<ImageList {...props} />)
+
+      expect(screen.queryByTestId("stImageLink")).not.toBeInTheDocument()
+      expect(screen.getByRole("img")).toBeVisible()
+    })
+
+    it("renders image with caption and link", () => {
+      const props = getProps({
+        imgs: [{ caption: "Test caption", url: "/media/mockImage1.jpeg" }],
+        link: "https://example.com",
+      })
+      render(<ImageList {...props} />)
+
+      const link = screen.getByTestId("stImageLink")
+      expect(link).toBeVisible()
+
+      const caption = screen.getByTestId("stImageCaption")
+      expect(caption).toHaveTextContent("Test caption")
+    })
+
+    it.each([
+      "javascript:alert(1)",
+      "JAVASCRIPT:alert(1)",
+      "java\nscript:alert(1)",
+      "vbscript:msgbox(1)",
+    ])("blocks dangerous link URLs: %s", linkUrl => {
+      const props = getProps({
+        imgs: [{ caption: "a", url: "/media/mockImage1.jpeg" }],
+        link: linkUrl,
+      })
+      render(<ImageList {...props} />)
+
+      const link = screen.getByTestId("stImageLink")
+      expect(link).toHaveAttribute("href", "#")
+      expect(link).toHaveAttribute("target", "_self")
+      expect(link).toHaveAttribute("rel", "noreferrer")
+    })
+  })
+
+  describe("New width configuration system", () => {
+    it("renders explicit width for each image when using pixelWidth", () => {
+      const props = getProps({}, { pixelWidth: 300 })
+      render(<ImageList {...props} />)
+
+      const images = screen.getAllByRole("img")
+      expect(images).toHaveLength(2)
+      images.forEach(image => {
+        expect(image).toHaveStyle("width: 300px")
+      })
+    })
+
+    it("uses stretch width behavior when useStretch is true", () => {
+      const props = getProps({}, { useStretch: true })
+      render(<ImageList {...props} />)
+
+      const images = screen.getAllByRole("img")
+      expect(images).toHaveLength(2)
+      // When useStretch is true, width should match the element width (250px from mock)
+      images.forEach(image => {
+        expect(image).toHaveStyle("width: 250px")
+      })
+    })
+
+    it("uses content width behavior when useContent is true", () => {
+      const props = getProps({}, { useContent: true })
+      render(<ImageList {...props} />)
+
+      const images = screen.getAllByRole("img")
+      expect(images).toHaveLength(2)
+      // When useContent is true, width should be 100% (original size)
+      images.forEach(image => {
+        expect(image).toHaveStyle("width: 100%")
+      })
+    })
+  })
+
+  describe("Fallback behavior", () => {
+    it("defaults to content behavior when no widthConfig is provided", () => {
+      const props = getProps()
+      render(<ImageList {...props} />)
+
+      const images = screen.getAllByRole("img")
+      expect(images).toHaveLength(2)
+      images.forEach(image => {
+        expect(image).toHaveStyle("width: 100%")
+      })
+    })
+
+    it("defaults to content behavior when widthConfig is null", () => {
+      const props = getProps({}, null)
+      render(<ImageList {...props} />)
+
+      const images = screen.getAllByRole("img")
+      images.forEach(image => {
+        expect(image).toHaveStyle("width: 100%")
+      })
     })
   })
 
@@ -83,8 +239,8 @@ describe("ImageList Element", () => {
     expect(captions[1]).toHaveTextContent("b")
   })
 
-  it("renders explicit width for each caption", () => {
-    const props = getProps({ width: 300 })
+  it("renders explicit width for each caption when using pixelWidth", () => {
+    const props = getProps({}, { pixelWidth: 300 })
     render(<ImageList {...props} />)
 
     const captions = screen.getAllByTestId("stImageCaption")
@@ -94,22 +250,203 @@ describe("ImageList Element", () => {
     })
   })
 
-  describe("fullScreen", () => {
-    const props = { ...getProps(), isFullScreen: true, height: 100 }
+  it("sends an CLIENT_ERROR message when the image source fails to load", () => {
+    const props = getProps()
+    render(<ImageList {...props} />)
+    const images = screen.getAllByRole("img")
+    expect(images).toHaveLength(2)
 
-    it("has a caption", () => {
-      render(<ImageList {...props} />)
-      expect(screen.getAllByTestId("stImageCaption")).toHaveLength(2)
-    })
+    images[0].dispatchEvent(new Event("error"))
 
-    it("has the proper style", () => {
-      render(<ImageList {...props} />)
-      const images = screen.getAllByRole("img")
+    // Verify the error was sent with correct parameters
+    expect(sendClientErrorToHost).toHaveBeenCalledWith(
+      "Image",
+      "Image source failed to load",
+      "onerror triggered",
+      "https://mock.media.url/"
+    )
+  })
 
-      expect(images).toHaveLength(2)
-      images.forEach(image => {
-        expect(image).toHaveStyle("max-height: 100px; object-fit: contain;")
+  describe("crossOrigin attribute", () => {
+    it.each([
+      { resourceCrossOriginMode: "anonymous" },
+      { resourceCrossOriginMode: "use-credentials" },
+      { resourceCrossOriginMode: undefined },
+    ] as const)(
+      "don't set crossOrigin attribute when StreamlitConfig.BACKEND_BASE_URL is not set",
+      ({ resourceCrossOriginMode }) => {
+        const props = getProps()
+        renderWithContexts(<ImageList {...props} />, {
+          libConfigContext: {
+            resourceCrossOriginMode,
+          },
+        })
+        const images = screen.getAllByRole("img")
+        expect(images).toHaveLength(2)
+        images.forEach(image => {
+          expect(image).not.toHaveAttribute("crossOrigin")
+        })
+      }
+    )
+
+    describe("with BACKEND_BASE_URL set", () => {
+      beforeEach(() => {
+        globalThis.__mockStreamlitConfig.BACKEND_BASE_URL =
+          "https://backend.example.com:8080/app"
       })
+
+      afterEach(() => {
+        globalThis.__mockStreamlitConfig = {}
+      })
+
+      it.each([
+        {
+          expected: "anonymous",
+          resourceCrossOriginMode: "anonymous" as const,
+          imgs: [
+            { caption: "a", url: "/media/image1.png" },
+            { caption: "b", url: "/media/image2.png" },
+          ],
+          scenario: "relative URLs with anonymous mode",
+        },
+        {
+          expected: "use-credentials",
+          resourceCrossOriginMode: "use-credentials" as const,
+          imgs: [
+            { caption: "a", url: "/media/image1.png" },
+            { caption: "b", url: "/media/image2.png" },
+          ],
+          scenario: "relative URLs with use-credentials mode",
+        },
+        {
+          expected: "anonymous",
+          resourceCrossOriginMode: "anonymous" as const,
+          imgs: [
+            {
+              caption: "a",
+              url: "https://backend.example.com:8080/media/image1.png",
+            },
+            {
+              caption: "b",
+              url: "https://backend.example.com:8080/media/image2.png",
+            },
+          ],
+          scenario: "same origin as BACKEND_BASE_URL with anonymous mode",
+        },
+        {
+          expected: "use-credentials",
+          resourceCrossOriginMode: "use-credentials" as const,
+          imgs: [
+            {
+              caption: "a",
+              url: "https://backend.example.com:8080/media/image1.png",
+            },
+            {
+              caption: "b",
+              url: "https://backend.example.com:8080/media/image2.png",
+            },
+          ],
+          scenario:
+            "same origin as BACKEND_BASE_URL with use-credentials mode",
+        },
+      ])(
+        "sets crossOrigin to $expected when $scenario",
+        ({ expected, resourceCrossOriginMode, imgs }) => {
+          const props = getProps({ imgs: imgs })
+          renderWithContexts(<ImageList {...props} />, {
+            libConfigContext: {
+              resourceCrossOriginMode,
+            },
+          })
+          const images = screen.getAllByRole("img")
+          expect(images).toHaveLength(2)
+          images.forEach(image => {
+            expect(image).toHaveAttribute("crossOrigin", expected)
+          })
+        }
+      )
+
+      it.each([
+        {
+          resourceCrossOriginMode: undefined,
+          imgs: [
+            { caption: "a", url: "/media/image1.png" },
+            { caption: "b", url: "/media/image2.png" },
+          ],
+          scenario: "relative URLs with undefined mode",
+        },
+        {
+          resourceCrossOriginMode: undefined,
+          imgs: [
+            {
+              caption: "a",
+              url: "https://backend.example.com:8080/media/image1.png",
+            },
+            {
+              caption: "b",
+              url: "https://backend.example.com:8080/media/image2.png",
+            },
+          ],
+          scenario: "same origin as BACKEND_BASE_URL with undefined mode",
+        },
+        {
+          resourceCrossOriginMode: "anonymous" as const,
+          imgs: [
+            {
+              caption: "a",
+              url: "https://external.example.com/media/image1.png",
+            },
+            {
+              caption: "b",
+              url: "https://external.example.com/media/image2.png",
+            },
+          ],
+          scenario: "different hostname than BACKEND_BASE_URL",
+        },
+        {
+          resourceCrossOriginMode: "anonymous" as const,
+          imgs: [
+            {
+              caption: "a",
+              url: "https://backend.example.com:9000/media/image1.png",
+            },
+            {
+              caption: "b",
+              url: "https://backend.example.com:9000/media/image2.png",
+            },
+          ],
+          scenario: "different port than BACKEND_BASE_URL",
+        },
+        {
+          resourceCrossOriginMode: "anonymous" as const,
+          imgs: [
+            {
+              caption: "a",
+              url: "http://backend.example.com:8080/media/image1.png",
+            },
+            {
+              caption: "b",
+              url: "http://backend.example.com:8080/media/image2.png",
+            },
+          ],
+          scenario: "different protocol than BACKEND_BASE_URL",
+        },
+      ])(
+        "does not set crossOrigin when $scenario",
+        ({ resourceCrossOriginMode, imgs }) => {
+          const props = getProps({ imgs: imgs })
+          renderWithContexts(<ImageList {...props} />, {
+            libConfigContext: {
+              resourceCrossOriginMode,
+            },
+          })
+          const images = screen.getAllByRole("img")
+          expect(images).toHaveLength(2)
+          images.forEach(image => {
+            expect(image).not.toHaveAttribute("crossOrigin")
+          })
+        }
+      )
     })
   })
 })

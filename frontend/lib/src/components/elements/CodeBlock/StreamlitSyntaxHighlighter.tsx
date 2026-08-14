@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,48 +14,111 @@
  * limitations under the License.
  */
 
+import { memo, ReactElement, ReactNode, useCallback, useMemo } from "react"
+
 import {
-  StyledPre,
-  StyledCopyButtonContainer,
-  StyledCodeBlock,
-} from "./styled-components"
-import CopyButton from "./CopyButton"
-import { Prism as SyntaxHighlighter } from "react-syntax-highlighter"
-import React, { ReactElement } from "react"
+  createElement,
+  Prism as SyntaxHighlighter,
+  SyntaxHighlighterProps,
+} from "react-syntax-highlighter"
+
+import { isNullOrUndefined } from "@streamlit/utils"
+
+import CodeBlockCopyToolbar from "./CodeBlockCopyToolbar"
+import { StyledCodeBlock, StyledPre } from "./styled-components"
+
 export interface StreamlitSyntaxHighlighterProps {
-  children: string | string[]
-  language?: string | undefined
-  showLineNumbers?: boolean | undefined
+  children: string | string[] | undefined | null
+  language?: string
+  showLineNumbers?: boolean
+  wrapLines?: boolean
+  height?: number
 }
 
-export default function StreamlitSyntaxHighlighter({
+/** Extracted Renderer Props from `react-syntax-highlighter`'s internal
+ * structure since it isn't exported */
+type RendererProps = Parameters<
+  NonNullable<SyntaxHighlighterProps["renderer"]>
+>[0]
+
+function StreamlitSyntaxHighlighter({
   language,
   showLineNumbers,
+  wrapLines,
   children,
-}: StreamlitSyntaxHighlighterProps): ReactElement {
+}: Readonly<StreamlitSyntaxHighlighterProps>): ReactElement {
+  const renderer = useCallback(
+    ({ rows, stylesheet, useInlineStyles }: RendererProps): ReactNode => {
+      return rows.map((row, index) => {
+        const rowChildren = row.children
+
+        if (rowChildren) {
+          const lineNumberElement = rowChildren.shift()
+
+          if (lineNumberElement) {
+            row.children = [
+              lineNumberElement,
+              {
+                children: rowChildren,
+                properties: { className: [] },
+                tagName: "span",
+                type: "element",
+              },
+            ]
+          }
+        }
+
+        return createElement({
+          node: row,
+          stylesheet,
+          useInlineStyles,
+          key: index,
+        })
+      })
+    },
+    []
+  )
+
+  const text = useMemo(() => {
+    if (isNullOrUndefined(children)) {
+      return ""
+    }
+
+    return Array.isArray(children) ? children.join("") : children
+  }, [children])
+
+  const isEmpty = !text || text.trim().length === 0
+  const shouldShowCopyButton = !isEmpty
+
   return (
     <StyledCodeBlock
-      className="stCodeBlock"
-      data-testid="stCodeBlock"
-      isMarkdown={false}
+      className="stCode"
+      data-testid="stCode"
+      tabIndex={shouldShowCopyButton ? 0 : undefined}
     >
-      <StyledPre>
+      <StyledPre wrapLines={wrapLines ?? false}>
         <SyntaxHighlighter
           language={language}
           PreTag="div"
           customStyle={{ backgroundColor: "transparent" }}
+          // We set an empty style object here because we have our own CSS styling that
+          // reacts on our theme.
           style={{}}
           lineNumberStyle={{}}
           showLineNumbers={showLineNumbers}
+          wrapLongLines={wrapLines}
+          // Fix bug with wrapLongLines+showLineNumbers (see link below) by
+          // using a renderer that wraps individual lines of code in their
+          // own spans.
+          // https://github.com/react-syntax-highlighter/react-syntax-highlighter/issues/376
+          renderer={showLineNumbers && wrapLines ? renderer : undefined}
         >
-          {children}
+          {text}
         </SyntaxHighlighter>
       </StyledPre>
-      {typeof children === "string" && children.trim() !== "" && (
-        <StyledCopyButtonContainer>
-          <CopyButton text={children} />
-        </StyledCopyButtonContainer>
-      )}
+      {shouldShowCopyButton && <CodeBlockCopyToolbar text={text} />}
     </StyledCodeBlock>
   )
 }
+
+export default memo(StreamlitSyntaxHighlighter)

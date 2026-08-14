@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,34 +13,23 @@
 # limitations under the License.
 
 
+import re
+
 from playwright.sync_api import Page, expect
 
-from e2e_playwright.conftest import wait_for_app_run
+from e2e_playwright.conftest import (
+    ImageCompareFunction,
+    rerun_app,
+    wait_for_app_run,
+    wait_until,
+)
+from e2e_playwright.shared.app_utils import click_button, click_checkbox, get_image
 
-
-def test_runs_cached_function_with_new_widget_values(app: Page):
-    expect(app.get_by_test_id("stRadio")).to_have_count(1)
-    expect(app.get_by_test_id("stText")).to_have_text("['function ran']")
-    app.get_by_text("click to rerun").click()
-
-    wait_for_app_run(app)
-    expect(app.get_by_test_id("stRadio")).to_have_count(1)
-    expect(app.get_by_test_id("stText")).to_have_text("[]")
-
-    app.get_by_test_id("stRadio").nth(0).locator(
-        'label[data-baseweb="radio"]'
-    ).last.click()
-    expect(app.get_by_test_id("stRadio")).to_have_count(1)
-    expect(app.get_by_test_id("stText")).to_have_text("['function ran']")
-    app.get_by_text("click to rerun").click()
-
-    wait_for_app_run(app)
-    expect(app.get_by_test_id("stRadio")).to_have_count(1)
-    expect(app.get_by_test_id("stText")).to_have_text("[]")
+_BACKGROUND_REFRESH_STALE_WAIT_MS = 9000
 
 
 def test_that_caching_shows_cached_widget_warning(app: Page):
-    app.get_by_text("Run cached function with widget warning").click()
+    click_button(app, "Run cached function with widget warning")
     wait_for_app_run(app)
     expect(app.get_by_test_id("stException")).to_have_count(1)
 
@@ -49,8 +38,7 @@ def test_that_caching_shows_cached_widget_warning(app: Page):
 
 
 def test_that_nested_cached_function_shows_cached_widget_warning(app: Page):
-    app.get_by_text("Run nested cached function with widget warning").click()
-    wait_for_app_run(app)
+    click_button(app, "Run nested cached function with widget warning")
     expect(app.get_by_test_id("stException")).to_have_count(2)
 
     expect(app.get_by_test_id("stException").nth(0)).to_contain_text(
@@ -62,15 +50,107 @@ def test_that_nested_cached_function_shows_cached_widget_warning(app: Page):
 
 
 def test_that_replay_element_works_as_expected(app: Page):
-    app.get_by_text("Cached function with element replay").click()
-    wait_for_app_run(app)
+    click_button(app, "Cached function with element replay")
     expect(app.get_by_test_id("stException")).to_have_count(0)
     expect(app.get_by_text("Cache executions: 1")).to_be_visible()
     expect(app.get_by_text("Cache return 1")).to_be_visible()
 
     # Execute again, the values should be the same:
-    app.get_by_text("Cached function with element replay").click()
-    wait_for_app_run(app)
+    click_button(app, "Cached function with element replay")
     expect(app.get_by_test_id("stException")).to_have_count(0)
     expect(app.get_by_text("Cache executions: 1")).to_be_visible()
     expect(app.get_by_text("Cache return 1")).to_be_visible()
+
+
+# have 1 test so we don't have to reload the video
+def test_st_audio_player_and_video_player(app: Page):
+    audio = app.get_by_test_id("stAudio")
+
+    expect(audio).to_be_visible()
+    expect(audio).to_have_attribute("controls", "")
+    expect(audio).to_have_attribute("src", re.compile(r"^.*\.wav$", re.IGNORECASE))
+    audio_src = audio.get_attribute("src")
+
+    video_player = app.get_by_test_id("stVideo")
+    expect(video_player).to_be_visible()
+    expect(video_player).to_have_attribute(
+        "src", re.compile(r"^.*\.mp4$", re.IGNORECASE)
+    )
+    video_src = video_player.get_attribute("src")
+
+    rerun_app(app)
+
+    expect(audio).to_have_attribute("src", audio_src or "")
+    expect(video_player).to_have_attribute("src", video_src or "")
+
+
+def test_cached_image_replay(app: Page):
+    """Test that the image is cached and replayed correctly."""
+    image_element = get_image(app, "A black square").locator("img")
+    # Image should be visible
+    expect(image_element).to_be_visible()
+
+    expect(image_element).to_have_css("height", "200px")
+    expect(image_element).to_have_css("width", "200px")
+    image_src = image_element.get_attribute("src")
+
+    click_checkbox(app, "Show image")
+    # Image should disappear
+    expect(image_element).not_to_be_attached()
+
+    click_checkbox(app, "Show image")
+    # Image should be visible again
+    expect(image_element).to_be_visible()
+    expect(image_element).to_have_css("height", "200px")
+    expect(image_element).to_have_css("width", "200px")
+    expect(image_element).to_have_attribute("src", image_src or "")
+
+
+def test_cached_code_replay(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that the code is cached and replayed correctly with width and height."""
+    code_element = app.get_by_test_id("stCode").first
+    expect(code_element).to_be_visible()
+
+    # Test dimensions with snapshots since the width/height is set on the element container.
+    assert_snapshot(code_element, name="st_cache_data-st_code_before_caching")
+
+    click_checkbox(app, "Show code")
+    expect(code_element).not_to_be_attached()
+
+    click_checkbox(app, "Show code")
+    expect(code_element).to_be_visible()
+    assert_snapshot(code_element, name="st_cache_data-st_code_after_caching")
+
+
+def test_background_refresh_stale_while_revalidate(app: Page):
+    click_button(app, "Run cache_data background refresh test")
+    wait_for_app_run(app)
+
+    # Initial miss computes the value, renders display output live, and warns that
+    # display commands aren't replayed from a background-mode cache.
+    expect(app.get_by_text("Background refresh value: 1")).to_be_visible()
+    expect(app.get_by_text("Inside background cache_data function")).to_be_visible()
+    expect(app.get_by_test_id("stException")).to_contain_text(
+        "CachedStFunctionInBackgroundModeWarning"
+    )
+
+    # A fresh hit keeps the value and doesn't replay display output or the warning.
+    rerun_app(app)
+    expect(app.get_by_text("Background refresh value: 1")).to_be_visible()
+    expect(app.get_by_text("Inside background cache_data function")).to_have_count(0)
+    expect(app.get_by_test_id("stException")).to_have_count(0)
+
+    # Enter the stale grace window ([ttl, 2 * ttl)), then verify that the stale value
+    # is served without a spinner while the refresh runs in the background.
+    app.wait_for_timeout(_BACKGROUND_REFRESH_STALE_WAIT_MS)
+    rerun_app(app)
+    expect(app.get_by_text("Background refresh value: 1")).to_be_visible()
+    expect(app.get_by_test_id("stSpinner")).to_have_count(0)
+
+    def value_refreshed() -> bool:
+        rerun_app(app)
+        return app.get_by_text("Background refresh value: 2").count() > 0
+
+    wait_until(app, value_refreshed)
+    expect(app.get_by_text("Background refresh value: 2")).to_be_visible()
+    expect(app.get_by_text("Inside background cache_data function")).to_have_count(0)

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,37 +14,48 @@
 
 """Tests that are common to both st.cache_data and st.cache_resource"""
 
+from __future__ import annotations
+
 import threading
 import time
 import unittest
 from datetime import timedelta
-from typing import Any, List
+from typing import Any
 from unittest.mock import MagicMock, Mock, patch
 
+import pytest
 from parameterized import parameterized
 
 import streamlit as st
+from streamlit.errors import StreamlitValueError
 from streamlit.runtime import Runtime
-from streamlit.runtime.caching import cache_data, cache_resource
-from streamlit.runtime.caching.cache_errors import CacheReplayClosureError
-from streamlit.runtime.caching.cache_type import CacheType
-from streamlit.runtime.caching.cache_utils import CachedResult
-from streamlit.runtime.caching.cached_message_replay import (
-    MultiCacheResults,
-    _make_widget_key,
+from streamlit.runtime.caching import (
+    cache_background_refresh,
+    cache_data,
+    cache_data_api,
+    cache_resource,
+    cache_resource_api,
+    clear_session_data_cache,
+    clear_session_resource_cache,
 )
+from streamlit.runtime.caching.cache_errors import (
+    CachedStFunctionInBackgroundModeWarning,
+    CacheReplayClosureError,
+)
+from streamlit.runtime.caching.cache_utils import CachedResult
 from streamlit.runtime.caching.storage.dummy_cache_storage import (
     MemoryCacheStorageManager,
 )
 from streamlit.runtime.forward_msg_queue import ForwardMsgQueue
 from streamlit.runtime.fragment import MemoryFragmentStorage
 from streamlit.runtime.memory_uploaded_file_manager import MemoryUploadedFileManager
+from streamlit.runtime.pages_manager import PagesManager
 from streamlit.runtime.scriptrunner import (
     ScriptRunContext,
     add_script_run_ctx,
     get_script_run_ctx,
-    script_run_context,
 )
+from streamlit.runtime.scriptrunner_utils import script_run_context
 from streamlit.runtime.state import SafeSessionState, SessionState
 from streamlit.testing.v1.app_test import AppTest
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
@@ -58,19 +69,17 @@ def get_text_or_block(delta):
         element = delta.new_element
         if element.WhichOneof("type") == "text":
             return element.text.body
-    elif delta.WhichOneof("type") == "add_block":
+        return None
+    if delta.WhichOneof("type") == "add_block":
         return "new_block"
+    return None
 
 
-def as_cached_result(value: Any, cache_type: CacheType) -> MultiCacheResults:
+def as_cached_result(value: Any) -> CachedResult:
     """Creates cached results for a function that returned `value`
     and did not execute any elements.
     """
-    result = CachedResult(value, [], st._main.id, st.sidebar.id)
-    widget_key = _make_widget_key([], cache_type)
-    d = {widget_key: result}
-    initial = MultiCacheResults(set(), d)
-    return initial
+    return CachedResult(value, [], st._main._id, st.sidebar._id)
 
 
 class CommonCacheTest(DeltaGeneratorTestCase):
@@ -83,19 +92,18 @@ class CommonCacheTest(DeltaGeneratorTestCase):
         # errors on subsequent runs.
         ctx = script_run_context.get_script_run_ctx()
         if ctx is not None:
-            ctx.widget_ids_this_run.clear()
-            ctx.widget_user_keys_this_run.clear()
+            ctx.shared.widget_ids_this_run.clear()
+            ctx.shared.widget_user_keys_this_run.clear()
 
         super().tearDown()
 
-    def get_text_delta_contents(self) -> List[str]:
+    def get_text_delta_contents(self) -> list[str]:
         deltas = self.get_all_deltas_from_queue()
-        text = [
+        return [
             element.text.body
             for element in (delta.new_element for delta in deltas)
             if element.WhichOneof("type") == "text"
         ]
-        return text
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -105,8 +113,8 @@ class CommonCacheTest(DeltaGeneratorTestCase):
         def foo():
             return 42
 
-        self.assertEqual(foo(), 42)
-        self.assertEqual(foo(), 42)
+        assert foo() == 42
+        assert foo() == 42
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -116,8 +124,8 @@ class CommonCacheTest(DeltaGeneratorTestCase):
         def foo(x):
             return x
 
-        self.assertEqual(foo(1.0), 1.0)
-        self.assertEqual(foo(3.0), 3.0)
+        assert foo(1.0) == 1.0
+        assert foo(3.0) == 3.0
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -132,18 +140,18 @@ class CommonCacheTest(DeltaGeneratorTestCase):
                 called[0] = True
                 return x
 
-            self.assertFalse(called[0])
+            assert not called[0]
             f(0)
 
-            self.assertTrue(called[0])
+            assert called[0]
 
             called = [False]  # Reset called
 
             f(0)
-            self.assertFalse(called[0])
+            assert not called[0]
 
             f(1)
-            self.assertTrue(called[0])
+            assert called[0]
 
             mock_exception.assert_not_called()
 
@@ -162,8 +170,8 @@ class CommonCacheTest(DeltaGeneratorTestCase):
 
             d = {"answer": 0}
 
-            self.assertEqual(foo(d), 1)
-            self.assertEqual(foo(d), 2)
+            assert foo(d) == 1
+            assert foo(d) == 2
 
             mock_exception.assert_not_called()
 
@@ -179,32 +187,32 @@ class CommonCacheTest(DeltaGeneratorTestCase):
             call_count[0] += 1
 
         foo(1, 2, 3, kwarg1=4, _kwarg2=5, kwarg3=6, _kwarg4=7)
-        self.assertEqual([1], call_count)
+        assert call_count == [1]
 
         # Call foo again, but change the values for _arg2, _kwarg2, and _kwarg4.
         # The call count shouldn't change, because these args will not be part
         # of the hash.
         foo(1, None, 3, kwarg1=4, _kwarg2=None, kwarg3=6, _kwarg4=None)
-        self.assertEqual([1], call_count)
+        assert call_count == [1]
 
         # Changing the value of any other argument will increase the call
         # count. We test each argument type:
 
-        # arg1 (POSITIONAL_OR_KEYWORD)
+        # > arg1 (POSITIONAL_OR_KEYWORD)
         foo(None, 2, 3, kwarg1=4, _kwarg2=5, kwarg3=6, _kwarg4=7)
-        self.assertEqual([2], call_count)
+        assert call_count == [2]
 
-        # *arg (VAR_POSITIONAL)
+        # > *arg (VAR_POSITIONAL)
         foo(1, 2, None, kwarg1=4, _kwarg2=5, kwarg3=6, _kwarg4=7)
-        self.assertEqual([3], call_count)
+        assert call_count == [3]
 
-        # kwarg1 (KEYWORD_ONLY)
+        # > kwarg1 (KEYWORD_ONLY)
         foo(1, 2, 3, kwarg1=None, _kwarg2=5, kwarg3=6, _kwarg4=7)
-        self.assertEqual([4], call_count)
+        assert call_count == [4]
 
-        # **kwarg (VAR_KEYWORD)
+        # > **kwarg (VAR_KEYWORD)
         foo(1, 2, 3, kwarg1=4, _kwarg2=5, kwarg3=None, _kwarg4=7)
-        self.assertEqual([5], call_count)
+        assert call_count == [5]
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -229,9 +237,9 @@ class CommonCacheTest(DeltaGeneratorTestCase):
                 return "static method!"
 
         obj = TestClass()
-        self.assertEqual("member func!", obj.member_func())
-        self.assertEqual("class method!", obj.class_method())
-        self.assertEqual("static method!", obj.static_method())
+        assert obj.member_func() == "member func!"
+        assert obj.class_method() == "class method!"
+        assert obj.static_method() == "static method!"
 
     @parameterized.expand(
         [
@@ -254,9 +262,9 @@ class CommonCacheTest(DeltaGeneratorTestCase):
                 session_state=SafeSessionState(SessionState(), lambda: None),
                 uploaded_file_mgr=MemoryUploadedFileManager("/mock/upload"),
                 main_script_path="",
-                page_script_hash="",
-                user_info={"email": "test@test.com"},
+                user_info={"email": "test@example.com"},
                 fragment_storage=MemoryFragmentStorage(),
+                pages_manager=PagesManager(""),
             ),
         )
 
@@ -277,7 +285,7 @@ class CommonCacheTest(DeltaGeneratorTestCase):
             st.text("foo")
             warning.assert_not_called()
 
-            # Test nested st.cache functions
+            # Test nested cached functions
             @cache_decorator
             def outer():
                 @cache_decorator
@@ -291,8 +299,8 @@ class CommonCacheTest(DeltaGeneratorTestCase):
 
             warning.reset_mock()
 
-            # Test st.cache functions that raise errors
-            with self.assertRaises(RuntimeError):
+            # Test cached functions that raise errors
+            with pytest.raises(RuntimeError):
 
                 @cache_decorator
                 def cached_raise_error():
@@ -308,7 +316,7 @@ class CommonCacheTest(DeltaGeneratorTestCase):
             st.text("foo")
             warning.assert_not_called()
 
-            # Test st.cache functions with widgets
+            # Test cached functions with widgets
             @cache_decorator
             def cached_widget():
                 st.button("Press me!")
@@ -316,20 +324,6 @@ class CommonCacheTest(DeltaGeneratorTestCase):
             cached_widget()
 
             warning.assert_called()
-            warning.reset_mock()
-
-            # Make sure everything got reset properly
-            st.text("foo")
-            warning.assert_not_called()
-
-            # Test st.cache functions with widgets enabled
-            @cache_decorator(experimental_allow_widgets=True)
-            def cached_widget_enabled():
-                st.button("Press me too!")
-
-            cached_widget_enabled()
-
-            warning.assert_not_called()
             warning.reset_mock()
 
             # Make sure everything got reset properly
@@ -510,7 +504,7 @@ class CommonCacheTest(DeltaGeneratorTestCase):
             cont.text(i)
             return i
 
-        with self.assertRaises(CacheReplayClosureError):
+        with pytest.raises(CacheReplayClosureError):
             foo(1)
             st.text("---")
             foo(1)
@@ -539,23 +533,6 @@ class CommonCacheTest(DeltaGeneratorTestCase):
         img_fn_multi()
 
     @parameterized.expand(
-        [("cache_data", cache_data), ("cache_resource", cache_resource)]
-    )
-    def test_nested_widget_replay(self, _, cache_decorator):
-        """Regression test for GH#5677"""
-
-        @cache_decorator(experimental_allow_widgets=True)
-        def foo():
-            x = st.number_input("AAAA", 1, 100, 12)
-            return x**2
-
-        @cache_decorator(experimental_allow_widgets=True)
-        def baz(y):
-            return foo() + y
-
-        st.write(baz(10))
-
-    @parameterized.expand(
         [
             ("cache_data", cache_data, cache_data.clear),
             ("cache_resource", cache_resource, cache_resource.clear),
@@ -581,8 +558,8 @@ class CommonCacheTest(DeltaGeneratorTestCase):
 
         foo(0), foo(1), foo(2)
         bar(0), bar(1), bar(2)
-        self.assertEqual([0, 1, 2], foo_vals)
-        self.assertEqual([0, 1, 2], bar_vals)
+        assert foo_vals == [0, 1, 2]
+        assert bar_vals == [0, 1, 2]
 
         # Clear the cache and access our original values again. They
         # should be recomputed.
@@ -590,8 +567,8 @@ class CommonCacheTest(DeltaGeneratorTestCase):
 
         foo(0), foo(1), foo(2)
         bar(0), bar(1), bar(2)
-        self.assertEqual([0, 1, 2, 0, 1, 2], foo_vals)
-        self.assertEqual([0, 1, 2, 0, 1, 2], bar_vals)
+        assert foo_vals == [0, 1, 2, 0, 1, 2]
+        assert bar_vals == [0, 1, 2, 0, 1, 2]
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -611,8 +588,8 @@ class CommonCacheTest(DeltaGeneratorTestCase):
 
         foo(), foo(), foo()
         bar(), bar(), bar()
-        self.assertEqual(1, foo_call_count[0])
-        self.assertEqual(1, bar_call_count[0])
+        assert foo_call_count[0] == 1
+        assert bar_call_count[0] == 1
 
         # Clear just foo's cache, and call the functions again.
         foo.clear()
@@ -622,8 +599,8 @@ class CommonCacheTest(DeltaGeneratorTestCase):
 
         # Foo will have been called a second time, and bar will still
         # have been called just once.
-        self.assertEqual(2, foo_call_count[0])
-        self.assertEqual(1, bar_call_count[0])
+        assert foo_call_count[0] == 2
+        assert bar_call_count[0] == 1
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -638,7 +615,7 @@ class CommonCacheTest(DeltaGeneratorTestCase):
             return x
 
         function_without_spinner(3)
-        self.assertTrue(self.forward_msg_queue.is_empty())
+        assert self.forward_msg_queue.is_empty()
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -653,7 +630,7 @@ class CommonCacheTest(DeltaGeneratorTestCase):
             return x
 
         function_with_spinner(3)
-        self.assertFalse(self.forward_msg_queue.is_empty())
+        assert not self.forward_msg_queue.is_empty()
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -668,7 +645,7 @@ class CommonCacheTest(DeltaGeneratorTestCase):
             return x
 
         function_with_spinner_custom_text(3)
-        self.assertFalse(self.forward_msg_queue.is_empty())
+        assert not self.forward_msg_queue.is_empty()
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -683,7 +660,193 @@ class CommonCacheTest(DeltaGeneratorTestCase):
             return x
 
         function_with_spinner_empty_text(3)
-        self.assertFalse(self.forward_msg_queue.is_empty())
+        assert not self.forward_msg_queue.is_empty()
+
+    @parameterized.expand(
+        [("cache_data", cache_data), ("cache_resource", cache_resource)]
+    )
+    def test_spinner_with_nested_cached_functions(self, _, cache_decorator):
+        """If a cached function calls another cached function, only one spinner
+        should be created.
+        """
+
+        @cache_decorator(show_spinner="")
+        def inner(x: int) -> int:
+            return x
+
+        @cache_decorator(show_spinner="")
+        def outer(x: int) -> int:
+            return inner(x)
+
+        outer(3)
+        assert not self.forward_msg_queue.is_empty()
+
+        # The spinner uses a transient element and shows the spinner only
+        # after a timeout. Instead of mocking the time and waiting for the
+        # timeout, we check for the transient element with an empty set
+        # of elements. This represents the spinner element disappearing.
+        transient_elements_count = 0
+        for msg in self.forward_msg_queue._queue:
+            if (
+                msg.HasField("delta")
+                and msg.delta.HasField("new_transient")
+                and len(msg.delta.new_transient.elements) == 0
+            ):
+                transient_elements_count += 1
+        # Since we automatically prevent spinners for nested cached functions,
+        # there should only be a single transient spinner element.
+        assert transient_elements_count == 1
+
+    @parameterized.expand(
+        [
+            ("cache_data", cache_data, cache_data_api),
+            (
+                "cache_resource",
+                cache_resource,
+                cache_resource_api,
+            ),
+        ]
+    )
+    def test_session_scope_handles_lookup(self, _, cache_decorator, cache_module):
+        """A cache should work with session scoping."""
+
+        counter = 0
+        curr_session_id: str
+
+        @cache_decorator(scope="session")
+        def get_value(val: str) -> str:
+            nonlocal counter, curr_session_id
+            counter += 1
+            return f"{val}-{curr_session_id}-{counter}"
+
+        # Simulate one session.
+        curr_session_id = "aaa"
+        with patch.object(
+            cache_module, "get_session_id_or_throw"
+        ) as mock_get_session_id:
+            mock_get_session_id.return_value = curr_session_id
+
+            # Validate function is called twice for new args.
+            result_a_first = get_value("first")
+            assert result_a_first == "first-aaa-1"
+            result_a_second = get_value("second")
+            assert result_a_second == "second-aaa-2"
+
+            # Validate function is not called again for same args.
+            assert result_a_first == get_value("first")
+            assert result_a_second == get_value("second")
+
+        # Simulate a second session.
+        curr_session_id = "bbbb"
+        with patch.object(
+            cache_module, "get_session_id_or_throw"
+        ) as mock_get_session_id:
+            mock_get_session_id.return_value = curr_session_id
+
+            # Validate function is called twice for new args.
+            result_b_first = get_value("first")
+            assert result_b_first == "first-bbbb-3"
+            result_b_second = get_value("second")
+            assert result_b_second == "second-bbbb-4"
+
+            # Validate function is not called again for same args.
+            assert result_b_first == get_value("first")
+            assert result_b_second == get_value("second")
+
+        # Validate the first session still has a cache.
+        # Simulate one session.
+        curr_session_id = "aaa"
+        with patch.object(
+            cache_module, "get_session_id_or_throw"
+        ) as mock_get_session_id:
+            mock_get_session_id.return_value = curr_session_id
+
+            assert result_a_first == get_value("first")
+            assert result_a_second == get_value("second")
+
+    @parameterized.expand(
+        [
+            ("cache_data", cache_data, cache_data_api, clear_session_data_cache),
+            (
+                "cache_resource",
+                cache_resource,
+                cache_resource_api,
+                clear_session_resource_cache,
+            ),
+        ]
+    )
+    def test_session_scope_handles_clear(
+        self, _, cache_decorator, cache_module, clear_session_cache
+    ):
+        """Clearing a single session's scope should work."""
+        counter = 0
+        curr_session_id: str
+
+        @cache_decorator(scope="session")
+        def get_value(val: str) -> str:
+            nonlocal counter, curr_session_id
+            counter += 1
+            return f"{val}-{curr_session_id}-{counter}"
+
+        # Simulate one session.
+        curr_session_id = "aaa"
+        with patch.object(
+            cache_module, "get_session_id_or_throw"
+        ) as mock_get_session_id:
+            mock_get_session_id.return_value = curr_session_id
+
+            assert get_value("first") == "first-aaa-1"
+            assert get_value("second") == "second-aaa-2"
+
+        # Simulate a second session.
+        curr_session_id = "bbbb"
+        with patch.object(
+            cache_module, "get_session_id_or_throw"
+        ) as mock_get_session_id:
+            mock_get_session_id.return_value = curr_session_id
+
+            result_b_first = get_value("first")
+            assert result_b_first == "first-bbbb-3"
+            result_b_second = get_value("second")
+            assert result_b_second == "second-bbbb-4"
+
+        # Clear the first session, and assert we get new values.
+        curr_session_id = "aaa"
+        clear_session_cache(curr_session_id)
+        with patch.object(
+            cache_module, "get_session_id_or_throw"
+        ) as mock_get_session_id:
+            mock_get_session_id.return_value = curr_session_id
+
+            assert get_value("first") == "first-aaa-5"
+            assert get_value("second") == "second-aaa-6"
+
+        # Validate that the second session remained unchanged.
+        curr_session_id = "bbbb"
+        with patch.object(
+            cache_module, "get_session_id_or_throw"
+        ) as mock_get_session_id:
+            mock_get_session_id.return_value = curr_session_id
+
+            assert result_b_first == get_value("first")
+            assert result_b_second == get_value("second")
+
+    @parameterized.expand(
+        [
+            ("cache_data", cache_data),
+            ("cache_resource", cache_resource),
+        ]
+    )
+    def test_bad_scope_raises_exception(self, _, cache_decorator):
+        """A bad scope argument should raise an exception."""
+
+        with pytest.raises(StreamlitValueError) as e:
+
+            @cache_decorator(scope="request")
+            def get_foo() -> None:
+                pass
+
+        e.match(r"Invalid `scope` value")
 
 
 class CommonCacheTTLTest(unittest.TestCase):
@@ -726,37 +889,37 @@ class CommonCacheTTLTest(unittest.TestCase):
         timer_patch.return_value = 0
         foo(0)
         bar(0)
-        self.assertEqual([0], foo_vals)
-        self.assertEqual([0], bar_vals)
+        assert foo_vals == [0]
+        assert bar_vals == [0]
 
         # Advance our timer, but not enough to expire our value.
         timer_patch.return_value = one_day * 0.5
         foo(0)
         bar(0)
-        self.assertEqual([0], foo_vals)
-        self.assertEqual([0], bar_vals)
+        assert foo_vals == [0]
+        assert bar_vals == [0]
 
         # Advance our timer enough to expire foo, but not bar.
         timer_patch.return_value = one_day * 1.5
         foo(0)
         bar(0)
-        self.assertEqual([0, 0], foo_vals)
-        self.assertEqual([0], bar_vals)
+        assert foo_vals == [0, 0]
+        assert bar_vals == [0]
 
         # Expire bar. Foo's second value was inserted at time=1.5 days,
         # so it won't expire until time=2.5 days
         timer_patch.return_value = (one_day * 2) + 1
         foo(0)
         bar(0)
-        self.assertEqual([0, 0], foo_vals)
-        self.assertEqual([0, 0], bar_vals)
+        assert foo_vals == [0, 0]
+        assert bar_vals == [0, 0]
 
         # Expire foo for a second time.
         timer_patch.return_value = (one_day * 2.5) + 1
         foo(0)
         bar(0)
-        self.assertEqual([0, 0, 0], foo_vals)
-        self.assertEqual([0, 0], bar_vals)
+        assert foo_vals == [0, 0, 0]
+        assert bar_vals == [0, 0]
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -788,37 +951,37 @@ class CommonCacheTTLTest(unittest.TestCase):
         timer_patch.return_value = 0
         foo(0)
         bar(0)
-        self.assertEqual([0], foo_vals)
-        self.assertEqual([0], bar_vals)
+        assert foo_vals == [0]
+        assert bar_vals == [0]
 
         # Advance our timer, but not enough to expire our value.
         timer_patch.return_value = one_day_seconds * 0.5
         foo(0)
         bar(0)
-        self.assertEqual([0], foo_vals)
-        self.assertEqual([0], bar_vals)
+        assert foo_vals == [0]
+        assert bar_vals == [0]
 
         # Advance our timer enough to expire foo, but not bar.
         timer_patch.return_value = one_day_seconds * 1.5
         foo(0)
         bar(0)
-        self.assertEqual([0, 0], foo_vals)
-        self.assertEqual([0], bar_vals)
+        assert foo_vals == [0, 0]
+        assert bar_vals == [0]
 
         # Expire bar. Foo's second value was inserted at time=1.5 days,
         # so it won't expire until time=2.5 days
         timer_patch.return_value = (one_day_seconds * 2) + 1
         foo(0)
         bar(0)
-        self.assertEqual([0, 0], foo_vals)
-        self.assertEqual([0, 0], bar_vals)
+        assert foo_vals == [0, 0]
+        assert bar_vals == [0, 0]
 
         # Expire foo for a second time.
         timer_patch.return_value = (one_day_seconds * 2.5) + 1
         foo(0)
         bar(0)
-        self.assertEqual([0, 0, 0], foo_vals)
-        self.assertEqual([0, 0], bar_vals)
+        assert foo_vals == [0, 0, 0]
+        assert bar_vals == [0, 0]
 
 
 class CommonCacheThreadingTest(unittest.TestCase):
@@ -842,8 +1005,8 @@ class CommonCacheThreadingTest(unittest.TestCase):
         # errors on subsequent runs.
         ctx = script_run_context.get_script_run_ctx()
         if ctx is not None:
-            ctx.widget_ids_this_run.clear()
-            ctx.widget_user_keys_this_run.clear()
+            ctx.shared.widget_ids_this_run.clear()
+            ctx.shared.widget_user_keys_this_run.clear()
 
         super().tearDown()
 
@@ -861,13 +1024,13 @@ class CommonCacheThreadingTest(unittest.TestCase):
             return 42
 
         def call_foo(_: int) -> None:
-            self.assertEqual(42, foo())
+            assert foo() == 42
 
         # Call foo from multiple threads and assert no errors.
         call_on_threads(call_foo, self.NUM_THREADS)
 
         # The cached function should only be called once (see `test_compute_value_only_once`).
-        self.assertEqual(1, cached_func_call_count[0])
+        assert cached_func_call_count[0] == 1
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -880,10 +1043,8 @@ class CommonCacheThreadingTest(unittest.TestCase):
 
         @cache_decorator
         def foo():
-            self.assertEqual(
-                0,
-                cached_func_call_count[0],
-                "A cached value was computed multiple times!",
+            assert cached_func_call_count[0] == 0, (
+                "A cached value was computed multiple times!"
             )
             cached_func_call_count[0] += 1
 
@@ -895,7 +1056,7 @@ class CommonCacheThreadingTest(unittest.TestCase):
             return 42
 
         def call_foo(_: int) -> None:
-            self.assertEqual(42, foo())
+            assert foo() == 42
 
         call_on_threads(call_foo, num_threads=self.NUM_THREADS, timeout=0.5)
 
@@ -922,7 +1083,7 @@ class CommonCacheThreadingTest(unittest.TestCase):
         call_on_threads(clear_caches, self.NUM_THREADS)
 
         # Sanity check: ensure we can still call our cached function.
-        self.assertEqual(42, foo())
+        assert foo() == 42
 
     @parameterized.expand(
         [("cache_data", cache_data), ("cache_resource", cache_resource)]
@@ -944,25 +1105,7 @@ class CommonCacheThreadingTest(unittest.TestCase):
         call_on_threads(clear_foo, self.NUM_THREADS)
 
         # Sanity check: ensure we can still call our cached function.
-        self.assertEqual(42, foo())
-
-
-def test_dynamic_widget_replay():
-    at = AppTest.from_file("test_data/cached_widget_replay_dynamic.py").run()
-
-    assert at.checkbox.len == 1
-    assert at.text[0].value == "['foo']"
-
-    at.checkbox[0].check().run()
-    assert at.multiselect.len == 1
-    assert at.text[0].value == "[]"
-
-    at.multiselect[0].select("baz").run()
-    assert at.text[0].value == "['baz']"
-
-    at.checkbox[0].uncheck().run()
-    at.button[0].click().run()
-    assert at.text[0].value == "['foo']"
+        assert foo() == 42
 
 
 def test_arrow_replay():
@@ -970,3 +1113,445 @@ def test_arrow_replay():
     at = AppTest.from_file("test_data/arrow_replay.py").run()
 
     assert not at.exception
+
+
+# The fresh ttl (in seconds) used across the background-refresh tests. The hard
+# eviction bound is 2*_BG_TTL, and the stale grace window is [_BG_TTL, 2*_BG_TTL).
+_BG_TTL = 100
+
+
+class CommonCacheBackgroundRefreshTest(DeltaGeneratorTestCase):
+    """Behavior common to refresh_mode="background" on both cache decorators."""
+
+    def tearDown(self):
+        cache_data.clear()
+        cache_resource.clear()
+        # Shut down the shared executor and clear the degradation latch so tests are
+        # isolated from one another.
+        cache_background_refresh.reset()
+        super().tearDown()
+
+    @staticmethod
+    def _sync_submit(task):
+        """Run a submitted background-refresh task inline for deterministic tests."""
+        task()
+        return True
+
+    def _patch_sync_submit(self):
+        """Patch the background manager so refreshes run synchronously and succeed."""
+        return patch.object(
+            cache_background_refresh.get_background_refresh_manager(),
+            "submit",
+            side_effect=self._sync_submit,
+        )
+
+    def _text_deltas(self) -> list[str]:
+        return [
+            element.text.body
+            for element in (
+                delta.new_element for delta in self.get_all_deltas_from_queue()
+            )
+            if element.WhichOneof("type") == "text"
+        ]
+
+    @parameterized.expand(
+        [("cache_data", cache_data), ("cache_resource", cache_resource)]
+    )
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_fresh_hit_no_refresh(self, _, cache_decorator, timer_patch: Mock):
+        """Within the fresh window, a hit returns the cached value and triggers no refresh."""
+        call_count = [0]
+
+        @cache_decorator(ttl=_BG_TTL, refresh_mode="background", show_spinner=False)
+        def foo() -> int:
+            call_count[0] += 1
+            return call_count[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+
+        with self._patch_sync_submit() as submit_mock:
+            timer_patch.return_value = _BG_TTL * 0.5
+            assert foo() == 1
+            assert call_count[0] == 1
+            submit_mock.assert_not_called()
+
+    @parameterized.expand(
+        [("cache_data", cache_data), ("cache_resource", cache_resource)]
+    )
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_stale_serves_old_then_refreshes(
+        self, _, cache_decorator, timer_patch: Mock
+    ):
+        """In the stale window the old value is served immediately while a refresh updates it."""
+        call_count = [0]
+
+        @cache_decorator(ttl=_BG_TTL, refresh_mode="background", show_spinner=False)
+        def foo() -> int:
+            call_count[0] += 1
+            return call_count[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+
+        with self._patch_sync_submit() as submit_mock:
+            timer_patch.return_value = _BG_TTL * 1.5
+            # The stale value is served immediately (not the refreshed one).
+            assert foo() == 1
+            submit_mock.assert_called_once()
+
+        # The background refresh recomputed a new value and reset the freshness clock.
+        assert call_count[0] == 2
+        timer_patch.return_value = _BG_TTL * 1.5
+        assert foo() == 2
+        assert call_count[0] == 2
+
+    @parameterized.expand(
+        [("cache_data", cache_data), ("cache_resource", cache_resource)]
+    )
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_hard_expiry_blocks_foreground(self, _, cache_decorator, timer_patch: Mock):
+        """Past 2*ttl the entry is a hard miss: a blocking foreground recompute, no stale serve."""
+        call_count = [0]
+
+        @cache_decorator(ttl=_BG_TTL, refresh_mode="background", show_spinner=False)
+        def foo() -> int:
+            call_count[0] += 1
+            return call_count[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+
+        with self._patch_sync_submit() as submit_mock:
+            timer_patch.return_value = _BG_TTL * 2 + 1
+            # Recomputed in the foreground, returning the new value directly.
+            assert foo() == 2
+            # A hard miss is not a stale serve, so no background refresh is triggered.
+            submit_mock.assert_not_called()
+
+        assert call_count[0] == 2
+
+    @parameterized.expand(
+        [("cache_data", cache_data), ("cache_resource", cache_resource)]
+    )
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_refresh_deduplicated(self, _, cache_decorator, timer_patch: Mock):
+        """Only one background refresh is scheduled per key while one is already in flight."""
+        call_count = [0]
+
+        @cache_decorator(ttl=_BG_TTL, refresh_mode="background", show_spinner=False)
+        def foo() -> int:
+            call_count[0] += 1
+            return call_count[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+
+        captured: list = []
+
+        def capture_submit(task):
+            # Capture but don't run: the per-key compute lock stays held, simulating an
+            # in-flight refresh.
+            captured.append(task)
+            return True
+
+        with patch.object(
+            cache_background_refresh.get_background_refresh_manager(),
+            "submit",
+            side_effect=capture_submit,
+        ):
+            timer_patch.return_value = _BG_TTL * 1.5
+            assert foo() == 1
+            # A second stale access while the first refresh is "in flight" is deduped.
+            assert foo() == 1
+            assert len(captured) == 1
+
+        # Running the captured refresh releases the lock and updates the value.
+        captured[0]()
+        assert call_count[0] == 2
+        timer_patch.return_value = _BG_TTL * 1.5
+        assert foo() == 2
+
+    @parameterized.expand(
+        [("cache_data", cache_data), ("cache_resource", cache_resource)]
+    )
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_refresh_failure_cooldown(self, _, cache_decorator, timer_patch: Mock):
+        """A failed refresh keeps serving stale, logs, and applies a per-key retry cooldown."""
+        # Use a long ttl so the 60s failure cooldown fits inside the stale window.
+        ttl = 1000
+        call_count = [0]
+        should_fail = [False]
+
+        @cache_decorator(ttl=ttl, refresh_mode="background", show_spinner=False)
+        def foo() -> int:
+            call_count[0] += 1
+            if should_fail[0]:
+                raise RuntimeError("boom")
+            return call_count[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+        should_fail[0] = True
+
+        # First stale access: the refresh runs and fails; the stale value is still served.
+        with self._patch_sync_submit():
+            timer_patch.return_value = ttl * 1.5
+            assert foo() == 1
+        assert call_count[0] == 2
+
+        # Within the cooldown window, no new refresh is triggered.
+        with patch.object(
+            cache_background_refresh.get_background_refresh_manager(), "submit"
+        ) as submit_mock:
+            timer_patch.return_value = ttl * 1.5 + 30
+            assert foo() == 1
+            submit_mock.assert_not_called()
+        assert call_count[0] == 2
+
+        # After the cooldown elapses, the refresh is retried and now succeeds.
+        should_fail[0] = False
+        with self._patch_sync_submit():
+            timer_patch.return_value = ttl * 1.5 + 61
+            assert foo() == 1
+        assert call_count[0] == 3
+        timer_patch.return_value = ttl * 1.5 + 61
+        assert foo() == 3
+
+    @parameterized.expand(
+        [("cache_data", cache_data), ("cache_resource", cache_resource)]
+    )
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_orphan_refresh_discarded_after_clear(
+        self, _, cache_decorator, timer_patch: Mock
+    ):
+        """A refresh completing after a full cache clear is discarded, not written back."""
+        call_count = [0]
+
+        @cache_decorator(ttl=_BG_TTL, refresh_mode="background", show_spinner=False)
+        def foo() -> int:
+            call_count[0] += 1
+            return call_count[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+
+        captured: list = []
+
+        def capture_submit(task):
+            captured.append(task)
+            return True
+
+        with patch.object(
+            cache_background_refresh.get_background_refresh_manager(),
+            "submit",
+            side_effect=capture_submit,
+        ):
+            timer_patch.return_value = _BG_TTL * 1.5
+            assert foo() == 1
+            assert len(captured) == 1
+
+        # Clear the whole cache before the in-flight refresh writes back.
+        foo.clear()
+
+        # The refresh computes a value, but it must be discarded (generation changed /
+        # entry gone), so it never repopulates the cleared cache.
+        captured[0]()
+        assert call_count[0] == 2
+
+        # The next access is a normal miss that recomputes from scratch (not the
+        # discarded refresh value).
+        timer_patch.return_value = _BG_TTL * 1.5
+        assert foo() == 3
+
+    @parameterized.expand(
+        [("cache_data", cache_data), ("cache_resource", cache_resource)]
+    )
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_orphan_refresh_discarded_after_per_key_clear(
+        self, _, cache_decorator, timer_patch: Mock
+    ):
+        """A refresh finishing after a per-key clear + recompute must not clobber the fresh value.
+
+        Unlike a whole-cache clear, ``func.clear(*args)`` does not bump the cache
+        generation, so this guards the per-key epoch path specifically.
+        """
+        call_count = [0]
+
+        @cache_decorator(ttl=_BG_TTL, refresh_mode="background", show_spinner=False)
+        def foo(_arg: int) -> int:
+            call_count[0] += 1
+            return call_count[0]
+
+        timer_patch.return_value = 0
+        assert foo(1) == 1
+
+        captured: list = []
+
+        def capture_submit(task):
+            captured.append(task)
+            return True
+
+        with patch.object(
+            cache_background_refresh.get_background_refresh_manager(),
+            "submit",
+            side_effect=capture_submit,
+        ):
+            timer_patch.return_value = _BG_TTL * 1.5
+            # Stale serve schedules a refresh that stays "in flight" (not run yet).
+            assert foo(1) == 1
+            assert len(captured) == 1
+
+        # Clear just this key and recompute it in the foreground before the in-flight
+        # refresh writes back.
+        foo.clear(1)
+        timer_patch.return_value = _BG_TTL * 1.5
+        assert foo(1) == 2
+
+        # The older in-flight refresh now completes: it computes a value but must be
+        # discarded because the key was individually cleared since it was triggered.
+        captured[0]()
+        assert call_count[0] == 3
+
+        # The freshly recomputed value survives; the stale refresh did not clobber it.
+        timer_patch.return_value = _BG_TTL * 1.5
+        assert foo(1) == 2
+
+    @parameterized.expand(
+        [("cache_data", cache_data), ("cache_resource", cache_resource)]
+    )
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_foreground_recompute_clears_failure_cooldown(
+        self, _, cache_decorator, timer_patch: Mock
+    ):
+        """A successful foreground recompute clears a prior refresh-failure cooldown.
+
+        Covers "failed refresh -> hard expiry -> foreground recompute -> later stale
+        window": the later stale window must refresh again rather than stay stuck on the
+        old cooldown.
+        """
+        # A short ttl so the whole cycle stays well within the 60s failure cooldown.
+        ttl = 10
+        call_count = [0]
+        should_fail = [False]
+
+        @cache_decorator(ttl=ttl, refresh_mode="background", show_spinner=False)
+        def foo() -> int:
+            call_count[0] += 1
+            if should_fail[0]:
+                raise RuntimeError("boom")
+            return call_count[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+
+        # A stale access triggers a refresh that fails, arming the 60s cooldown.
+        should_fail[0] = True
+        with self._patch_sync_submit():
+            timer_patch.return_value = ttl * 1.5
+            assert foo() == 1
+        assert call_count[0] == 2
+
+        # The entry hard-expires (>= 2*ttl) and a foreground recompute succeeds; this
+        # must clear the still-active failure cooldown.
+        should_fail[0] = False
+        timer_patch.return_value = ttl * 2 + 1
+        assert foo() == 3
+
+        # A later stale window (still within 60s of the failure) now triggers a
+        # background refresh again, proving the cooldown was cleared.
+        with self._patch_sync_submit() as submit_mock:
+            timer_patch.return_value = ttl * 2 + 1 + ttl * 1.5
+            assert foo() == 3
+            submit_mock.assert_called_once()
+        assert call_count[0] == 4
+
+    @parameterized.expand(
+        [("cache_data", cache_data), ("cache_resource", cache_resource)]
+    )
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_no_spinner_on_stale_serve(self, _, cache_decorator, timer_patch: Mock):
+        """A stale serve returns immediately without showing a spinner."""
+
+        @cache_decorator(ttl=_BG_TTL, refresh_mode="background")
+        def foo() -> int:
+            return 1
+
+        timer_patch.return_value = 0
+        foo()
+        # A foreground miss shows the spinner; clear it before the stale serve.
+        assert not self.forward_msg_queue.is_empty()
+        self.clear_queue()
+
+        with self._patch_sync_submit():
+            timer_patch.return_value = _BG_TTL * 1.5
+            foo()
+
+        assert self.forward_msg_queue.is_empty()
+
+    @parameterized.expand(
+        [("cache_data", cache_data), ("cache_resource", cache_resource)]
+    )
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_no_replay_and_warning_on_display(
+        self, _, cache_decorator, timer_patch: Mock
+    ):
+        """Display output renders on the miss (with a warning) but is not replayed on hits."""
+        call_count = [0]
+
+        @cache_decorator(ttl=_BG_TTL, refresh_mode="background", show_spinner=False)
+        def foo() -> int:
+            call_count[0] += 1
+            st.text("hello")
+            return call_count[0]
+
+        with patch.object(st, "exception") as mock_exception:
+            timer_patch.return_value = 0
+            assert foo() == 1
+            # Display output renders live during the actual miss.
+            assert self._text_deltas() == ["hello"]
+            # A warning is emitted about background-mode display commands.
+            mock_exception.assert_called_once()
+            assert isinstance(
+                mock_exception.call_args[0][0],
+                CachedStFunctionInBackgroundModeWarning,
+            )
+
+            mock_exception.reset_mock()
+            self.clear_queue()
+
+            # A fresh hit does not replay the cached display output and does not warn.
+            timer_patch.return_value = _BG_TTL * 0.5
+            assert foo() == 1
+            assert self._text_deltas() == []
+            mock_exception.assert_not_called()
+
+    @parameterized.expand(
+        [("cache_data", cache_data), ("cache_resource", cache_resource)]
+    )
+    @patch("streamlit.runtime.caching.cache_utils.TTLCACHE_TIMER")
+    def test_real_thread_refresh(self, _, cache_decorator, timer_patch: Mock):
+        """A stale access triggers a real background-thread refresh that updates the entry."""
+        call_count = [0]
+
+        @cache_decorator(ttl=_BG_TTL, refresh_mode="background", show_spinner=False)
+        def foo() -> int:
+            call_count[0] += 1
+            return call_count[0]
+
+        timer_patch.return_value = 0
+        assert foo() == 1
+
+        timer_patch.return_value = _BG_TTL * 1.5
+        # First stale access serves the old value and schedules a real refresh thread.
+        assert foo() == 1
+
+        # Poll until the background refresh completes and the entry becomes fresh again.
+        deadline = time.time() + 5
+        result = foo()
+        while result != 2 and time.time() < deadline:
+            time.sleep(0.01)
+            result = foo()
+
+        assert result == 2
+        assert call_count[0] == 2

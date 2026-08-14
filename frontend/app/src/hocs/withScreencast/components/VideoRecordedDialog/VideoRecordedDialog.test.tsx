@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,18 +14,19 @@
  * limitations under the License.
  */
 
-import React from "react"
+import { screen } from "@testing-library/react"
+import { userEvent } from "@testing-library/user-event"
 import { BaseProvider, LightTheme } from "baseui"
-import "@testing-library/jest-dom"
-import { fireEvent, screen } from "@testing-library/react"
-import { render } from "@streamlit/lib"
+
+import { render } from "@streamlit/lib/testing"
+
 import VideoRecordedDialog, { Props } from "./VideoRecordedDialog"
 
-URL.createObjectURL = jest.fn()
+URL.createObjectURL = vi.fn()
 
 const getProps = (props: Partial<Props> = {}): Props => ({
   fileName: "test",
-  onClose: jest.fn(),
+  onClose: vi.fn(),
   videoBlob: new Blob(),
   ...props,
 })
@@ -39,7 +40,7 @@ describe("VideoRecordedDialog", () => {
         <VideoRecordedDialog {...props} />
       </BaseProvider>
     )
-    expect(screen.getByTestId("stModal")).toBeInTheDocument()
+    expect(screen.getByTestId("stDialog")).toBeInTheDocument()
     expect(screen.getByTestId("stVideoRecordedDialog")).toBeInTheDocument()
   })
 
@@ -66,7 +67,11 @@ describe("VideoRecordedDialog", () => {
     expect(URL.createObjectURL).toHaveBeenCalled()
   })
 
-  it("should render a download button", () => {
+  it("should render a download button", async () => {
+    const user = userEvent.setup()
+    const anchorClickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {})
     render(
       <BaseProvider theme={LightTheme}>
         <VideoRecordedDialog {...props} />
@@ -77,7 +82,10 @@ describe("VideoRecordedDialog", () => {
     })
 
     expect(downloadButton).toBeInTheDocument()
-    fireEvent.click(downloadButton)
+    await user.click(downloadButton)
+    expect(anchorClickSpy).toHaveBeenCalledOnce()
     expect(props.onClose).toHaveBeenCalled()
+
+    anchorClickSpy.mockRestore()
   })
 })

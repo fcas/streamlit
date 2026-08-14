@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,12 +14,13 @@
  * limitations under the License.
  */
 
-import React from "react"
 import { render, screen } from "@testing-library/react"
-import "@testing-library/jest-dom"
+
+import { baseTheme, ThemeContext } from "@streamlit/lib"
+
 import ThemedApp from "./ThemedApp"
 
-jest.mock("@streamlit/app/src/connection/ConnectionManager")
+vi.mock("@streamlit/connection")
 
 // Mock needed for Block.tsx
 class ResizeObserver {
@@ -32,34 +33,47 @@ class ResizeObserver {
 window.ResizeObserver = ResizeObserver
 
 describe("ThemedApp", () => {
+  const themeContextValue = {
+    activeTheme: baseTheme,
+    setTheme: vi.fn(),
+    availableThemes: [],
+  }
+
   beforeEach(() => {
     // sourced from:
     // https://jestjs.io/docs/en/manual-mocks#mocking-methods-which-are-not-implemented-in-jsdom
     Object.defineProperty(window, "matchMedia", {
       writable: true,
-      value: jest.fn().mockImplementation(query => ({
+      value: vi.fn().mockImplementation(query => ({
         matches: false,
         media: query,
         onchange: null,
-        addListener: jest.fn(), // deprecated
-        removeListener: jest.fn(), // deprecated
-        addEventListener: jest.fn(),
-        removeEventListener: jest.fn(),
-        dispatchEvent: jest.fn(),
+        addListener: vi.fn(), // deprecated
+        removeListener: vi.fn(), // deprecated
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
       })),
     })
   })
 
   it("renders without crashing", () => {
-    render(<ThemedApp />)
+    render(
+      <ThemeContext.Provider value={themeContextValue}>
+        <ThemedApp streamlitExecutionStartedAt={Date.now()} />
+      </ThemeContext.Provider>
+    )
 
     expect(screen.getByTestId("stApp")).toBeInTheDocument()
   })
 
   it("contains the overlay portal required by the interactive table", () => {
-    render(<ThemedApp />)
-
-    expect(screen.getByTestId("portal")).toBeInTheDocument()
-    expect(screen.getByTestId("portal")).toBeInTheDocument()
+    render(
+      <ThemeContext.Provider value={themeContextValue}>
+        <ThemedApp streamlitExecutionStartedAt={Date.now()} />
+      </ThemeContext.Provider>
+    )
+    const portalElement = screen.getByTestId("portal")
+    expect(portalElement).toBeInTheDocument()
   })
 })

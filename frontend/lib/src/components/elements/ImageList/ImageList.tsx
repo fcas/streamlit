@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,102 +14,231 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
+import { CSSProperties, memo, ReactElement } from "react"
+
+import { getLogger } from "loglevel"
 
 import {
-  IImage,
-  Image as ImageProto,
   ImageList as ImageListProto,
-} from "@streamlit/lib/src/proto"
-import { withFullScreenWrapper } from "@streamlit/lib/src/components/shared/FullScreenWrapper"
-import { StreamlitEndpoints } from "@streamlit/lib/src/StreamlitEndpoints"
+  Image as ImageProto,
+  streamlit,
+} from "@streamlit/protobuf"
+
+import { ElementFullscreenContext } from "~lib/components/shared/ElementFullscreen/ElementFullscreenContext"
+import withFullScreenWrapper from "~lib/components/shared/FullScreenWrapper/withFullScreenWrapper"
+import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown/StreamlitMarkdown"
+import { StyledToolbarElementContainer } from "~lib/components/shared/Toolbar/styled-components"
+import Toolbar from "~lib/components/shared/Toolbar/Toolbar"
+import { useCrossOriginAttribute } from "~lib/hooks/useCrossOriginAttribute"
+import { useRequiredContext } from "~lib/hooks/useRequiredContext"
+import { StreamlitEndpoints } from "~lib/StreamlitEndpoints"
+import { BLOCKED_LINK_URI, isDangerousLinkUri } from "~lib/util/UriUtil"
 
 import {
   StyledCaption,
   StyledImageContainer,
+  StyledImageLink,
   StyledImageList,
 } from "./styled-components"
 
+const LOG = getLogger("ImageList")
+
 export interface ImageListProps {
   endpoints: StreamlitEndpoints
-  width: number
-  isFullScreen: boolean
   element: ImageListProto
-  height?: number
+  widthConfig?: streamlit.IWidthConfig | null
+  disableFullscreenMode?: boolean
 }
 
-enum WidthBehavior {
-  OriginalWidth = -1,
-  ColumnWidth = -2,
-  AutoWidth = -3,
+/**
+ * Get the image width based on widthConfig.
+ *
+ * @param widthConfig - The width configuration from the element
+ * @param containerWidth - The width of the container element
+ * @returns The width to use for images, or undefined for original size
+ */
+function getImageWidth(
+  widthConfig: streamlit.IWidthConfig | null | undefined,
+  containerWidth: number
+): number | undefined {
+  if (widthConfig) {
+    if (widthConfig.useStretch) {
+      return containerWidth
+    }
+
+    if (widthConfig.useContent) {
+      // Use original image size (content width)
+      return undefined
+    }
+
+    if (widthConfig.pixelWidth) {
+      return widthConfig.pixelWidth
+    }
+  }
+
+  // Default fallback: use original image size
+  return undefined
+}
+
+const Image = ({
+  itemKey,
+  image,
+  imgStyle,
+  buildMediaURL,
+  handleImageError,
+  shouldStretch,
+  link,
+}: {
+  itemKey: string
+  image: ImageProto
+  imgStyle: CSSProperties
+  buildMediaURL: (url: string) => string
+  handleImageError: (e: React.SyntheticEvent<HTMLImageElement>) => void
+  shouldStretch?: boolean
+  link?: string
+}): ReactElement => {
+  const crossOrigin = useCrossOriginAttribute(image.url)
+  const isLinkBlocked = link ? isDangerousLinkUri(link) : false
+  const href = isLinkBlocked ? BLOCKED_LINK_URI : link
+
+  const imageElement = (
+    <img
+      style={imgStyle}
+      src={buildMediaURL(image.url)}
+      alt={itemKey}
+      onError={handleImageError}
+      crossOrigin={crossOrigin}
+    />
+  )
+
+  return (
+    <StyledImageContainer
+      data-testid="stImageContainer"
+      shouldStretch={shouldStretch}
+    >
+      {href ? (
+        <StyledImageLink
+          href={href}
+          target={isLinkBlocked ? "_self" : "_blank"}
+          rel="noreferrer"
+          onClick={isLinkBlocked ? event => event.preventDefault() : undefined}
+          // For blocked links, fall back to the image's alt text instead of the
+          // neutralized "#" href, which is meaningless to screen readers.
+          aria-label={image.caption || (isLinkBlocked ? undefined : link)}
+          data-testid="stImageLink"
+        >
+          {imageElement}
+        </StyledImageLink>
+      ) : (
+        imageElement
+      )}
+      {image.caption && (
+        <StyledCaption data-testid="stImageCaption" style={imgStyle}>
+          <StreamlitMarkdown
+            source={image.caption}
+            allowHTML={false}
+            isCaption
+            // This is technically not a label but we want the same restrictions
+            // as for labels (e.g. no Markdown tables or horizontal rule).
+            isLabel
+          />
+        </StyledCaption>
+      )}
+    </StyledImageContainer>
+  )
 }
 
 /**
  * Functional element for a horizontal list of images.
  */
-export function ImageList({
-  width,
-  isFullScreen,
+function ImageList({
   element,
-  height,
   endpoints,
-}: ImageListProps): ReactElement {
-  // The width field in the proto sets the image width, but has special
-  // cases for -1, -2, and -3.
-  let containerWidth: number | undefined
-  const protoWidth = element.width
+  widthConfig,
+  disableFullscreenMode,
+}: Readonly<ImageListProps>): ReactElement {
+  const {
+    expanded: isFullScreen,
+    width,
+    height: fullScreenHeight,
+    expand,
+    collapse,
+  } = useRequiredContext(ElementFullscreenContext)
+  // The width of the container element, not necessarily the image.
+  const containerWidth = width || 0
 
-  if (
-    protoWidth === WidthBehavior.OriginalWidth ||
-    protoWidth === WidthBehavior.AutoWidth
-  ) {
-    // Use the original image width.
-    containerWidth = undefined
-  } else if (protoWidth === WidthBehavior.ColumnWidth) {
-    // Use the column width
-    containerWidth = width
-  } else if (protoWidth > 0) {
-    // Set the image width explicitly.
-    containerWidth = protoWidth
+  const imageWidth = getImageWidth(widthConfig, containerWidth)
+
+  const shouldStretch = widthConfig?.useStretch ?? false
+
+  const imgStyle: CSSProperties = {}
+
+  if (fullScreenHeight && isFullScreen) {
+    imgStyle.maxHeight = fullScreenHeight
+    imgStyle.objectFit = "contain"
+    // @see issue https://github.com/streamlit/streamlit/issues/10904
+    // Ensure the image tries to fill the width to prevent sizeless SVGs from
+    // not rendering. Let object-fit handle aspect ratio.
+    imgStyle.width = "100%"
   } else {
-    throw Error(`Invalid image width: ${protoWidth}`)
+    // @see issue https://github.com/streamlit/streamlit/issues/10904
+    // Use imageWidth if defined, otherwise fallback to 100% to prevent sizeless
+    // SVGs from not rendering.
+    imgStyle.width = imageWidth ?? "100%"
+    // Cap the image width, so it doesn't exceed its parent container width
+    imgStyle.maxWidth = "100%"
   }
 
-  const imgStyle: any = {}
-
-  if (height && isFullScreen) {
-    imgStyle.maxHeight = height
-    imgStyle["object-fit"] = "contain"
-  } else {
-    imgStyle.width = containerWidth
-
-    if (protoWidth === WidthBehavior.AutoWidth) {
-      // Cap the image width, so it doesn't exceed the column width
-      imgStyle.maxWidth = "100%"
-    }
+  const handleImageError = (
+    e: React.SyntheticEvent<HTMLImageElement>
+  ): void => {
+    const imageUrl = e.currentTarget.src
+    LOG.error(`Client Error: Image source error - ${imageUrl}`)
+    endpoints.sendClientErrorToHost(
+      "Image",
+      "Image source failed to load",
+      "onerror triggered",
+      imageUrl
+    )
   }
 
   return (
-    <StyledImageList style={{ width }}>
-      {element.imgs.map((iimage: IImage, idx: number): ReactElement => {
-        const image = iimage as ImageProto
-        return (
-          <StyledImageContainer key={idx} data-testid="stImage">
-            <img
-              style={imgStyle}
-              src={endpoints.buildMediaURL(image.url)}
-              alt={idx.toString()}
-            />
-            {image.caption && (
-              <StyledCaption data-testid="stImageCaption" style={imgStyle}>
-                {` ${image.caption} `}
-              </StyledCaption>
-            )}
-          </StyledImageContainer>
-        )
-      })}
-    </StyledImageList>
+    <StyledToolbarElementContainer
+      width={containerWidth}
+      height={fullScreenHeight}
+      useContainerWidth={isFullScreen}
+      topCentered
+    >
+      <Toolbar
+        target={StyledToolbarElementContainer}
+        isFullScreen={isFullScreen}
+        onExpand={expand}
+        onCollapse={collapse}
+        disableFullscreenMode={disableFullscreenMode}
+      ></Toolbar>
+      <StyledImageList
+        className="stImage"
+        data-testid="stImage"
+        shouldStretch={shouldStretch}
+      >
+        {element.imgs.map((iimage, idx): ReactElement => (
+          <Image
+            // TODO: Update to match React best practices
+            // eslint-disable-next-line @eslint-react/no-array-index-key
+            key={idx}
+            itemKey={idx.toString()}
+            image={iimage as ImageProto}
+            imgStyle={imgStyle}
+            buildMediaURL={(url: string) => endpoints.buildMediaURL(url)}
+            handleImageError={handleImageError}
+            shouldStretch={shouldStretch}
+            link={element.imgs.length === 1 ? element.link : undefined}
+          />
+        ))}
+      </StyledImageList>
+    </StyledToolbarElementContainer>
   )
 }
 
-export default withFullScreenWrapper(ImageList)
+const ImageListWithFullScreen = withFullScreenWrapper(ImageList)
+export default memo(ImageListWithFullScreen)

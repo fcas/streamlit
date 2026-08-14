@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -30,19 +30,7 @@ spec = {
     },
 }
 
-spec_with_width = {
-    "mark": "circle",
-    "encoding": {
-        "x": {"field": "a", "type": "quantitative"},
-        "y": {"field": "b", "type": "quantitative"},
-        "size": {"field": "c", "type": "quantitative"},
-        "color": {"field": "c", "type": "quantitative"},
-    },
-    "width": "500",
-}
-
 interactive_spec = {
-    "title": f"Interactive Bar Chart Example",
     "data": {
         "values": [
             {"a": "A", "b": 28},
@@ -76,11 +64,8 @@ interactive_spec = {
     "config": {"scale": {"bandPaddingInner": 0.2}},
 }
 
-st.vega_lite_chart(df, spec, use_container_width=True)
-st.vega_lite_chart(df, spec, use_container_width=True)
 st.vega_lite_chart(df, spec)
-st.vega_lite_chart(df, spec_with_width)
-st.vega_lite_chart(interactive_spec, None)
+st.vega_lite_chart(interactive_spec, None, width="content")
 
 # Screenshot comparison
 
@@ -99,19 +84,21 @@ st.vega_lite_chart(
             "y": {"field": "b", "type": "quantitative"},
         },
     },
-    use_container_width=True,
+    width="stretch",
 )
 
-st.write("Using a top-level `df` and keywords as a spec:")
+st.write("Using a top-level `df` and `spec` dict (another example):")
 
 st.vega_lite_chart(
     df,
-    mark="bar",
-    x_field="a",
-    x_type="ordinal",
-    y_field="b",
-    y_type="quantitative",
-    use_container_width=True,
+    {
+        "mark": "bar",
+        "encoding": {
+            "x": {"field": "a", "type": "ordinal"},
+            "y": {"field": "b", "type": "quantitative"},
+        },
+    },
+    width="stretch",
 )
 
 st.write("Putting the `df` inside the spec, as a `dataset`:")
@@ -126,7 +113,7 @@ st.vega_lite_chart(
             "y": {"field": "b", "type": "quantitative"},
         },
     },
-    use_container_width=True,
+    width="stretch",
 )
 
 st.write("Putting the `df` inside the spec, as inline `data`:")
@@ -140,7 +127,7 @@ st.vega_lite_chart(
             "y": {"field": "b", "type": "quantitative"},
         },
     },
-    use_container_width=True,
+    width="stretch",
 )
 
 st.write("Putting the `df` inside the spec, as inline `data` (different notation):")
@@ -159,10 +146,10 @@ st.vega_lite_chart(
 df = pd.DataFrame(data, columns=["a", "b", "c"])
 
 st.write("Show streamlit theme:")
-st.vega_lite_chart(df, spec, use_container_width=True, theme="streamlit")
+st.vega_lite_chart(df, spec, width="stretch", theme="streamlit")
 
 st.write("Show default theme:")
-st.vega_lite_chart(df, spec, use_container_width=True, theme=None)
+st.vega_lite_chart(df, spec, width="stretch", theme=None)
 
 st.write("Show custom colors:")
 st.vega_lite_chart(
@@ -175,7 +162,7 @@ st.vega_lite_chart(
         },
         "config": {"background": "purple", "axis": {"labelColor": "blue"}},
     },
-    use_container_width=True,
+    width="stretch",
 )
 
 spec = {
@@ -187,4 +174,52 @@ spec = {
 }
 
 # empty chart
-st.vega_lite_chart(spec, use_container_width=True)
+st.vega_lite_chart(spec, width="stretch")
+
+data1 = {"VALUE": [420, 380, 390], "DATE": [50, 60, 70]}
+df_data = pd.DataFrame(data1)
+
+data2 = {
+    "VALUE": [420, 380, 600, 390],
+    "DATE": [50, 60, 70, 80],
+}
+
+
+if st.button(label="change"):
+    df_data = pd.DataFrame(data2)
+
+st.dataframe(df_data)
+st.vega_lite_chart(
+    data=df_data,
+    spec={
+        "autosize": {
+            "type": "fit",
+            "contains": "padding",
+            "resize": True,
+        },
+        "title": "test",
+        "layer": [
+            {
+                "layer": [
+                    {
+                        "mark": "line",
+                    },
+                ],
+                "encoding": {
+                    "x": {
+                        "field": "DATE",
+                        "title": "",
+                        "type": "quantitative",
+                    },
+                    "y": {
+                        "field": "VALUE",
+                        "title": "",
+                        "type": "quantitative",
+                    },
+                },
+            },
+        ],
+    },
+    width="stretch",
+    theme="streamlit",
+)

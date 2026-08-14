@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,7 +17,19 @@ from datetime import date, datetime
 import streamlit as st
 from streamlit import runtime
 
-v1 = st.date_input("Single date", date(1970, 1, 1), min_value=date(1970, 1, 1))
+leading_indent_regular_text_tooltip = """
+This is a regular text block!
+Test1
+Test2
+
+"""
+
+v1 = st.date_input(
+    "Single date",
+    date(1970, 1, 1),
+    min_value=date(1970, 1, 1),
+    help=leading_indent_regular_text_tooltip,
+)
 st.write("Value 1:", v1)
 
 v2 = st.date_input("Single datetime", datetime(2019, 7, 6, 21, 15), help="Help text")
@@ -36,12 +48,18 @@ v6 = st.date_input("Disabled, no date", [], disabled=True)
 st.write("Value 6:", v6)
 
 v7 = st.date_input(
-    "Label hidden", datetime(2019, 7, 6, 21, 15), label_visibility="hidden"
+    "Label hidden",
+    datetime(2019, 7, 6, 21, 15),
+    label_visibility="hidden",
+    key="date_input_7",
 )
 st.write("Value 7:", v7)
 
 v8 = st.date_input(
-    "Label collapsed", datetime(2019, 7, 6, 21, 15), label_visibility="collapsed"
+    "Label collapsed",
+    datetime(2019, 7, 6, 21, 15),
+    label_visibility="collapsed",
+    key="date_input_8",
 )
 st.write("Value 8:", v8)
 
@@ -89,3 +107,88 @@ v14 = st.date_input(
     key="date_input_14",
 )
 st.write("Value 14:", v14)
+
+st.date_input(
+    "date input 15 -> :material/check: :rainbow[Fancy] _**markdown** `label` _support_",
+    date(1970, 1, 1),
+    key="date_input_15",
+)
+
+st.date_input("Date input 16 (width=200px)", date(1970, 1, 1), width=200)
+st.date_input("Date input 17 (width='stretch')", date(1970, 1, 1), width="stretch")
+
+st.write("""This is a block of text. We can click on it to
+         trigger a click outside of the element to submit the value.""")
+
+# --- Bound widgets (query-params) ---
+
+bound_single = st.date_input(
+    "Bound single date",
+    value=date(2025, 1, 15),
+    key="bound_date",
+    bind="query-params",
+)
+st.write("Bound date:", bound_single)
+
+bound_clearable = st.date_input(
+    "Bound clearable date",
+    value=None,
+    key="bound_clearable_date",
+    bind="query-params",
+)
+st.write("Bound clearable date:", bound_clearable)
+
+bound_range = st.date_input(
+    "Bound date range",
+    value=[date(2025, 3, 1), date(2025, 3, 15)],
+    key="bound_range",
+    bind="query-params",
+)
+st.write("Bound range:", bound_range)
+
+bound_minmax = st.date_input(
+    "Bound with bounds",
+    value=date(2025, 6, 15),
+    min_value=date(2025, 1, 1),
+    max_value=date(2025, 12, 31),
+    key="bound_minmax_date",
+    bind="query-params",
+)
+st.write("Bound minmax:", bound_minmax)
+
+if st.toggle("Update date input props"):
+    dval = st.date_input(
+        "Updated dynamic date input",
+        value=date(2023, 9, 10),
+        width=300,
+        help="updated help",
+        on_change=lambda a, param: print(
+            f"Updated date input - callback triggered: {a} {param}"
+        ),
+        args=("Updated date arg",),
+        kwargs={"param": "updated kwarg param"},
+        key="dynamic_date_input_with_key",
+        min_value=date(2020, 1, 1),
+        max_value=date(2025, 1, 1),
+        # Whitelisted kwargs:
+        format="YYYY/MM/DD",
+    )
+    st.write("Updated date input value:", dval)
+else:
+    dval = st.date_input(
+        "Initial dynamic date input",
+        value=date(2020, 1, 1),
+        width="stretch",
+        help="initial help",
+        on_change=lambda a, param: print(
+            f"Initial date input - callback triggered: {a} {param}"
+        ),
+        args=("Initial date arg",),
+        kwargs={"param": "initial kwarg param"},
+        key="dynamic_date_input_with_key",
+        min_value=date(2010, 1, 1),
+        max_value=date(2030, 1, 1),
+        # Whitelisted kwargs:
+        format="YYYY/MM/DD",
+    )
+    st.write("Initial date input value:", dval)

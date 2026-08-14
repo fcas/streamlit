@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,12 @@
  * limitations under the License.
  */
 
-import React from "react"
-import "@testing-library/jest-dom"
-import { fireEvent, screen } from "@testing-library/react"
-import {
-  render,
-  ScriptRunState,
-  mockTheme,
-  SessionEvent,
-} from "@streamlit/lib"
-import { ConnectionState } from "@streamlit/app/src/connection/ConnectionState"
-import { SessionEventDispatcher } from "@streamlit/app/src/SessionEventDispatcher"
+import { act, screen, waitFor } from "@testing-library/react"
+import userEvent from "@testing-library/user-event"
+
+import { ConnectionState } from "@streamlit/connection"
+import { ScriptRunState } from "@streamlit/lib"
+import { render } from "@streamlit/lib/testing"
 
 import StatusWidget, { StatusWidgetProps } from "./StatusWidget"
 
@@ -32,18 +27,20 @@ const getProps = (
   propOverrides: Partial<StatusWidgetProps> = {}
 ): StatusWidgetProps => ({
   connectionState: ConnectionState.CONNECTED,
-  sessionEventDispatcher: new SessionEventDispatcher(),
-  scriptRunState: ScriptRunState.RUNNING,
-  rerunScript: () => {},
-  stopScript: () => {},
+  scriptRunState: ScriptRunState.NOT_RUNNING,
+  rerunScript: vi.fn(),
+  stopScript: vi.fn(),
   allowRunOnSave: true,
-  theme: mockTheme.emotion,
+  showScriptChangedActions: false,
   ...propOverrides,
 })
 
 describe("StatusWidget element", () => {
   it("renders a StatusWidget", () => {
-    render(<StatusWidget {...getProps()} />)
+    // StatusWidget only renders when there's something to show
+    // For CONNECTED state with NOT_RUNNING script, it doesn't render
+    // So we test with a showScriptChangedActions=true to make it render
+    render(<StatusWidget {...getProps({ showScriptChangedActions: true })} />)
 
     expect(screen.getByTestId("stStatusWidget")).toBeInTheDocument()
   })
@@ -74,26 +71,14 @@ describe("StatusWidget element", () => {
     expect(screen.getByTestId("stTooltipHoverTarget")).toBeInTheDocument()
   })
 
-  it("renders its tooltip when running and minimized", () => {
-    render(<StatusWidget {...getProps()} />)
-    expect(
-      screen.queryByTestId("stTooltipHoverTarget")
-    ).not.toBeInTheDocument()
-
-    // Set scrollY so shouldMinimize returns true
-    global.scrollY = 50
-
-    render(<StatusWidget {...getProps()} />)
-    expect(screen.getByTestId("stTooltipHoverTarget")).toBeInTheDocument()
-
-    // Reset scrollY for following tests not impacted
-    global.scrollY = 0
-  })
-
   it("does not render its tooltip when connected", () => {
+    // When connected with script changes, it should render without tooltip
     render(
       <StatusWidget
-        {...getProps({ connectionState: ConnectionState.CONNECTED })}
+        {...getProps({
+          connectionState: ConnectionState.CONNECTED,
+          showScriptChangedActions: true,
+        })}
       />
     )
 
@@ -102,164 +87,159 @@ describe("StatusWidget element", () => {
     ).not.toBeInTheDocument()
   })
 
-  it("sets and unsets the sessionEventConnection", () => {
-    const sessionEventDispatcher = new SessionEventDispatcher()
-    const connectSpy = jest.fn()
-    const disconnectSpy = jest.fn()
-    sessionEventDispatcher.onSessionEvent.connect =
-      connectSpy.mockImplementation(() => ({
-        disconnect: disconnectSpy,
-      }))
-
-    const { unmount } = render(
-      <StatusWidget {...getProps({ sessionEventDispatcher })} />
+  it("calls stopScript when clicked", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    vi.useFakeTimers()
+    const stopScript = vi.fn()
+    render(
+      <StatusWidget
+        {...getProps({ stopScript, scriptRunState: ScriptRunState.RUNNING })}
+      />
     )
 
-    expect(connectSpy).toHaveBeenCalled()
+    // Advance timers to ensure the running animation is shown
+    // Wrapped in act() to handle CSSTransition state updates
+    act(() => {
+      vi.runAllTimers()
+    })
 
-    unmount()
+    // Wait for the stop button to appear
+    const stopButton = await screen.findByRole("button", { name: "Stop" })
 
-    expect(disconnectSpy).toHaveBeenCalled()
-  })
-
-  it("calls stopScript when clicked", () => {
-    const stopScript = jest.fn()
-    render(<StatusWidget {...getProps({ stopScript })} />)
-
-    fireEvent.click(screen.getByTestId("baseButton-header"))
+    await user.click(stopButton)
 
     expect(stopScript).toHaveBeenCalled()
+    vi.useRealTimers()
   })
 
-  it("shows the rerun button when script changes", () => {
-    const sessionEventDispatcher = new SessionEventDispatcher()
-    const rerunScript = jest.fn()
+  it("shows the rerun button when script changes", async () => {
+    const user = userEvent.setup()
+    const rerunScript = vi.fn()
 
     render(
       <StatusWidget
         {...getProps({
           rerunScript,
-          sessionEventDispatcher,
           scriptRunState: ScriptRunState.NOT_RUNNING,
+          showScriptChangedActions: true,
         })}
       />
     )
 
-    sessionEventDispatcher.handleSessionEventMsg(
-      new SessionEvent({
-        scriptChangedOnDisk: true,
-        scriptWasManuallyStopped: null,
-        scriptCompilationException: null,
-      })
+    const buttons = await waitFor(
+      () => {
+        const foundButtons = screen.getAllByRole("button")
+        expect(foundButtons).toHaveLength(2)
+        return foundButtons
+      },
+      { timeout: 1000 }
     )
-
-    const buttons = screen.getAllByRole("button")
-    expect(buttons).toHaveLength(2)
 
     expect(buttons[0]).toHaveTextContent("Rerun")
     expect(buttons[1]).toHaveTextContent("Always rerun")
 
     // Click "Rerun" button
-    fireEvent.click(buttons[0])
+    await user.click(buttons[0])
 
     expect(rerunScript).toHaveBeenCalledWith(false)
   })
 
-  it("shows the always rerun button when script changes", () => {
-    const sessionEventDispatcher = new SessionEventDispatcher()
-    const rerunScript = jest.fn()
+  it("shows the always rerun button when script changes", async () => {
+    const user = userEvent.setup()
+    const rerunScript = vi.fn()
 
     render(
       <StatusWidget
         {...getProps({
           rerunScript,
-          sessionEventDispatcher,
           scriptRunState: ScriptRunState.NOT_RUNNING,
+          showScriptChangedActions: true,
         })}
       />
     )
 
-    sessionEventDispatcher.handleSessionEventMsg(
-      new SessionEvent({
-        scriptChangedOnDisk: true,
-        scriptWasManuallyStopped: null,
-        scriptCompilationException: null,
-      })
+    const buttons = await waitFor(
+      () => {
+        const foundButtons = screen.getAllByRole("button")
+        expect(foundButtons).toHaveLength(2)
+        return foundButtons
+      },
+      { timeout: 1000 }
     )
-
-    const buttons = screen.getAllByRole("button")
-    expect(buttons).toHaveLength(2)
 
     expect(buttons[0]).toHaveTextContent("Rerun")
     expect(buttons[1]).toHaveTextContent("Always rerun")
 
     // Click "Always Rerun" button
-    fireEvent.click(buttons[1])
+    await user.click(buttons[1])
 
     expect(rerunScript).toHaveBeenCalledWith(true)
   })
 
-  it("does not show the always rerun button when script changes", () => {
-    const sessionEventDispatcher = new SessionEventDispatcher()
-    const rerunScript = jest.fn()
+  it("does not show the always rerun button when script changes", async () => {
+    const rerunScript = vi.fn()
 
     render(
       <StatusWidget
         {...getProps({
           rerunScript,
-          sessionEventDispatcher,
           scriptRunState: ScriptRunState.NOT_RUNNING,
           allowRunOnSave: false,
+          showScriptChangedActions: true,
         })}
       />
     )
 
-    sessionEventDispatcher.handleSessionEventMsg(
-      new SessionEvent({
-        scriptChangedOnDisk: true,
-        scriptWasManuallyStopped: null,
-        scriptCompilationException: null,
-      })
+    const buttons = await waitFor(
+      () => {
+        const foundButtons = screen.getAllByRole("button")
+        expect(foundButtons).toHaveLength(1)
+        return foundButtons
+      },
+      { timeout: 1000 }
     )
-    const buttons = screen.getAllByRole("button")
-    expect(buttons).toHaveLength(1)
 
     expect(buttons[0]).toHaveTextContent("Rerun")
+  })
+
+  it("calls always run on save", async () => {
+    const user = userEvent.setup()
+    const rerunScript = vi.fn()
+
+    render(
+      <StatusWidget
+        {...getProps({
+          rerunScript,
+          scriptRunState: ScriptRunState.NOT_RUNNING,
+          showScriptChangedActions: true,
+        })}
+      />
+    )
+
+    // Verify the Always rerun button is visible
+    expect(
+      await screen.findByText("Always rerun", {}, { timeout: 1000 })
+    ).toBeVisible()
+
+    // Click "Always rerun" button
+    const alwaysRerunButton = screen.getByText("Always rerun")
+    await user.click(alwaysRerunButton)
+
+    expect(rerunScript).toHaveBeenCalledWith(true)
   })
 })
 
 describe("Running Icon", () => {
-  it("renders regular running gif before New Years", () => {
-    jest.useFakeTimers()
-    jest.setSystemTime(new Date("December 30, 2022 23:59:00"))
-
-    render(
-      <StatusWidget
-        {...getProps({ scriptRunState: ScriptRunState.RUNNING })}
-      />
-    )
-
-    const icon = screen.getByRole("img")
-    expect(icon).toHaveAttribute("src", "icon_running.gif")
+  beforeEach(() => {
+    vi.useFakeTimers()
   })
 
-  it("renders firework gif on Dec 31st", () => {
-    jest.useFakeTimers()
-    jest.setSystemTime(new Date("December 31, 2022 00:00:00"))
-
-    render(
-      <StatusWidget
-        {...getProps({ scriptRunState: ScriptRunState.RUNNING })}
-      />
-    )
-
-    const icon = screen.getByRole("img")
-    expect(icon).toHaveAttribute("src", "fireworks.gif")
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
-  it("renders firework gif on Jan 6th", () => {
-    jest.useFakeTimers()
-    jest.setSystemTime(new Date("January 6, 2023 23:59:00"))
+  it("renders regular running icon before New Years", async () => {
+    vi.setSystemTime(new Date("December 30, 2022 23:59:00"))
 
     render(
       <StatusWidget
@@ -267,13 +247,19 @@ describe("Running Icon", () => {
       />
     )
 
-    const icon = screen.getByRole("img")
-    expect(icon).toHaveAttribute("src", "fireworks.gif")
+    // Wrapped in act() to handle CSSTransition state updates
+    act(() => {
+      vi.runAllTimers()
+    })
+
+    await waitFor(() => {
+      const icon = screen.getByTestId("stStatusWidgetRunningManIcon")
+      expect(icon).toBeVisible()
+    })
   })
 
-  it("renders regular running gif after New Years", () => {
-    jest.useFakeTimers()
-    jest.setSystemTime(new Date("January 7, 2023 00:00:00"))
+  it("renders firework gif on Dec 31st", async () => {
+    vi.setSystemTime(new Date("December 31, 2022 00:00:00"))
 
     render(
       <StatusWidget
@@ -281,7 +267,80 @@ describe("Running Icon", () => {
       />
     )
 
-    const icon = screen.getByRole("img")
-    expect(icon).toHaveAttribute("src", "icon_running.gif")
+    // Wrapped in act() to handle CSSTransition state updates
+    act(() => {
+      vi.runAllTimers()
+    })
+
+    await waitFor(() => {
+      const icon = screen.getByTestId("stStatusWidgetNewYearsIcon")
+      expect(icon).toBeVisible()
+      expect(icon).toHaveAttribute("src", "/src/assets/img/fireworks.gif")
+    })
+  })
+
+  it("renders firework gif on Jan 6th", async () => {
+    vi.setSystemTime(new Date("January 6, 2023 23:59:00"))
+
+    render(
+      <StatusWidget
+        {...getProps({ scriptRunState: ScriptRunState.RUNNING })}
+      />
+    )
+
+    // Wrapped in act() to handle CSSTransition state updates
+    act(() => {
+      vi.runAllTimers()
+    })
+
+    await waitFor(() => {
+      const icon = screen.getByTestId("stStatusWidgetNewYearsIcon")
+      expect(icon).toBeVisible()
+      expect(icon).toHaveAttribute("src", "/src/assets/img/fireworks.gif")
+    })
+  })
+
+  it("renders regular running gif after New Years", async () => {
+    vi.setSystemTime(new Date("January 7, 2023 00:00:00"))
+
+    render(
+      <StatusWidget
+        {...getProps({ scriptRunState: ScriptRunState.RUNNING })}
+      />
+    )
+
+    // Wrapped in act() to handle CSSTransition state updates
+    act(() => {
+      vi.runAllTimers()
+    })
+
+    await waitFor(() => {
+      const icon = screen.getByTestId("stStatusWidgetRunningManIcon")
+      expect(icon).toBeVisible()
+    })
+  })
+
+  it("delays render of running gif", async () => {
+    // Set system time so test doesn't fail during New Years
+    vi.setSystemTime(new Date("January 7, 2023 00:00:00"))
+
+    render(
+      <StatusWidget
+        {...getProps({ scriptRunState: ScriptRunState.RUNNING })}
+      />
+    )
+
+    const icon = screen.queryByRole("img")
+    expect(icon).not.toBeInTheDocument()
+
+    // Wrapped in act() to handle CSSTransition state updates
+    act(() => {
+      vi.runAllTimers()
+    })
+
+    await waitFor(() => {
+      const icon = screen.getByTestId("stStatusWidgetRunningManIcon")
+      expect(icon).toBeVisible()
+    })
   })
 })

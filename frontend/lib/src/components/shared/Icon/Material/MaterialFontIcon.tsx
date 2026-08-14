@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,11 +14,10 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
+import { ReactElement } from "react"
 
-import snakeCase from "lodash/snakeCase"
+import type { IconSize } from "~lib/theme/types"
 
-import { IconSize, ThemeColor } from "@streamlit/lib/src/theme"
 import {
   StyledMaterialIcon,
   StyledMaterialIconProps,
@@ -28,7 +27,7 @@ interface MaterialIconProps {
   iconName: string
   pack: string
   size?: IconSize
-  color?: ThemeColor
+  color?: string
   margin?: string
   padding?: string
   testid?: string
@@ -51,8 +50,15 @@ const MaterialFontIcon = ({
   ...props
 }: MaterialIconProps): ReactElement => {
   return (
-    <StyledMaterialIcon {...getDefaultProps(props)}>
-      {snakeCase(iconName)}
+    <StyledMaterialIcon
+      {...getDefaultProps(props)}
+      data-testid={props.testid || "stIconMaterial"}
+      // Prevent the icon text from being translated
+      // this would break the icon display in the UI.
+      // https://github.com/streamlit/streamlit/issues/10168
+      translate="no"
+    >
+      {iconName}
     </StyledMaterialIcon>
   )
 }

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,27 +13,37 @@
 # limitations under the License.
 
 import time
-
-import requests
+from pathlib import Path
 
 import streamlit as st
 
-url1 = "https://www.w3schools.com/html/horse.ogg"
-file = requests.get(url1).content
-st.audio(file)
+# Construct static path relative to this script file to
+# allow its execution with different working directories.
+STATIC_DIR = Path(__file__).parent / "static"
+CAT_AUDIO = STATIC_DIR / "cat-purr.mp3"
 
+st.header("Audio from bytes")
+# Use a local asset so the app script does not depend on an external URL.
+st.audio(CAT_AUDIO.read_bytes(), format="audio/mpeg")
+
+st.header("Audio from URL")
 url2 = "https://mdn.github.io/learning-area/html/multimedia-and-embedding/video-and-audio-content/viper.mp3"
 st.audio(url2, start_time=10, end_time=13)
-
 st.audio(url2, start_time=15, end_time=19, loop=True)
 
-autoplay = st.checkbox("Autoplay", value=False)
+st.header("Audio from mp3 file (str and Path)")
+st.audio(str(CAT_AUDIO))
+st.audio(CAT_AUDIO)
 
+st.header("Audio with Autoplay")
+autoplay = st.checkbox("Autoplay", value=False)
 if st.button("Create some elements to unmount component"):
-    for i in range(3):
+    for _ in range(3):
         # The sleep here is needed, because it won't unmount the
         # component if this is too fast.
         time.sleep(1)
         st.write("Another element")
-
 st.audio(url2, autoplay=autoplay)
+
+st.audio(url2, width=300)
+st.audio(url2, width="stretch")

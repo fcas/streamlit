@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -20,14 +20,22 @@ import pytest
 from parameterized import parameterized
 
 import streamlit as st
-from streamlit.errors import StreamlitAPIException
-from streamlit.js_number import JSNumber
+from streamlit.elements.lib.js_number import JSNumber
+from streamlit.elements.widgets.number_input import NumberInputSerde
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitInvalidWidthError,
+    StreamlitMixedNumericTypesError,
+    StreamlitValueAboveMaxError,
+    StreamlitValueError,
+)
 from streamlit.proto.Alert_pb2 import Alert as AlertProto
-from streamlit.proto.LabelVisibilityMessage_pb2 import LabelVisibilityMessage
+from streamlit.proto.LabelVisibility_pb2 import LabelVisibility
 from streamlit.proto.NumberInput_pb2 import NumberInput
 from streamlit.proto.WidgetStates_pb2 import WidgetState
 from streamlit.testing.v1.app_test import AppTest
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.elements.layout_test_utils import WidthConfigFields
 
 
 class NumberInputTest(DeltaGeneratorTestCase):
@@ -37,58 +45,79 @@ class NumberInputTest(DeltaGeneratorTestCase):
         """
         st.number_input("Label", value=0)
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(NumberInput.INT, c.data_type)
+        assert c.data_type == NumberInput.INT
+        # No user-provided bounds, so has_min/has_max are False even though the
+        # proto still carries the safe-number sentinels for the input's attrs.
+        assert not c.has_min
+        assert c.min == JSNumber.MIN_SAFE_INTEGER
+        assert not c.has_max
+        assert c.max == JSNumber.MAX_SAFE_INTEGER
 
         st.number_input("Label", value=0.5)
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(NumberInput.FLOAT, c.data_type)
+        assert c.data_type == NumberInput.FLOAT
+        assert not c.has_min
+        assert c.min == JSNumber.MIN_NEGATIVE_VALUE
+        assert not c.has_max
+        assert c.max == JSNumber.MAX_VALUE
 
     def test_min_value_zero_sets_default_value(self):
         st.number_input("Label", 0, 10)
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.default, 0)  # the 0 we provided, not 0.0!
+        assert c.default == 0  # the 0 we provided, not 0.0!
 
     def test_just_label(self):
         """Test that it can be called with no value."""
         st.number_input("the label")
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.label, "the label")
-        self.assertEqual(
-            c.label_visibility.value,
-            LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE,
+        assert c.label == "the label"
+        assert (
+            c.label_visibility.value == LabelVisibility.LabelVisibilityOptions.VISIBLE
         )
-        self.assertEqual(c.default, 0.0)
-        self.assertEqual(c.HasField("default"), True)
-        self.assertEqual(c.has_min, False)
-        self.assertEqual(c.has_max, False)
-        self.assertEqual(c.disabled, False)
-        self.assertEqual(c.placeholder, "")
+        assert c.default == 0.0
+        assert c.HasField("default")
+        assert not c.disabled
+        assert c.placeholder == ""
 
     def test_just_disabled(self):
         """Test that it can be called with disabled param."""
         st.number_input("the label", disabled=True)
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.disabled, True)
+        assert c.disabled
 
     def test_placeholder(self):
         """Test that it can be called with placeholder param."""
         st.number_input("the label", placeholder="Type a number...")
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.placeholder, "Type a number...")
+        assert c.placeholder == "Type a number..."
+
+    def test_emoji_icon(self):
+        """Test that it can be called with an emoji icon."""
+        st.number_input("the label", icon="💵")
+
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.icon == "💵"
+
+    def test_material_icon(self):
+        """Test that it can be called with a material icon."""
+        st.number_input("the label", icon=":material/attach_money:")
+
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.icon == ":material/attach_money:"
 
     def test_none_value(self):
         """Test that it can be called with None as value."""
         st.number_input("the label", value=None)
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.label, "the label")
+        assert c.label == "the label"
         # If a proto property is null is not determined by this value,
         # but by the check via the HasField method:
-        self.assertEqual(c.default, 0.0)
-        self.assertEqual(c.HasField("default"), False)
+        assert c.default == 0.0
+        assert not c.HasField("default")
 
     def test_none_value_with_int_min(self):
         """Test that it can be called with None as value and
@@ -96,70 +125,90 @@ class NumberInputTest(DeltaGeneratorTestCase):
         st.number_input("the label", value=None, min_value=1)
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.label, "the label")
+        assert c.label == "the label"
         # If a proto property is null is not determined by this value,
         # but by the check via the HasField method:
-        self.assertEqual(c.default, 0.0)
-        self.assertEqual(c.HasField("default"), False)
-        self.assertEqual(c.has_min, True)
-        self.assertEqual(c.min, 1)
-        self.assertEqual(c.data_type, NumberInput.INT)
+        assert c.default == 0.0
+        assert not c.HasField("default")
+        assert c.has_min
+        assert c.min == 1
+        assert c.data_type == NumberInput.INT
 
     def test_default_value_when_min_is_passed(self):
         st.number_input("the label", min_value=1, max_value=10)
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.label, "the label")
-        self.assertEqual(c.default, 1)
+        assert c.label == "the label"
+        assert c.default == 1
+
+    def test_mixed_numeric_types_raises(self):
+        """Mixing an int bound with a float bound raises a mixed-types error."""
+        with pytest.raises(StreamlitMixedNumericTypesError):
+            st.number_input("the label", min_value=1, max_value=2.0)
+
+    def test_default_value_is_int_zero_with_only_int_step(self):
+        """With only an int ``step`` (no value/min), the default value is int 0."""
+        st.number_input("the label", step=1)
+
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.default == 0
+        assert c.format == "%d"
+
+    def test_default_value_is_float_zero_with_only_float_step(self):
+        """With only a float ``step`` (no value/min), the default value is float 0.0."""
+        st.number_input("the label", step=1.0)
+
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.default == 0.0
 
     def test_value_between_range(self):
         st.number_input("the label", 0, 11, 10)
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.label, "the label")
-        self.assertEqual(c.default, 10)
-        self.assertEqual(c.min, 0)
-        self.assertEqual(c.max, 11)
-        self.assertEqual(c.has_min, True)
-        self.assertEqual(c.has_max, True)
+        assert c.label == "the label"
+        assert c.default == 10
+        assert c.min == 0
+        assert c.max == 11
+        assert c.has_min
+        assert c.has_max
 
     def test_default_step_when_a_value_is_int(self):
         st.number_input("the label", value=10)
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.step, 1.0)
+        assert c.step == 1.0
 
     def test_default_step_when_a_value_is_float(self):
         st.number_input("the label", value=10.5)
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual("%0.2f" % c.step, "0.01")
+        assert f"{c.step:0.2f}" == "0.01"
 
     def test_default_format_int(self):
         st.number_input("the label", value=10)
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.format, "%d")
+        assert c.format == "%d"
 
     def test_default_format_float(self):
         st.number_input("the label", value=10.5)
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.format, "%0.2f")
+        assert c.format == "%0.2f"
 
     def test_format_int_and_default_step(self):
         st.number_input("the label", value=10, format="%d")
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.format, "%d")
-        self.assertEqual(c.step, 1)
+        assert c.format == "%d"
+        assert c.step == 1
 
     def test_format_float_and_default_step(self):
         st.number_input("the label", value=10.0, format="%f")
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.format, "%f")
-        self.assertEqual("%0.2f" % c.step, "0.01")
+        assert c.format == "%f"
+        assert f"{c.step:0.2f}" == "0.01"
 
     def test_accept_valid_formats(self):
         # note: We decided to accept %u even though it is slightly problematic.
@@ -168,32 +217,32 @@ class NumberInputTest(DeltaGeneratorTestCase):
         for char in SUPPORTED:
             st.number_input("any label", format="%" + char)
             c = self.get_delta_from_queue().new_element.number_input
-            self.assertEqual(c.format, "%" + char)
+            assert c.format == "%" + char
 
     def test_warns_on_float_type_with_int_format(self):
         st.number_input("the label", value=5.0, format="%d")
 
         c = self.get_delta_from_queue(-2).new_element.alert
-        self.assertEqual(c.format, AlertProto.WARNING)
-        self.assertEqual(
-            c.body,
-            "Warning: NumberInput value below has type float, but format %d displays as integer.",
+        assert c.format == AlertProto.WARNING
+        assert (
+            c.body
+            == "Warning: NumberInput value below has type float, but format %d displays as integer."
         )
 
     def test_warns_on_int_type_with_float_format(self):
         st.number_input("the label", value=5, format="%0.2f")
 
         c = self.get_delta_from_queue(-2).new_element.alert
-        self.assertEqual(c.format, AlertProto.WARNING)
-        self.assertEqual(
-            c.body,
-            "Warning: NumberInput value below has type int so is displayed as int despite format string %0.2f.",
+        assert c.format == AlertProto.WARNING
+        assert (
+            c.body
+            == "Warning: NumberInput value below has type int so is displayed as int despite format string %0.2f."
         )
 
     def test_error_on_unsupported_formatters(self):
         UNSUPPORTED = "pAn"
         for char in UNSUPPORTED:
-            with pytest.raises(StreamlitAPIException) as exc_message:
+            with pytest.raises(StreamlitAPIException):
                 st.number_input("any label", value=3.14, format="%" + char)
 
     def test_error_on_invalid_formats(self):
@@ -204,41 +253,84 @@ class NumberInputTest(DeltaGeneratorTestCase):
             "%d%d",
         ]
         for fmt in BAD_FORMATS:
-            with pytest.raises(StreamlitAPIException) as exc_message:
+            with pytest.raises(StreamlitAPIException):
                 st.number_input("any label", value=3.14, format=fmt)
 
     def test_value_out_of_bounds(self):
         # Max int
         with pytest.raises(StreamlitAPIException) as exc:
-            value = JSNumber.MAX_SAFE_INTEGER + 1
-            st.number_input("Label", value=value)
-        self.assertEqual(
-            "`value` (%s) must be <= (1 << 53) - 1" % str(value), str(exc.value)
-        )
+            int_value = JSNumber.MAX_SAFE_INTEGER + 1
+            st.number_input("Label", value=int_value)
+        assert f"`value` ({int_value}) must be <= (1 << 53) - 1" == str(exc.value)
 
         # Min int
         with pytest.raises(StreamlitAPIException) as exc:
-            value = JSNumber.MIN_SAFE_INTEGER - 1
-            st.number_input("Label", value=value)
-        self.assertEqual(
-            "`value` (%s) must be >= -((1 << 53) - 1)" % str(value), str(exc.value)
-        )
+            int_value = JSNumber.MIN_SAFE_INTEGER - 1
+            st.number_input("Label", value=int_value)
+        assert f"`value` ({int_value}) must be >= -((1 << 53) - 1)" == str(exc.value)
 
         # Max float
         with pytest.raises(StreamlitAPIException) as exc:
-            value = 2e308
-            st.number_input("Label", value=value)
-        self.assertEqual(
-            "`value` (%s) must be <= 1.797e+308" % str(value), str(exc.value)
-        )
+            float_val = 2e308
+            st.number_input("Label", value=float_val)
+        assert f"`value` ({float_val}) must be <= 1.797e+308" == str(exc.value)
 
         # Min float
         with pytest.raises(StreamlitAPIException) as exc:
-            value = -2e308
-            st.number_input("Label", value=value)
-        self.assertEqual(
-            "`value` (%s) must be >= -1.797e+308" % str(value), str(exc.value)
-        )
+            float_val = -2e308
+            st.number_input("Label", value=float_val)
+        assert f"`value` ({float_val}) must be >= -1.797e+308" == str(exc.value)
+
+    def test_min_and_max_setting_for_integer_inputs(self):
+        """Test min & max set by user respected, otherwise use defaults."""
+        st.number_input("Label", value=2, step=1, min_value=0, max_value=10)
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.min == 0
+        assert c.max == 10
+
+        st.number_input("Label", value=2, step=1, min_value=0)
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.min == 0
+        assert c.max == JSNumber.MAX_SAFE_INTEGER
+
+        st.number_input("Label", value=2, step=1, max_value=10)
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.min == JSNumber.MIN_SAFE_INTEGER
+        assert c.max == 10
+
+        st.number_input("Label", value=2, step=1)
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.min == JSNumber.MIN_SAFE_INTEGER
+        assert c.max == JSNumber.MAX_SAFE_INTEGER
+
+    def test_has_min_max_reflect_user_intent(self):
+        """has_min/has_max must reflect whether the user explicitly set bounds,
+        not the safe-number sentinels used to backfill unset bounds."""
+        # No bounds provided: both flags are False.
+        st.number_input("Label")
+        c = self.get_delta_from_queue().new_element.number_input
+        assert not c.has_min
+        assert not c.has_max
+
+        # Only min_value provided: has_min True, has_max False.
+        st.number_input("Label", min_value=0)
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.has_min
+        assert c.min == 0
+        assert not c.has_max
+
+        # Only max_value provided: has_max True, has_min False.
+        st.number_input("Label", max_value=10)
+        c = self.get_delta_from_queue().new_element.number_input
+        assert not c.has_min
+        assert c.has_max
+        assert c.max == 10
+
+        # Both bounds provided: both flags True.
+        st.number_input("Label", min_value=0, max_value=10)
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.has_min
+        assert c.has_max
 
     def test_outside_form(self):
         """Test that form id is marshalled correctly outside of a form."""
@@ -246,7 +338,7 @@ class NumberInputTest(DeltaGeneratorTestCase):
         st.number_input("foo")
 
         proto = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(proto.form_id, "")
+        assert proto.form_id == ""
 
     @patch("streamlit.runtime.Runtime.exists", MagicMock(return_value=True))
     def test_inside_form(self):
@@ -256,31 +348,31 @@ class NumberInputTest(DeltaGeneratorTestCase):
             st.number_input("foo")
 
         # 2 elements will be created: form block, widget
-        self.assertEqual(len(self.get_all_deltas_from_queue()), 2)
+        assert len(self.get_all_deltas_from_queue()) == 2
 
         form_proto = self.get_delta_from_queue(0).add_block
         number_input_proto = self.get_delta_from_queue(1).new_element.number_input
-        self.assertEqual(number_input_proto.form_id, form_proto.form.form_id)
+        assert number_input_proto.form_id == form_proto.form.form_id
 
     def test_inside_column(self):
         """Test that it works correctly inside of a column."""
 
-        col1, col2 = st.columns(2)
+        col1, _col2 = st.columns(2)
         with col1:
             st.number_input("foo", 0, 10)
 
         all_deltas = self.get_all_deltas_from_queue()
 
         # 4 elements will be created: 1 horizontal block, 2 columns, 1 widget
-        self.assertEqual(len(all_deltas), 4)
+        assert len(all_deltas) == 4
         number_input_proto = self.get_delta_from_queue().new_element.number_input
 
-        self.assertEqual(number_input_proto.label, "foo")
-        self.assertEqual(number_input_proto.step, 1.0)
-        self.assertEqual(number_input_proto.default, 0)
+        assert number_input_proto.label == "foo"
+        assert number_input_proto.step == 1.0
+        assert number_input_proto.default == 0
 
     @patch("streamlit.runtime.Runtime.exists", MagicMock(return_value=True))
-    @patch("streamlit.elements.utils.get_session_state")
+    @patch("streamlit.elements.lib.policies.get_session_state")
     def test_no_warning_with_value_set_in_state(self, patched_get_session_state):
         mock_session_state = MagicMock()
         mock_session_state.is_new_state_value.return_value = True
@@ -289,18 +381,18 @@ class NumberInputTest(DeltaGeneratorTestCase):
         st.number_input("the label", min_value=1, max_value=10, key="number_input")
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.label, "the label")
-        self.assertEqual(c.default, 1)
+        assert c.label == "the label"
+        assert c.default == 1
 
         # Assert that no warning delta is enqueued when setting the widget
         # value via st.session_state.
-        self.assertEqual(len(self.get_all_deltas_from_queue()), 1)
+        assert len(self.get_all_deltas_from_queue()) == 1
 
     @parameterized.expand(
         [
-            ("visible", LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE),
-            ("hidden", LabelVisibilityMessage.LabelVisibilityOptions.HIDDEN),
-            ("collapsed", LabelVisibilityMessage.LabelVisibilityOptions.COLLAPSED),
+            ("visible", LabelVisibility.LabelVisibilityOptions.VISIBLE),
+            ("hidden", LabelVisibility.LabelVisibilityOptions.HIDDEN),
+            ("collapsed", LabelVisibility.LabelVisibilityOptions.COLLAPSED),
         ]
     )
     def test_label_visibility(self, label_visibility_value, proto_value):
@@ -308,22 +400,70 @@ class NumberInputTest(DeltaGeneratorTestCase):
         st.number_input("the label", label_visibility=label_visibility_value)
 
         c = self.get_delta_from_queue().new_element.number_input
-        self.assertEqual(c.label_visibility.value, proto_value)
+        assert c.label_visibility.value == proto_value
 
     def test_label_visibility_wrong_value(self):
-        with self.assertRaises(StreamlitAPIException) as e:
-            st.number_input("the label", label_visibility="wrong_value")
-        self.assertEqual(
-            str(e.exception),
-            "Unsupported label_visibility option 'wrong_value'. Valid values are "
-            "'visible', 'hidden' or 'collapsed'.",
+        with pytest.raises(StreamlitValueError) as e:
+            st.number_input("the label", label_visibility="wrong_value")  # type: ignore[call-arg]
+        assert (
+            str(e.value)
+            == "Invalid `label_visibility` value. Supported values: 'visible', 'hidden', 'collapsed'."
         )
 
+    def test_width_config_default(self):
+        """Test that default width is 'stretch'."""
+        st.number_input("the label")
+
+        c = self.get_delta_from_queue().new_element
+        assert (
+            c.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert c.width_config.use_stretch
+
+    def test_width_config_pixel(self):
+        """Test that pixel width works properly."""
+        st.number_input("the label", width=100)
+
+        c = self.get_delta_from_queue().new_element
+        assert (
+            c.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.PIXEL_WIDTH.value
+        )
+        assert c.width_config.pixel_width == 100
+
+    def test_width_config_stretch(self):
+        """Test that 'stretch' width works properly."""
+        st.number_input("the label", width="stretch")
+
+        c = self.get_delta_from_queue().new_element
+        assert (
+            c.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert c.width_config.use_stretch
+
+    @parameterized.expand(
+        [
+            "invalid",
+            -100,
+            0,
+            100.5,
+            None,
+        ]
+    )
+    def test_invalid_width(self, width):
+        """Test that invalid width values raise exceptions."""
+        with pytest.raises(StreamlitInvalidWidthError):
+            st.number_input("the label", width=width)
+
     def test_should_keep_type_of_return_value_after_rerun(self):
+        # set the initial page script hash
+        self.script_run_ctx.reset(page_script_hash=self.script_run_ctx.page_script_hash)
         # Generate widget id and reset context
         st.number_input("a number", min_value=1, max_value=100, key="number")
         widget_id = self.script_run_ctx.session_state.get_widget_states()[0].id
-        self.script_run_ctx.reset()
+        self.script_run_ctx.reset(page_script_hash=self.script_run_ctx.page_script_hash)
 
         # Set the state of the widgets to the test state
         widget_state = WidgetState()
@@ -337,8 +477,8 @@ class NumberInputTest(DeltaGeneratorTestCase):
         number = st.number_input("a number", min_value=1, max_value=100, key="number")
 
         # Assert output
-        self.assertEqual(number, 42)
-        self.assertEqual(type(number), int)
+        assert number == 42
+        assert type(number) is int
 
     @parameterized.expand(
         [
@@ -367,17 +507,90 @@ class NumberInputTest(DeltaGeneratorTestCase):
     def test_should_raise_exception_when_default_gt_max_and_min_is_none(self):
         value = 11
         max_value = 10
-        with pytest.raises(StreamlitAPIException):
+        with pytest.raises(StreamlitValueAboveMaxError):
             st.number_input("My Label", value=value, max_value=max_value)
+
+    def test_session_state_value_out_of_range_resets_to_default(self):
+        """Test that out of range session_state values reset to default.
+
+        When session_state is set to a value outside min/max bounds, the widget
+        should reset to its default value (similar to dynamic options in selectbox).
+        This supports dynamic min/max value changes.
+        """
+        # Value above max - should reset to default (min_value since value="min")
+        st.session_state.number_input = 10
+        result = st.number_input(
+            "number_input", min_value=1, max_value=5, key="number_input"
+        )
+        assert result == 1  # Reset to min_value (default when value="min")
+
+        # Value below min - should reset to default
+        st.session_state.number_input_1 = 10
+        result = st.number_input(
+            "number_input_1", min_value=15, max_value=20, key="number_input_1"
+        )
+        assert result == 15  # Reset to min_value (default when value="min")
 
     def test_shows_cached_widget_replay_warning(self):
         """Test that a warning is shown when this widget is used inside a cached function."""
         st.cache_data(lambda: st.number_input("the label"))()
 
         # The widget itself is still created, so we need to go back one element more:
-        el = self.get_delta_from_queue(-2).new_element.exception
-        self.assertEqual(el.type, "CachedWidgetWarning")
-        self.assertTrue(el.is_warning)
+        el = self.get_delta_from_queue(-3).new_element.exception
+        assert el.type == "CachedWidgetWarning"
+        assert el.is_warning
+
+    def test_stable_id_with_key(self):
+        """Test that the widget ID is stable when a stable key is provided."""
+        with patch(
+            "streamlit.elements.lib.utils._register_element_id",
+            return_value=MagicMock(),
+        ):
+            # First render with certain params
+            st.number_input(
+                label="Label 1",
+                key="number_input_key",
+                value=3,
+                help="Help 1",
+                disabled=False,
+                width="stretch",
+                on_change=lambda: None,
+                args=("arg1", "arg2"),
+                kwargs={"kwarg1": "kwarg1"},
+                label_visibility="visible",
+                placeholder="placeholder 1",
+                format="%0.2f",
+                icon=":material/attach_money:",
+                min_value=0,
+                max_value=10,
+                step=1,
+            )
+            c1 = self.get_delta_from_queue().new_element.number_input
+            id1 = c1.id
+
+            # Second render with different params but same key - ID should be stable
+            st.number_input(
+                label="Label 2",
+                key="number_input_key",
+                value=7,
+                help="Help 2",
+                disabled=True,
+                width=200,
+                on_change=lambda: None,
+                args=("arg_1", "arg_2"),
+                kwargs={"kwarg_1": "kwarg_1"},
+                label_visibility="hidden",
+                placeholder="placeholder 2",
+                format="%d",
+                icon="💵",
+                # Also change min_value, max_value, step - ID should still be stable
+                min_value=1,
+                max_value=20,
+                step=2,
+            )
+            c2 = self.get_delta_from_queue().new_element.number_input
+            id2 = c2.id
+            assert id1 == id2
 
 
 def test_number_input_interaction():
@@ -421,3 +634,247 @@ def test_None_session_state_value_retained():
     at = AppTest.from_function(script).run()
     at = at.button[0].click().run()
     assert at.number_input[0].value is None
+
+
+def test_dynamic_min_value_resets_value_when_below_new_min():
+    """Test that value resets to default when dynamically changing min_value makes current value invalid."""
+
+    def script():
+        import streamlit as st
+
+        if "update_bounds" not in st.session_state:
+            st.session_state["update_bounds"] = False
+
+        if st.session_state["update_bounds"]:
+            # New min_value=50 makes the previous value of 25 invalid
+            value = st.number_input(
+                "number", min_value=50, max_value=100, key="number", value=75
+            )
+        else:
+            value = st.number_input(
+                "number", min_value=0, max_value=100, key="number", value=50
+            )
+        st.write(f"value: {value}")
+
+        if st.button("Toggle bounds"):
+            st.session_state["update_bounds"] = not st.session_state["update_bounds"]
+
+    at = AppTest.from_function(script).run()
+    assert at.number_input[0].value == 50
+
+    # Set value to 25 (valid with min_value=0)
+    at = at.number_input[0].set_value(25).run()
+    assert at.number_input[0].value == 25
+
+    # Toggle bounds - the click updates session_state["update_bounds"] to True
+    at = at.button[0].click().run()
+    # AppTest requires an additional run to process the widget with the new bounds
+    at = at.run()
+    # Now min_value=50, so 25 is invalid and should reset to default (75)
+    assert at.number_input[0].value == 75
+
+
+def test_dynamic_max_value_resets_value_when_above_new_max():
+    """Test that value resets to default when dynamically changing max_value makes current value invalid."""
+
+    def script():
+        import streamlit as st
+
+        if "update_bounds" not in st.session_state:
+            st.session_state["update_bounds"] = False
+
+        if st.session_state["update_bounds"]:
+            # New max_value=50 makes the previous value of 75 invalid
+            value = st.number_input(
+                "number", min_value=0, max_value=50, key="number", value=25
+            )
+        else:
+            value = st.number_input(
+                "number", min_value=0, max_value=100, key="number", value=50
+            )
+        st.write(f"value: {value}")
+
+        if st.button("Toggle bounds"):
+            st.session_state["update_bounds"] = not st.session_state["update_bounds"]
+
+    at = AppTest.from_function(script).run()
+    assert at.number_input[0].value == 50
+
+    # Set value to 75 (valid with max_value=100)
+    at = at.number_input[0].set_value(75).run()
+    assert at.number_input[0].value == 75
+
+    # Toggle bounds - the click updates session_state["update_bounds"] to True
+    at = at.button[0].click().run()
+    # AppTest requires an additional run to process the widget with the new bounds
+    at = at.run()
+    # Now max_value=50, so 75 is invalid and should reset to default (25)
+    assert at.number_input[0].value == 25
+
+
+def test_dynamic_bounds_preserves_valid_value():
+    """Test that value is preserved when it remains valid after bound changes."""
+
+    def script():
+        import streamlit as st
+
+        if "update_bounds" not in st.session_state:
+            st.session_state["update_bounds"] = False
+
+        if st.session_state["update_bounds"]:
+            # Changing bounds but 50 is still valid (between 25-75)
+            value = st.number_input(
+                "number", min_value=25, max_value=75, key="number", value=50
+            )
+        else:
+            value = st.number_input(
+                "number", min_value=0, max_value=100, key="number", value=50
+            )
+        st.write(f"value: {value}")
+
+        if st.button("Toggle bounds"):
+            st.session_state["update_bounds"] = not st.session_state["update_bounds"]
+
+    at = AppTest.from_function(script).run()
+    assert at.number_input[0].value == 50
+
+    # Toggle bounds - the click updates session_state["update_bounds"] to True
+    at = at.button[0].click().run()
+    # AppTest requires an additional run to process the widget with the new bounds
+    at = at.run()
+    # 50 is still valid (between 25 and 75), so it should be preserved
+    assert at.number_input[0].value == 50
+
+
+def test_dynamic_bounds_with_float_values():
+    """Test dynamic min/max value changes with float values."""
+
+    def script():
+        import streamlit as st
+
+        if "update_bounds" not in st.session_state:
+            st.session_state["update_bounds"] = False
+
+        if st.session_state["update_bounds"]:
+            # New min_value=5.0 makes the previous value of 2.5 invalid
+            value = st.number_input(
+                "number", min_value=5.0, max_value=10.0, key="number", value=7.5
+            )
+        else:
+            value = st.number_input(
+                "number", min_value=0.0, max_value=10.0, key="number", value=5.0
+            )
+        st.write(f"value: {value}")
+
+        if st.button("Toggle bounds"):
+            st.session_state["update_bounds"] = not st.session_state["update_bounds"]
+
+    at = AppTest.from_function(script).run()
+    assert at.number_input[0].value == 5.0
+
+    # Set value to 2.5 (valid with min_value=0.0)
+    at = at.number_input[0].set_value(2.5).run()
+    assert at.number_input[0].value == 2.5
+
+    # Toggle bounds - the click updates session_state["update_bounds"] to True
+    at = at.button[0].click().run()
+    # AppTest requires an additional run to process the widget with the new bounds
+    at = at.run()
+    # Now min_value=5.0, so 2.5 is invalid and should reset to default (7.5)
+    assert at.number_input[0].value == 7.5
+
+
+class NumberInputBindQueryParamsTest(DeltaGeneratorTestCase):
+    """Tests for number_input bind='query-params' functionality."""
+
+    def test_bind_query_params_sets_query_param_key(self):
+        """Test that bind='query-params' with a key sets query_param_key in proto."""
+        st.number_input("the label", key="my_key", bind="query-params")
+
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.query_param_key == "my_key"
+
+    def test_bind_query_params_without_key_raises_exception(self):
+        """Test that bind='query-params' without a key raises an exception."""
+        with pytest.raises(StreamlitAPIException, match=r"must have a unique 'key'"):
+            st.number_input("the label", bind="query-params")
+
+    def test_no_bind_does_not_set_query_param_key(self):
+        """Test that without bind parameter, query_param_key is not set."""
+        st.number_input("the label", key="my_key", value=0)
+
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.query_param_key == ""
+        assert c.label == "the label"
+        assert c.default == 0
+
+    def test_invalid_bind_value_raises_exception(self):
+        """Test that an invalid bind value raises StreamlitValueError."""
+        with pytest.raises(StreamlitValueError, match=r"Invalid `bind` value"):
+            st.number_input("the label", key="my_key", bind="invalid-value")
+
+    def test_bind_query_params_with_int_value(self):
+        """Test that bind works with integer values."""
+        st.number_input("the label", value=42, key="my_key", bind="query-params")
+
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.query_param_key == "my_key"
+        assert c.data_type == NumberInput.INT
+
+    def test_bind_query_params_with_float_value(self):
+        """Test that bind works with float values."""
+        st.number_input("the label", value=3.14, key="my_key", bind="query-params")
+
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.query_param_key == "my_key"
+        assert c.data_type == NumberInput.FLOAT
+
+    def test_bind_query_params_with_min_max(self):
+        """Test that bind works with min/max constraints."""
+        st.number_input(
+            "the label",
+            min_value=0,
+            max_value=100,
+            value=50,
+            key="my_key",
+            bind="query-params",
+        )
+
+        c = self.get_delta_from_queue().new_element.number_input
+        assert c.query_param_key == "my_key"
+        assert c.has_min
+        assert c.min == 0
+        assert c.has_max
+        assert c.max == 100
+
+
+@pytest.mark.parametrize(
+    ("ui_value", "expected"),
+    [
+        (150, 50),  # Above max -> reset to default
+        (-50, 50),  # Below min -> reset to default
+        (50, 50),  # In range -> unchanged
+        (0, 0),  # At min -> unchanged
+        (100, 100),  # At max -> unchanged
+        (None, 50),  # None -> returns default value
+    ],
+)
+def test_serde_resets_out_of_range_to_default(ui_value, expected):
+    """Test that NumberInputSerde.deserialize resets out-of-range values to default."""
+    serde = NumberInputSerde(
+        value=50, data_type=NumberInput.INT, min_value=0, max_value=100
+    )
+    assert serde.deserialize(ui_value) == expected
+
+
+@pytest.mark.parametrize(
+    "ui_value",
+    [float("nan"), float("inf"), -float("inf")],
+    ids=["nan", "positive_inf", "negative_inf"],
+)
+def test_serde_resets_non_finite_float_to_default(ui_value: float) -> None:
+    """Test that NumberInputSerde.deserialize resets non-finite floats to default."""
+    serde = NumberInputSerde(
+        value=0.5, data_type=NumberInput.FLOAT, min_value=0.0, max_value=1.0
+    )
+    assert serde.deserialize(ui_value) == 0.5

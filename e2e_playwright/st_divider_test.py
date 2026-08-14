@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,8 +15,17 @@
 from playwright.sync_api import Page, expect
 
 from e2e_playwright.conftest import ImageCompareFunction
+from e2e_playwright.shared.app_utils import check_top_level_class
 
 
 def test_divider_renders(themed_app: Page, assert_snapshot: ImageCompareFunction):
-    expect(themed_app.locator(".element-container .stMarkdown hr")).to_be_visible()
-    assert_snapshot(themed_app.get_by_test_id("stMarkdown"), name="st_divider")
+    markdown_elements = themed_app.get_by_test_id("stMarkdown")
+    expect(themed_app.get_by_test_id("stMarkdown").first).to_be_visible()
+    assert_snapshot(markdown_elements.nth(0), name="st_divider")
+    assert_snapshot(markdown_elements.nth(1), name="st_divider_width_600")
+    assert_snapshot(markdown_elements.nth(2), name="st_divider_width_stretch")
+
+
+def test_check_top_level_class(app: Page):
+    """Check that the top level class is correctly set."""
+    check_top_level_class(app, "stMarkdown")

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,7 +16,7 @@
 
 // Note: Cached themes before version 1 were simply stored with key equal to
 // CACHED_THEME_BASE_KEY (with no version number).
-const CACHED_THEME_VERSION = 1
+const CACHED_THEME_VERSION = 2
 const CACHED_THEME_BASE_KEY = `stActiveTheme-${window.location.pathname}`
 
 export const LocalStore = {
@@ -24,20 +24,4 @@ export const LocalStore = {
   CACHED_THEME_BASE_KEY,
 
   ACTIVE_THEME: `${CACHED_THEME_BASE_KEY}-v${CACHED_THEME_VERSION}`,
-}
-
-// Method taken from
-// https://stackoverflow.com/questions/16427636/check-if-localstorage-is-available
-export const localStorageAvailable = (): boolean => {
-  const testData = "testData"
-
-  try {
-    const { localStorage } = window
-    localStorage.setItem(testData, testData)
-    localStorage.getItem(testData)
-    localStorage.removeItem(testData)
-  } catch (e) {
-    return false
-  }
-  return true
 }

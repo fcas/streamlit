@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,80 +14,36 @@
  * limitations under the License.
  */
 
-import { renderHook, act } from "@testing-library/react-hooks"
-import useScrollSpy, { debounce } from "./useScrollSpy"
+import { act, renderHook } from "@testing-library/react"
 
-describe("debounce function", () => {
-  beforeEach(() => {
-    jest.useFakeTimers()
-  })
-  it("should call the function immediately when no delay is provided", () => {
-    const fn = jest.fn()
-    const debouncedFn = debounce(fn, 0)
-
-    debouncedFn("arg1", "arg2")
-
-    expect(fn).toHaveBeenCalledTimes(1)
-    expect(fn).toHaveBeenCalledWith("arg1", "arg2")
-  })
-
-  it("should delay the function call when a delay is provided", () => {
-    const fn = jest.fn()
-    const debouncedFn = debounce(fn, 100)
-    debouncedFn("arg1", "arg2")
-    expect(fn).toHaveBeenCalledTimes(1)
-    expect(fn).toHaveBeenCalledWith("arg1", "arg2")
-
-    debouncedFn("arg3", "arg4")
-    expect(fn).not.toHaveBeenCalledWith("arg3", "arg4")
-    jest.advanceTimersByTime(99)
-    expect(fn).not.toHaveBeenCalledWith("arg3", "arg4")
-
-    jest.advanceTimersByTime(1)
-    expect(fn).toHaveBeenCalledTimes(2)
-    expect(fn).toHaveBeenCalledWith("arg3", "arg4")
-  })
-
-  it("should cancel the delay when the function is called again", () => {
-    const fn = jest.fn()
-    const debouncedFn = debounce(fn, 100)
-    debouncedFn("arg1", "arg2")
-    expect(fn).toHaveBeenCalledTimes(1)
-    expect(fn).toHaveBeenCalledWith("arg1", "arg2")
-
-    debouncedFn("arg3", "arg4")
-    jest.advanceTimersByTime(99)
-
-    debouncedFn("arg5", "arg6")
-    expect(fn).not.toHaveBeenCalledWith("arg5", "arg6")
-
-    jest.advanceTimersByTime(1)
-    expect(fn).toHaveBeenCalledTimes(2)
-    expect(fn).toHaveBeenCalledWith("arg5", "arg6")
-  })
-})
+import useScrollSpy from "./useScrollSpy"
 
 describe("useScrollSpy hook", () => {
   let target: HTMLElement
-  let eventHandler: ({ timeStampLow }: any) => void
+  let eventHandler: (event: {
+    timeStampLow: number
+    target: EventTarget | null
+  }) => void
 
   beforeEach(() => {
-    jest.useFakeTimers()
+    vi.useFakeTimers()
     target = document.createElement("div")
-    eventHandler = jest.fn()
+    eventHandler = vi.fn()
 
     document.body.appendChild(target)
-    jest.spyOn(target, "addEventListener")
-    jest.spyOn(target, "removeEventListener")
+    vi.spyOn(target, "addEventListener")
+    vi.spyOn(target, "removeEventListener")
   })
 
   afterEach(() => {
     document.body.removeChild(target)
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
   it("should set up and clean up event listeners", () => {
-    const { unmount } = renderHook(() => useScrollSpy(target, eventHandler))
+    const { unmount } = renderHook(() =>
+      useScrollSpy(target, eventHandler, true)
+    )
 
     expect(target.addEventListener).toHaveBeenCalledWith(
       "scroll",
@@ -108,14 +64,21 @@ describe("useScrollSpy hook", () => {
   })
 
   it("should not set up event listeners if no target is provided", () => {
-    renderHook(() => useScrollSpy(null, eventHandler))
+    renderHook(() => useScrollSpy(null, eventHandler, true))
+
+    expect(target.addEventListener).not.toHaveBeenCalled()
+    expect(eventHandler).not.toHaveBeenCalled()
+  })
+
+  it("should not set up event listeners if active is false", () => {
+    renderHook(() => useScrollSpy(target, eventHandler, false))
 
     expect(target.addEventListener).not.toHaveBeenCalled()
     expect(eventHandler).not.toHaveBeenCalled()
   })
 
   it("should debounce events", () => {
-    renderHook(() => useScrollSpy(target, eventHandler))
+    renderHook(() => useScrollSpy(target, eventHandler, true))
 
     const scrollEvent = new Event("scroll")
     act(() => {
@@ -128,10 +91,32 @@ describe("useScrollSpy hook", () => {
     })
     expect(eventHandler).toHaveBeenCalledTimes(1)
 
-    jest.advanceTimersByTime(99)
+    vi.advanceTimersByTime(99)
     expect(eventHandler).toHaveBeenCalledTimes(1)
 
-    jest.advanceTimersByTime(1)
+    vi.advanceTimersByTime(1)
     expect(eventHandler).toHaveBeenCalledTimes(2)
+  })
+
+  it("should continue emitting while scroll events keep firing", () => {
+    renderHook(() => useScrollSpy(target, eventHandler, true))
+
+    const scrollEvent = new Event("scroll")
+
+    act(() => {
+      for (let i = 0; i < 5; i++) {
+        target.dispatchEvent(scrollEvent)
+        vi.advanceTimersByTime(20)
+      }
+    })
+    expect(eventHandler).toHaveBeenCalledTimes(2)
+
+    act(() => {
+      for (let i = 0; i < 5; i++) {
+        target.dispatchEvent(scrollEvent)
+        vi.advanceTimersByTime(20)
+      }
+    })
+    expect(eventHandler).toHaveBeenCalledTimes(3)
   })
 })

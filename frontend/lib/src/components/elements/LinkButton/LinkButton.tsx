@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,74 +14,114 @@
  * limitations under the License.
  */
 
-import React, { ReactElement, MouseEvent } from "react"
-import { LinkButton as LinkButtonProto } from "@streamlit/lib/src/proto"
+import { memo, MouseEvent, ReactElement, useCallback, useRef } from "react"
+
+import { LinkButton as LinkButtonProto } from "@streamlit/protobuf"
+
+import { Box } from "~lib/components/shared/Base/styled-components"
 import {
-  BaseButtonTooltip,
   BaseButtonKind,
   BaseButtonSize,
-} from "@streamlit/lib/src/components/shared/BaseButton"
+} from "~lib/components/shared/BaseButton/BaseButton"
+import { BaseButtonTooltip } from "~lib/components/shared/BaseButton/BaseButtonTooltip"
+import { DynamicButtonLabel } from "~lib/components/shared/BaseButton/DynamicButtonLabel"
+import { mapProtoIconPosition } from "~lib/components/shared/BaseButton/iconPosition"
+import { useResolvedWrap } from "~lib/components/shared/BaseButton/useResolvedWrap"
+import { useRegisterShortcut } from "~lib/hooks/useRegisterShortcut"
+import { BLOCKED_LINK_URI, isDangerousLinkUri } from "~lib/util/UriUtil"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
 
 import BaseLinkButton from "./BaseLinkButton"
-import StreamlitMarkdown from "@streamlit/lib/src/components/shared/StreamlitMarkdown"
 
 export interface Props {
-  disabled: boolean
   element: LinkButtonProto
-  width: number
+  widgetMgr: WidgetStateManager
+  fragmentId?: string
 }
 
-function LinkButton(props: Props): ReactElement {
-  const { disabled, element, width } = props
-  const style = { width }
+function LinkButton(props: Readonly<Props>): ReactElement {
+  const { element, widgetMgr, fragmentId } = props
+  const shortcut = element.shortcut || undefined
+  const isLinkBlocked = isDangerousLinkUri(element.url)
+  const href = isLinkBlocked ? BLOCKED_LINK_URI : element.url
 
-  const kind =
-    element.type === "primary"
-      ? BaseButtonKind.PRIMARY
-      : BaseButtonKind.SECONDARY
+  // wrap defaults to auto (no wrap in horizontal layouts, wrap otherwise). When
+  // wrap resolves to no-wrap, reveal the full label on hover via a native title,
+  // skipped when help is set since help provides the tooltip.
+  const wrap = useResolvedWrap(element.wrap)
+  const addTitleTooltip = !wrap && !element.help
 
-  // When useContainerWidth true & has help tooltip,
-  // we need to pass the container width down to the button
-  const fluidWidth = element.help ? width : true
-
-  const handleClick = (e: MouseEvent<HTMLAnchorElement>): void => {
-    // Prevent the link from being followed if the button is disabled.
-    if (props.disabled) {
-      e.preventDefault()
-    }
+  let kind = BaseButtonKind.SECONDARY
+  if (element.type === "primary") {
+    kind = BaseButtonKind.PRIMARY
+  } else if (element.type === "tertiary") {
+    kind = BaseButtonKind.TERTIARY
   }
 
+  const anchorRef = useRef<HTMLAnchorElement | null>(null)
+
+  const handleShortcut = useCallback((): void => {
+    if (element.disabled || isLinkBlocked) {
+      return
+    }
+
+    anchorRef.current?.click()
+  }, [element.disabled, isLinkBlocked])
+
+  const handleClick = useCallback(
+    (event: MouseEvent<HTMLAnchorElement>): void => {
+      if (element.disabled || isLinkBlocked) {
+        // Prevent the link from being followed if the button is disabled or
+        // if its URI uses a dangerous scheme.
+        event.preventDefault()
+        return
+      }
+
+      if (!element.ignoreRerun && element.id) {
+        void widgetMgr.setTriggerValue(element, { fromUi: true }, fragmentId)
+      }
+    },
+    [element, fragmentId, isLinkBlocked, widgetMgr]
+  )
+
+  useRegisterShortcut({
+    shortcut,
+    disabled: element.disabled,
+    onActivate: handleShortcut,
+  })
+
   return (
-    <div
-      className="row-widget stLinkButton"
-      data-testid="stLinkButton"
-      style={style}
-    >
-      <BaseButtonTooltip help={element.help}>
+    <Box className="stLinkButton" data-testid="stLinkButton">
+      <BaseButtonTooltip
+        help={element.help}
+        // TODO(lawilby): Probably remove this once width is implemented on Popover.
+        containerWidth={true}
+      >
         {/* We use separate BaseLinkButton instead of BaseButton here, because
         link behavior requires tag <a> instead of <button>.*/}
         <BaseLinkButton
+          ref={anchorRef}
           kind={kind}
           size={BaseButtonSize.SMALL}
-          disabled={disabled}
+          disabled={element.disabled}
           onClick={handleClick}
-          fluidWidth={element.useContainerWidth ? fluidWidth : false}
-          href={element.url}
-          target="_blank"
+          href={href}
+          target={isLinkBlocked ? "_self" : "_blank"}
           rel="noreferrer"
-          aria-disabled={disabled}
+          aria-disabled={element.disabled}
         >
-          <StreamlitMarkdown
-            source={element.label}
-            allowHTML={false}
-            isLabel
-            largerLabel
-            disableLinks
+          <DynamicButtonLabel
+            icon={element.icon}
+            iconPosition={mapProtoIconPosition(element.iconPosition)}
+            label={element.label}
+            shortcut={shortcut}
+            wrap={wrap}
+            addTitleTooltip={addTitleTooltip}
           />
         </BaseLinkButton>
       </BaseButtonTooltip>
-    </div>
+    </Box>
   )
 }
 
-export default LinkButton
+export default memo(LinkButton)

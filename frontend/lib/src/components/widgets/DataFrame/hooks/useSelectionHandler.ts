@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,25 +14,32 @@
  * limitations under the License.
  */
 
-import React from "react"
+import { useCallback, useState } from "react"
 
-import { GridSelection, CompactSelection } from "@glideapps/glide-data-grid"
-import isEqual from "lodash/isEqual"
+import { CompactSelection, GridSelection } from "@glideapps/glide-data-grid"
+import { isEqual } from "lodash-es"
 
-import { BaseColumn } from "@streamlit/lib/src/components/widgets/DataFrame/columns"
-import { Arrow as ArrowProto } from "@streamlit/lib/src/proto"
+import { Dataframe as DataframeProto } from "@streamlit/protobuf"
 
-export type SelectionHandlerReturn = {
+import { BaseColumn } from "~lib/components/widgets/DataFrame/columns"
+
+type SelectionHandlerReturn = {
   // The current selection state
   gridSelection: GridSelection
   // True, if row selection is activated
   isRowSelectionActivated: boolean
   // True, if multi row selection is activated
   isMultiRowSelectionActivated: boolean
+  // True, if required row selection is activated (single-row-required mode)
+  isRequiredRowSelectionActivated: boolean
   // True, if column selection is activated
   isColumnSelectionActivated: boolean
   // True, if multi column selections is activated
   isMultiColumnSelectionActivated: boolean
+  // True, if cell selection is activated
+  isCellSelectionActivated: boolean
+  // True, if multi cell selection is activated
+  isMultiCellSelectionActivated: boolean
   // True, if at least one row is selected
   isRowSelected: boolean
   // True, if at least one column is selected
@@ -42,7 +49,13 @@ export type SelectionHandlerReturn = {
   // Callback to clear selections
   clearSelection: (keepRows?: boolean, keepColumns?: boolean) => void
   // Callback to process selection changes from the grid
-  processSelectionChange: (newSelection: GridSelection) => void
+  processSelectionChange: (
+    newSelection: GridSelection,
+    options?: {
+      shouldSync?: boolean
+      forceSync?: boolean
+    }
+  ) => void
 }
 
 /**
@@ -57,13 +70,16 @@ export type SelectionHandlerReturn = {
  * @returns the selection handler return object
  */
 function useSelectionHandler(
-  element: ArrowProto,
+  element: DataframeProto,
   isEmptyTable: boolean,
   isDisabled: boolean,
   columns: BaseColumn[],
-  syncSelectionState: (newSelection: GridSelection) => void
+  syncSelectionState: (
+    newSelection: GridSelection,
+    syncCellSelections: boolean
+  ) => void
 ): SelectionHandlerReturn {
-  const [gridSelection, setGridSelection] = React.useState<GridSelection>({
+  const [gridSelection, setGridSelection] = useState<GridSelection>({
     columns: CompactSelection.empty(),
     rows: CompactSelection.empty(),
     current: undefined,
@@ -72,20 +88,46 @@ function useSelectionHandler(
   const isRowSelectionActivated =
     !isEmptyTable &&
     !isDisabled &&
-    (element.selectionMode.includes(ArrowProto.SelectionMode.MULTI_ROW) ||
-      element.selectionMode.includes(ArrowProto.SelectionMode.SINGLE_ROW))
+    (element.selectionMode.includes(DataframeProto.SelectionMode.MULTI_ROW) ||
+      element.selectionMode.includes(
+        DataframeProto.SelectionMode.SINGLE_ROW
+      ) ||
+      element.selectionMode.includes(
+        DataframeProto.SelectionMode.SINGLE_ROW_REQUIRED
+      ))
   const isMultiRowSelectionActivated =
     isRowSelectionActivated &&
-    element.selectionMode.includes(ArrowProto.SelectionMode.MULTI_ROW)
+    element.selectionMode.includes(DataframeProto.SelectionMode.MULTI_ROW)
+  const isRequiredRowSelectionActivated =
+    isRowSelectionActivated &&
+    element.selectionMode.includes(
+      DataframeProto.SelectionMode.SINGLE_ROW_REQUIRED
+    )
 
   const isColumnSelectionActivated =
     !isEmptyTable &&
     !isDisabled &&
-    (element.selectionMode.includes(ArrowProto.SelectionMode.SINGLE_COLUMN) ||
-      element.selectionMode.includes(ArrowProto.SelectionMode.MULTI_COLUMN))
+    (element.selectionMode.includes(
+      DataframeProto.SelectionMode.SINGLE_COLUMN
+    ) ||
+      element.selectionMode.includes(
+        DataframeProto.SelectionMode.MULTI_COLUMN
+      ))
   const isMultiColumnSelectionActivated =
     isColumnSelectionActivated &&
-    element.selectionMode.includes(ArrowProto.SelectionMode.MULTI_COLUMN)
+    element.selectionMode.includes(DataframeProto.SelectionMode.MULTI_COLUMN)
+
+  const isCellSelectionActivated =
+    !isEmptyTable &&
+    !isDisabled &&
+    (element.selectionMode.includes(
+      DataframeProto.SelectionMode.SINGLE_CELL
+    ) ||
+      element.selectionMode.includes(DataframeProto.SelectionMode.MULTI_CELL))
+
+  const isMultiCellSelectionActivated =
+    isCellSelectionActivated &&
+    element.selectionMode.includes(DataframeProto.SelectionMode.MULTI_CELL)
 
   const isRowSelected = gridSelection.rows.length > 0
   const isColumnSelected = gridSelection.columns.length > 0
@@ -95,8 +137,23 @@ function useSelectionHandler(
    * This callback is used to process selection changes and - if activated -
    * trigger a sync of the state with the widget state
    */
-  const processSelectionChange = React.useCallback(
-    (newSelection: GridSelection) => {
+  const processSelectionChange = useCallback(
+    // eslint-disable-next-line react-hooks/preserve-manual-memoization -- setGridSelection is a stable setter
+    (
+      newSelection: GridSelection,
+      options: {
+        shouldSync?: boolean
+        forceSync?: boolean
+      } = {}
+    ) => {
+      // forceSync bypasses the display-selection change detection below and
+      // always syncs (as long as shouldSync is true). This is required for the
+      // post-sort remap: a pending debounced sync may have been cancelled, so
+      // the widget state can be stale even when the display selection is
+      // unchanged. The lower-level sync (createSyncSelectionState) still
+      // deduplicates against the serialized widget value, so this does not
+      // cause spurious reruns when the underlying selection is unchanged.
+      const { shouldSync = true, forceSync = false } = options
       const rowSelectionChanged = !isEqual(
         newSelection.rows.toArray(),
         gridSelection.rows.toArray()
@@ -113,55 +170,30 @@ function useSelectionHandler(
       )
 
       // A flag to determine if the selection should be synced with the widget state
-      let syncSelection =
-        (isRowSelectionActivated && rowSelectionChanged) ||
-        (isColumnSelectionActivated && columnSelectionChanged)
+      const syncSelection =
+        shouldSync &&
+        (forceSync ||
+          (isRowSelectionActivated && rowSelectionChanged) ||
+          (isColumnSelectionActivated && columnSelectionChanged) ||
+          (isCellSelectionActivated && cellSelectionChanged))
 
       let updatedSelection = newSelection
-      if (
-        (isRowSelectionActivated || isColumnSelectionActivated) &&
-        newSelection.current !== undefined &&
-        cellSelectionChanged
-      ) {
-        // The default behavior is that row selections are cleared when a cell is selected.
-        // This is not desired when row selection is activated. Instead, we want to keep the
-        // row selection and only update the cell selection.
-        updatedSelection = {
-          ...newSelection,
-          rows: gridSelection.rows,
-          columns: gridSelection.columns,
-        }
-        // It should not sync the selection
-        // when only the cell selection changes
-        syncSelection = false
-      }
 
+      // In single-row-required mode, prevent clearing the row selection.
+      // If the new selection has no rows but we currently have a row selected,
+      // keep the previous row selection.
+      let rowSelectionPrevented = false
       if (
+        isRequiredRowSelectionActivated &&
         rowSelectionChanged &&
-        newSelection.rows.length > 0 &&
-        columnSelectionChanged &&
-        newSelection.columns.length === 0
+        newSelection.rows.length === 0 &&
+        gridSelection.rows.length > 0
       ) {
-        // Keep the column selection if row selection was changed
-        updatedSelection = {
-          ...updatedSelection,
-          columns: gridSelection.columns,
-        }
-        syncSelection = true
-      }
-      if (
-        columnSelectionChanged &&
-        newSelection.columns.length > 0 &&
-        rowSelectionChanged &&
-        newSelection.rows.length === 0
-      ) {
-        // Keep the row selection if column selection was changed
         updatedSelection = {
           ...updatedSelection,
           rows: gridSelection.rows,
         }
-
-        syncSelection = true
+        rowSelectionPrevented = true
       }
 
       if (columnSelectionChanged && updatedSelection.columns.length >= 0) {
@@ -181,16 +213,29 @@ function useSelectionHandler(
         }
       }
 
+      // Update the UI with the final selection state
       setGridSelection(updatedSelection)
 
-      if (syncSelection) {
-        syncSelectionState(updatedSelection)
+      // Sync if there are actual changes to sync. When row clearing is prevented,
+      // we still need to sync if column or cell selection changed (or when the
+      // caller forces a sync).
+      const actualSyncNeeded =
+        syncSelection &&
+        (forceSync ||
+          !rowSelectionPrevented ||
+          columnSelectionChanged ||
+          cellSelectionChanged)
+      if (actualSyncNeeded) {
+        // Sync this selection with the widget state / backend
+        syncSelectionState(updatedSelection, isCellSelectionActivated)
       }
     },
     [
       gridSelection,
       isRowSelectionActivated,
+      isRequiredRowSelectionActivated,
       isColumnSelectionActivated,
+      isCellSelectionActivated,
       syncSelectionState,
       columns,
     ]
@@ -204,27 +249,37 @@ function useSelectionHandler(
    * @param keepRows - Whether to keep the row selection (default: false)
    * @param keepColumns - Whether to keep the column selection (default: false)
    */
-  const clearSelection = React.useCallback(
+  const clearSelection = useCallback(
     (keepRows = false, keepColumns = false) => {
+      // In single-row-required mode, always keep the row selection
+      // to maintain the required selection invariant.
+      const effectiveKeepRows = keepRows || isRequiredRowSelectionActivated
+
       const emptySelection: GridSelection = {
         columns: keepColumns
           ? gridSelection.columns
           : CompactSelection.empty(),
-        rows: keepRows ? gridSelection.rows : CompactSelection.empty(),
+        rows: effectiveKeepRows
+          ? gridSelection.rows
+          : CompactSelection.empty(),
         current: undefined,
       }
       setGridSelection(emptySelection)
+
       if (
-        (!keepRows && isRowSelectionActivated) ||
-        (!keepColumns && isColumnSelectionActivated)
+        (!effectiveKeepRows && isRowSelectionActivated) ||
+        (!keepColumns && isColumnSelectionActivated) ||
+        isCellSelectionActivated
       ) {
-        syncSelectionState(emptySelection)
+        syncSelectionState(emptySelection, isCellSelectionActivated)
       }
     },
     [
       gridSelection,
       isRowSelectionActivated,
+      isRequiredRowSelectionActivated,
       isColumnSelectionActivated,
+      isCellSelectionActivated,
       syncSelectionState,
     ]
   )
@@ -233,8 +288,11 @@ function useSelectionHandler(
     gridSelection,
     isRowSelectionActivated,
     isMultiRowSelectionActivated,
+    isRequiredRowSelectionActivated,
     isColumnSelectionActivated,
     isMultiColumnSelectionActivated,
+    isCellSelectionActivated,
+    isMultiCellSelectionActivated,
     isRowSelected,
     isColumnSelected,
     isCellSelected,

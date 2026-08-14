@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,9 @@
  * limitations under the License.
  */
 
-import React from "react"
-import "@testing-library/jest-dom"
 import { screen } from "@testing-library/react"
-import { render } from "@streamlit/lib/src/test_util"
+
+import { render } from "~lib/test_util"
 
 import InputInstructions, { Props } from "./InputInstructions"
 
@@ -29,20 +28,18 @@ const getProps = (props: Partial<Props> = {}): Props => ({
 })
 
 describe("InputInstructions", () => {
-  const props = getProps()
+  const defaultProps = getProps()
 
   it("renders without crashing", () => {
-    render(<InputInstructions {...props} />)
+    render(<InputInstructions {...defaultProps} />)
 
     expect(screen.getByTestId("InputInstructions").textContent).toBeDefined()
   })
 
-  it("should show Enter instructions", () => {
-    render(<InputInstructions {...props} />)
+  it("should show Enter instructions by default", () => {
+    render(<InputInstructions {...defaultProps} />)
 
-    expect(screen.getByTestId("InputInstructions").textContent).toBe(
-      "Press Enter to apply"
-    )
+    expect(screen.getByText("Press Enter to apply")).toBeVisible()
   })
 
   describe("Multiline type", () => {
@@ -52,9 +49,7 @@ describe("InputInstructions", () => {
 
     it("should show Ctrl+Enter instructions", () => {
       render(<InputInstructions {...props} />)
-      expect(screen.getByTestId("InputInstructions").textContent).toBe(
-        "Press Ctrl+Enter to apply"
-      )
+      expect(screen.getByText("Press Ctrl+Enter to apply")).toBeVisible()
     })
 
     it("show ⌘+Enter instructions", () => {
@@ -63,22 +58,20 @@ describe("InputInstructions", () => {
         writable: true,
       })
 
-      const props = getProps({
+      const currProps = getProps({
         type: "multiline",
       })
-      render(<InputInstructions {...props} />)
+      render(<InputInstructions {...currProps} />)
 
-      expect(screen.getByTestId("InputInstructions").textContent).toBe(
-        "Press ⌘+Enter to apply"
-      )
+      expect(screen.getByText("Press ⌘+Enter to apply")).toBeVisible()
     })
 
     it("should show instructions for max length", () => {
-      const props = getProps({
+      const currProps = getProps({
         type: "multiline",
         maxLength: 3,
       })
-      render(<InputInstructions {...props} />)
+      render(<InputInstructions {...currProps} />)
 
       expect(screen.getByTestId("InputInstructions").textContent).toBe(
         "Press ⌘+Enter to apply3/3"
@@ -108,13 +101,13 @@ describe("InputInstructions", () => {
     })
 
     it("should show instructions for max length", () => {
-      const props = getProps({
+      const currProps = getProps({
         type: "chat",
         maxLength: 3,
       })
-      render(<InputInstructions {...props} />)
+      render(<InputInstructions {...currProps} />)
 
-      expect(screen.getByTestId("InputInstructions").textContent).toBe("3/3")
+      expect(screen.getByText("3/3")).toBeVisible()
     })
   })
 
@@ -126,21 +119,27 @@ describe("InputInstructions", () => {
       })
       render(<InputInstructions {...props} />)
 
-      expect(screen.getByTestId("InputInstructions").textContent).toBe(
-        "Press Enter to submit form"
-      )
+      expect(screen.getByText("Press Enter to submit form")).toBeVisible()
     })
-  })
 
-  it("should show correct instructions to submit form with multiline input", () => {
-    const props = getProps({
-      inForm: true,
-      type: "multiline",
+    it("should show correct instructions to submit form with multiline input", () => {
+      const props = getProps({
+        inForm: true,
+        type: "multiline",
+      })
+      render(<InputInstructions {...props} />)
+
+      expect(screen.getByText("Press ⌘+Enter to submit form")).toBeVisible()
     })
-    render(<InputInstructions {...props} />)
 
-    expect(screen.getByTestId("InputInstructions").textContent).toBe(
-      "Press ⌘+Enter to submit form"
-    )
+    it("should not show enter instructions if allowEnterToSubmit is false", () => {
+      const props = getProps({
+        inForm: true,
+        allowEnterToSubmit: false,
+      })
+      render(<InputInstructions {...props} />)
+
+      expect(screen.getByTestId("InputInstructions")).toHaveTextContent("")
+    })
   })
 })

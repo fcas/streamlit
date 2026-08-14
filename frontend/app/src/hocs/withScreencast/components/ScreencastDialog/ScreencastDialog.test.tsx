@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,19 +14,18 @@
  * limitations under the License.
  */
 
-import React from "react"
-import "@testing-library/jest-dom"
-import { screen, fireEvent } from "@testing-library/react"
-
+import { screen } from "@testing-library/react"
+import { userEvent } from "@testing-library/user-event"
 import { BaseProvider, LightTheme } from "baseui"
 
-import { render } from "@streamlit/lib"
+import { render } from "@streamlit/lib/testing"
+
 import ScreencastDialog, { Props } from "./ScreencastDialog"
 
 const getProps = (props: Partial<Props> = {}): Props => ({
-  onClose: jest.fn(),
-  startRecording: jest.fn(),
-  toggleRecordAudio: jest.fn(),
+  onClose: vi.fn(),
+  startRecording: vi.fn(),
+  toggleRecordAudio: vi.fn(),
   recordAudio: false,
   ...props,
 })
@@ -53,7 +52,8 @@ describe("ScreencastDialog", () => {
   })
 
   describe("Modal body", () => {
-    it("should have a record audio option to be selected", () => {
+    it("should have a record audio option to be selected", async () => {
+      const user = userEvent.setup()
       render(
         <BaseProvider theme={LightTheme}>
           <ScreencastDialog {...props} />
@@ -63,7 +63,7 @@ describe("ScreencastDialog", () => {
         screen.getByTestId("stScreencastAudioCheckbox")
       ).toHaveTextContent("Also record audio")
       const audioCheckbox = screen.getByRole("checkbox")
-      fireEvent.click(audioCheckbox)
+      await user.click(audioCheckbox)
       expect(audioCheckbox).toBeChecked()
       expect(props.toggleRecordAudio).toHaveBeenCalled()
     })
@@ -82,7 +82,8 @@ describe("ScreencastDialog", () => {
   })
 
   describe("Modal footer", () => {
-    it("should have an start button", () => {
+    it("should have an start button", async () => {
+      const user = userEvent.setup()
       render(
         <BaseProvider theme={LightTheme}>
           <ScreencastDialog {...props} />
@@ -90,7 +91,7 @@ describe("ScreencastDialog", () => {
       )
       const startButton = screen.getByText("Start recording!")
       expect(startButton).toBeInTheDocument()
-      fireEvent.click(startButton)
+      await user.click(startButton)
       expect(props.startRecording).toHaveBeenCalled()
       expect(props.onClose).toHaveBeenCalled()
     })

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,30 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
-import { Modal, ModalHeader, ModalBody } from "@streamlit/lib"
-import { CloseSource } from "baseui/modal/types"
+import { ReactElement, ReactNode } from "react"
+
+import styled from "@emotion/styled"
+
+import { Modal, ModalHeader } from "@streamlit/lib"
 
 interface IDeployModalProps {
   children: React.ReactNode
-  onClose: (a: { closeSource?: CloseSource }) => unknown
+  onClose: () => void
+}
+
+interface ModalBodyProps {
+  children: ReactNode
+}
+
+const StyledDeployModalBody = styled.div(({ theme }) => ({
+  paddingTop: theme.spacing.md,
+  color: theme.colors.bodyText,
+  fontSize: theme.fontSizes.md,
+  overflowY: "auto",
+}))
+
+function ModalBody({ children }: Readonly<ModalBodyProps>): ReactElement {
+  return <StyledDeployModalBody>{children}</StyledDeployModalBody>
 }
 
 function DeployModal(
@@ -28,19 +45,8 @@ function DeployModal(
 ): ReactElement {
   const { children, onClose } = props
   return (
-    <Modal
-      isOpen={true}
-      closeable={true}
-      onClose={onClose}
-      overrides={{
-        Dialog: {
-          style: {
-            width: "860px",
-          },
-        },
-      }}
-    >
-      <ModalHeader>Deploy this app</ModalHeader>
+    <Modal isOpen={true} closeable={true} onClose={onClose} size="auto">
+      <ModalHeader>Deploy this app using...</ModalHeader>
       <ModalBody>{children}</ModalBody>
     </Modal>
   )

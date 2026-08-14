@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,27 +14,29 @@
  * limitations under the License.
  */
 
-import React from "react"
+import { useCallback, useRef, useState } from "react"
 
 import {
-  GridCell,
   DataEditorProps,
+  GridCell,
   GridMouseEventArgs,
 } from "@glideapps/glide-data-grid"
 
-import { notNullOrUndefined } from "@streamlit/lib/src/util/utils"
 import {
   BaseColumn,
   hasTooltip,
+  isErrorCell,
   isMissingValueCell,
-} from "@streamlit/lib/src/components/widgets/DataFrame/columns"
+} from "~lib/components/widgets/DataFrame/columns"
+import useTimeout from "~lib/hooks/useTimeout"
+import { notNullOrUndefined } from "~lib/util/utils"
 
 // Debounce time for triggering the tooltip on hover.
 export const DEBOUNCE_TIME_MS = 600
 // Tooltip message for required cells that are empty.
 export const REQUIRED_CELL_TOOLTIP = "⚠️ Please fill out this cell."
 
-export type TooltipsReturn = {
+type TooltipsReturn = {
   // The tooltip to show (if any):
   tooltip: { content: string; left: number; top: number } | undefined
   // A callback to clear the tooltip:
@@ -50,23 +52,38 @@ export type TooltipsReturn = {
  *
  * @param columns columns of the datagrid
  * @param getCellContent function that returns the cell content for a given cell position
+ * @param ignoredRowIndices array of row indices to ignore when showing tooltips.
  * @returns the tooltip to show (if any), a callback to clear the tooltip, and the
  * onItemHovered callback to pass to the datagrid
  */
 function useTooltips(
   columns: BaseColumn[],
-  getCellContent: ([col, row]: readonly [number, number]) => GridCell
+  getCellContent: ([col, row]: readonly [number, number]) => GridCell,
+  ignoredRowIndices: number[] = []
 ): TooltipsReturn {
-  const [tooltip, setTooltip] = React.useState<
+  const [tooltip, setTooltip] = useState<
     { content: string; left: number; top: number } | undefined
   >()
-  const timeoutRef = React.useRef<any>(null)
+  const pendingTooltipRef = useRef<
+    { content: string; left: number; top: number } | undefined
+  >()
+  const { clear: clearTooltipTimeout, restart: restartTooltipTimeout } =
+    useTimeout(
+      () => {
+        if (pendingTooltipRef.current) {
+          setTooltip(pendingTooltipRef.current)
+          pendingTooltipRef.current = undefined
+        }
+      },
+      DEBOUNCE_TIME_MS,
+      { autoStart: false }
+    )
 
-  const onItemHovered = React.useCallback(
+  const onItemHovered = useCallback(
     (args: GridMouseEventArgs) => {
       // Always reset the tooltips on any change here
-      clearTimeout(timeoutRef.current)
-      timeoutRef.current = 0
+      clearTooltipTimeout()
+      pendingTooltipRef.current = undefined
       setTooltip(undefined)
 
       if ((args.kind === "header" || args.kind === "cell") && args.location) {
@@ -80,15 +97,22 @@ function useTooltips(
           return
         }
 
+        if (ignoredRowIndices.includes(rowIdx)) {
+          // Ignore the row if it is in the configured ignoredRowIndices array.
+          return
+        }
+
         const column = columns[colIdx]
 
         if (args.kind === "header" && notNullOrUndefined(column)) {
           tooltipContent = column.help
         } else if (args.kind === "cell") {
-          // TODO(lukasmasuch): Ignore the last row if num_rows=dynamic (trailing row).
-
           const cell = getCellContent([colIdx, rowIdx])
-          if (
+
+          if (isErrorCell(cell)) {
+            // If the cell is an error cell, we don't need to check for required or missing values.
+            tooltipContent = cell.errorDetails
+          } else if (
             column.isRequired &&
             column.isEditable &&
             isMissingValueCell(cell)
@@ -100,24 +124,29 @@ function useTooltips(
         }
 
         if (tooltipContent) {
-          timeoutRef.current = setTimeout(() => {
-            if (tooltipContent) {
-              setTooltip({
-                content: tooltipContent,
-                left: args.bounds.x + args.bounds.width / 2,
-                top: args.bounds.y,
-              })
-            }
-          }, DEBOUNCE_TIME_MS)
+          pendingTooltipRef.current = {
+            content: tooltipContent,
+            left: args.bounds.x + args.bounds.width / 2,
+            top: args.bounds.y,
+          }
+          restartTooltipTimeout()
         }
       }
     },
-    [columns, getCellContent, setTooltip, timeoutRef]
+    [
+      clearTooltipTimeout,
+      columns,
+      getCellContent,
+      ignoredRowIndices,
+      restartTooltipTimeout,
+    ]
   )
 
-  const clearTooltip = React.useCallback(() => {
+  const clearTooltip = useCallback(() => {
+    clearTooltipTimeout()
+    pendingTooltipRef.current = undefined
     setTooltip(undefined)
-  }, [setTooltip])
+  }, [clearTooltipTimeout, setTooltip])
 
   return {
     tooltip,

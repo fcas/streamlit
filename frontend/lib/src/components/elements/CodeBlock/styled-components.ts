@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,7 +14,82 @@
  * limitations under the License.
  */
 
+import { CSSObject, Theme } from "@emotion/react"
 import styled from "@emotion/styled"
+
+import { StyledToolbar } from "~lib/components/shared/Toolbar/styled-components"
+
+const codeLink: CSSObject = {
+  // Streamline the style when inside anchors to avoid broken underline and more
+  "a > &": {
+    color: "inherit",
+  },
+}
+
+export const StyledInlineCode = styled.code(({ theme }) => ({
+  padding: "0.2em 0.4em",
+  overflowWrap: "break-word",
+  whiteSpace: "pre-wrap",
+  margin: 0,
+  borderRadius: theme.radii.sm,
+  background: theme.colors.codeBackgroundColor,
+  color: theme.colors.codeTextColor,
+  fontFamily: theme.genericFonts.codeFont,
+  // Use em here so that it works correctly within headers, captions,
+  // sidebar, etc.
+  fontSize: theme.fontSizes.inlineCodeFontSize,
+  fontWeight: theme.fontWeights.code,
+
+  ...codeLink,
+}))
+
+type StyledCodeProps = {
+  wrapLines: boolean
+}
+
+const codeBlockStyle = (
+  theme: Theme,
+  wrapLines: StyledCodeProps["wrapLines"]
+): CSSObject => ({
+  background: "transparent",
+  border: 0,
+  color: "inherit",
+  fontFamily: theme.genericFonts.codeFont,
+  fontSize: theme.fontSizes.codeFontSize,
+  fontWeight: theme.fontWeights.code,
+  lineHeight: "inherit",
+  margin: 0,
+  padding: 0,
+  /**
+   * When the block scrolls horizontally (`wrapLines=false`), move the right
+   * gutter onto the inner `<code>` so it stays visible at max scroll:
+   * browsers drop a scroll container's own `padding-right` from the
+   * scrollable overflow region, leaving the last characters sitting flush
+   * against the right edge / copy button. `inline-block` makes the child
+   * part of the scrollable content; `vertical-align: top` suppresses the
+   * baseline descender space an inline-block would otherwise leave.
+   * When `wrapLines=true` the block never scrolls, so we keep the original
+   * `display: inline` (the `<pre>` keeps its own right padding) — using
+   * `inline-block` here would shrink-to-fit and prevent long unbroken
+   * tokens from wrapping. See issue #8206.
+   */
+  ...(wrapLines
+    ? { display: "inline" }
+    : {
+        display: "inline-block",
+        verticalAlign: "top",
+        paddingRight: theme.spacing.lg,
+      }),
+  whiteSpace: wrapLines ? "pre-wrap" : "pre",
+  overflowWrap: wrapLines ? "break-word" : "normal",
+  ...codeLink,
+})
+
+export const StyledCode = styled.code<StyledCodeProps>(
+  ({ theme, wrapLines }) => ({
+    ...codeBlockStyle(theme, wrapLines),
+  })
+)
 
 /*
   This is the default prism.js theme for JavaScript, CSS and HTML, but
@@ -22,147 +97,184 @@ import styled from "@emotion/styled"
 
   See https://prismjs.com/download.html#themes=prism&languages=markup+css+clike+javascript
 */
-export const StyledPre = styled.pre(({ theme }) => ({
-  margin: 0,
-  paddingRight: "2.75rem",
-  color: theme.colors.bodyText,
-  borderRadius: theme.radii.lg,
-
-  // The token can consist of many lines, e.g. a triple-quote string, so
-  // we need to make sure that the color is not overwritten.
-  ".comment.linenumber": {
-    color: theme.colors.fadedText40,
+export const StyledPre = styled.pre<StyledCodeProps>(
+  ({ theme, wrapLines }) => ({
+    height: "100%",
+    background: theme.colors.codeBackgroundColor,
+    borderRadius: theme.radii.default,
+    color: theme.colors.bodyText,
     fontSize: theme.fontSizes.twoSm,
+    fontFamily: theme.genericFonts.codeFont,
+    display: "block",
+    // Remove browser default top margin
+    margin: 0,
+    // Disable auto-hiding scrollbar in legacy Edge to avoid overlap,
+    // making it impossible to interact with the content
+    msOverflowStyle: "scrollbar",
 
-    // Override the default token's min-width, to ensure it fits 3-digit lines
-    minWidth: `${theme.spacing.threeXL} !important`,
-  },
+    // Don't allow content to break outside
+    overflow: "auto",
 
-  ".token.comment, .token.prolog, .token.doctype, .token.cdata": {
-    color: "slategray",
-  },
+    /**
+     * When `wrapLines=false` we move the right gutter onto the inner `<code>`
+     * (via `codeBlockStyle`) so it survives horizontal scrolling — browsers
+     * drop a scroll container's own `padding-right` from its scrollable
+     * overflow region. When `wrapLines=true` the block never scrolls, so we
+     * keep the padding on the `<pre>` where it has always been. See #8206.
+     */
+    padding: theme.spacing.lg,
+    ...(wrapLines ? {} : { paddingRight: 0 }),
 
-  ".token.punctuation": {
-    color: "#999",
-  },
+    code: { ...codeBlockStyle(theme, wrapLines) },
 
-  ".namespace": {
-    opacity: 0.7,
-  },
+    // The token can consist of many lines, e.g. a triple-quote string, so
+    // we need to make sure that the color is not overwritten.
+    ".comment.linenumber": {
+      color: theme.colors.fadedText40,
+      fontSize: theme.fontSizes.twoSm,
 
-  ".token.attr-name, .token.property, .token.variable": {
-    color: theme.colors.lightBlue80,
-  },
+      // Center-align number vertically, or they'll be positioned differently when
+      // wrapLines=true. Even with this change, though, the position is still ~2px
+      // off.
+      // NOTE: The alignSelf below only apply applies when wrapLines=true, because
+      // that option wraps this element in a flex container.
+      alignSelf: "center",
 
-  ".token.boolean, .token.constant, .token.symbol": {
-    color: theme.colors.green70,
-  },
+      // Override the default token's min-width, to ensure it fits 3-digit lines
+      minWidth: `${theme.spacing.threeXL} !important`,
+    },
 
-  ".token.number, .token.regex": {
-    color: theme.colors.blueGreen80,
-  },
+    ".token.comment, .token.prolog, .token.doctype, .token.cdata": {
+      color: theme.colors.gray70,
+    },
 
-  ".token.string, .token.char, .token.attr-value": {
-    color: theme.colors.green80,
-  },
+    ".token.punctuation": {
+      color: theme.colors.gray70,
+    },
 
-  ".token.operator, .token.entity": {
-    color: theme.colors.orange90,
-  },
+    ".namespace": {
+      opacity: 0.7,
+    },
 
-  ".token.url": {
-    color: theme.colors.purple80,
-  },
+    ".token.attr-name, .token.property, .token.variable": {
+      color: theme.colors.lightBlue80,
+    },
 
-  ".token.decorator, .token.atrule": {
-    color: theme.colors.orange90,
-  },
+    ".token.boolean, .token.constant, .token.symbol": {
+      color: theme.colors.green70,
+    },
 
-  ".token.keyword, .token.tag": {
-    color: theme.colors.blue70,
-  },
+    ".token.number, .token.regex": {
+      color: theme.colors.blueGreen80,
+    },
 
-  ".token.function, .token.class-name, .token.selector": {
-    color: theme.colors.blue70,
-    fontWeight: "bold",
-  },
+    ".token.string, .token.char, .token.attr-value": {
+      color: theme.colors.green80,
+    },
 
-  ".token.important": {
-    color: theme.colors.red70,
-    fontWeight: "bold",
-  },
+    ".token.operator, .token.entity": {
+      color: theme.colors.orange90,
+    },
 
-  ".token.comment": {
-    color: theme.colors.gray70,
-    fontStyle: "italic",
-  },
+    ".token.url": {
+      color: theme.colors.purple80,
+    },
 
-  ".token.italic": {
-    fontStyle: "italic",
-  },
+    ".token.decorator, .token.atrule": {
+      color: theme.colors.orange90,
+    },
 
-  ".token.entity": {
-    cursor: "help",
-  },
-}))
+    ".token.keyword, .token.tag": {
+      color: theme.colors.blue70,
+    },
 
-export const StyledCopyButtonContainer = styled.div(({ theme }) => ({
-  opacity: 0,
-  padding: `${theme.spacing.sm} ${theme.spacing.sm} 0 0`,
-  top: 0,
-  right: 0,
-  position: "absolute",
-  width: "100%",
-  height: "100%",
-  backgroundColor: theme.colors.transparent,
-  zIndex: theme.zIndices.sidebar + 1,
-  display: "flex",
-  justifyContent: "flex-end",
-  alignItems: "flex-start",
-  transition: "opacity 300ms 150ms",
-  pointerEvents: "none",
-}))
+    ".token.function, .token.class-name, .token.selector": {
+      color: theme.colors.blue70,
+      fontWeight: theme.fontWeights.codeExtraBold,
+    },
 
-export interface StyledCodeBlockProps {
-  /**
-   * The code-block behaves a bit differently if it is
-   * used inside markdown.
-   */
-  isMarkdown: boolean
-}
+    ".token.important": {
+      color: theme.colors.red70,
+      fontWeight: theme.fontWeights.codeExtraBold,
+    },
 
-export const StyledCodeBlock = styled.div<StyledCodeBlockProps>(
-  ({ theme, isMarkdown }) => ({
-    position: "relative",
-    marginLeft: theme.spacing.none,
-    marginRight: theme.spacing.none,
-    marginTop: theme.spacing.none,
-    marginBottom: isMarkdown ? theme.spacing.lg : undefined,
+    ".token.comment": {
+      color: theme.colors.gray70,
+      fontStyle: "italic",
+    },
 
-    "&:hover": {
-      [`${StyledCopyButtonContainer}`]: {
-        opacity: 1,
-      },
+    ".token.italic": {
+      fontStyle: "italic",
+    },
+
+    ".token.entity": {
+      cursor: "help",
+    },
+
+    /**
+     * Diff syntax highlighting
+     */
+    ".token.deleted.line, .token.deleted.prefix": {
+      color: theme.colors.red70,
+    },
+    ".token.inserted.line, .token.inserted.prefix": {
+      color: theme.colors.green70,
+    },
+    ".token.unchanged.line": {
+      color: theme.colors.gray70,
     },
   })
 )
 
-export const StyledCopyButton = styled.button(({ theme }) => ({
-  pointerEvents: "auto",
-  height: "2.5rem",
-  padding: 0,
-  width: "2.5rem",
-  border: "none",
-  backgroundColor: theme.colors.transparent,
-  color: theme.colors.fadedText60,
-  borderRadius: theme.radii.xl,
-  transform: "scale(0)",
+const CODE_TOOLBAR_OPACITY_TRANSITION = "opacity 300ms 150ms"
+const CODE_TOOLBAR_HIDE_TRANSITION = `${CODE_TOOLBAR_OPACITY_TRANSITION}, visibility 0ms linear 450ms`
+const CODE_TOOLBAR_SHOW_TRANSITION = `${CODE_TOOLBAR_OPACITY_TRANSITION}, visibility 0ms linear 150ms`
 
-  [`${StyledCodeBlock}:hover &, &:active, &:focus, &:hover`]: {
-    opacity: 1,
-    transform: "scale(1)",
+export const StyledCodeToolbarWrapper = styled.div(({ theme }) => ({
+  opacity: 0,
+  // Keep it out of hit testing and screen rendering while hidden.
+  visibility: "hidden",
+  padding: `${theme.spacing.sm} ${theme.spacing.sm} 0 0`,
+  top: 0,
+  right: 0,
+  position: "absolute",
+  zIndex: theme.zIndices.sidebar + 1,
+  pointerEvents: "none",
+  // Keep the delayed fade-in, but only hide visibility after fade-out completes.
+  transition: CODE_TOOLBAR_HIDE_TRANSITION,
+}))
+
+export const StyledCodeBlock = styled.div(({ theme }) => ({
+  height: "100%",
+  position: "relative",
+  borderRadius: theme.radii.default,
+  marginLeft: theme.spacing.none,
+  marginRight: theme.spacing.none,
+  marginTop: theme.spacing.none,
+  marginBottom: undefined,
+
+  "&:focus": {
     outline: "none",
-    transition: "none",
-    color: theme.colors.bodyText,
+  },
+  "&:focus-visible": {
+    boxShadow: theme.shadows.focusRing,
+  },
+
+  // Keep the toolbar visible while hovering, when the container itself has
+  // keyboard focus, and for keyboard focus within the toolbar.
+  // Mouse clicks can focus the button too; gating descendant focus on
+  // :focus-visible avoids leaving the toolbar pinned after pointer interactions.
+  "&:hover, &:focus-visible, &:focus-within:has(:focus-visible)": {
+    [`${StyledCodeToolbarWrapper}`]: {
+      opacity: 1,
+      visibility: "visible",
+      pointerEvents: "auto",
+      // Match visibility timing to opacity delay so it is never clickable while invisible.
+      transition: CODE_TOOLBAR_SHOW_TRANSITION,
+    },
   },
 }))
+
+export const StyledCodeToolbar = styled(StyledToolbar)({
+  pointerEvents: "auto",
+})

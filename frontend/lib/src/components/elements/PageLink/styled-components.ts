@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,29 +16,27 @@
 
 import styled from "@emotion/styled"
 
-export const StyledNavLinkContainer = styled.div(({}) => ({
+export const StyledNavLinkContainer = styled.div({
   display: "flex",
   flexDirection: "column",
-}))
+  width: "100%",
+})
 
-export interface StyledNavLinkProps {
+interface StyledNavLinkProps {
   disabled: boolean
   isCurrentPage: boolean
-  // If true or number, the button should take up container's full width
-  fluidWidth?: boolean | number
 }
 
 export const StyledNavLink = styled.a<StyledNavLinkProps>(
-  ({ disabled, isCurrentPage, fluidWidth, theme }) => ({
+  ({ disabled, isCurrentPage, theme }) => ({
     textDecoration: "none",
-    width: typeof fluidWidth == "number" ? `${fluidWidth}px` : "fit-content",
+    width: "100%",
     display: "flex",
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "flex-start",
     gap: theme.spacing.sm,
-    borderRadius: theme.spacing.twoXS,
-
+    borderRadius: theme.radii.default,
     paddingLeft: theme.spacing.sm,
     paddingRight: theme.spacing.sm,
     marginTop: theme.spacing.threeXS,
@@ -73,7 +71,7 @@ export const StyledNavLink = styled.a<StyledNavLinkProps>(
 
     ...(disabled
       ? {
-          borderColor: theme.colors.fadedText10,
+          borderColor: theme.colors.borderColor,
           backgroundColor: theme.colors.transparent,
           color: theme.colors.fadedText40,
           cursor: "not-allowed",
@@ -86,7 +84,7 @@ export const StyledNavLink = styled.a<StyledNavLinkProps>(
   })
 )
 
-export interface StyledNavLinkTextProps {
+interface StyledNavLinkTextProps {
   disabled: boolean
 }
 
@@ -100,7 +98,7 @@ export const StyledNavLinkText = styled.span<StyledNavLinkTextProps>(
 
     ...(disabled
       ? {
-          borderColor: theme.colors.fadedText10,
+          borderColor: theme.colors.borderColor,
           backgroundColor: theme.colors.transparent,
           color: theme.colors.fadedText40,
           cursor: "not-allowed",

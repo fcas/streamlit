@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,9 +17,12 @@
 /* eslint-disable  @typescript-eslint/no-non-null-assertion */
 
 import { GridCellKind, UriCell } from "@glideapps/glide-data-grid"
+import { Field, Utf8 } from "apache-arrow"
 
-import { isErrorCell } from "./utils"
+import { DataFrameCellType } from "~lib/dataframes/arrowTypeUtils"
+
 import LinkColumn from "./LinkColumn"
+import { ErrorCell, isErrorCell, isMissingValueCell } from "./utils"
 
 const MOCK_LINK_COLUMN_PROPS = {
   id: "1",
@@ -29,12 +32,18 @@ const MOCK_LINK_COLUMN_PROPS = {
   isEditable: false,
   isHidden: false,
   isIndex: false,
+  isPinned: false,
   isStretched: false,
   arrowType: {
-    // The arrow type of the underlying data is
-    // not used for anything inside the column.
-    pandas_type: "unicode",
-    numpy_type: "object",
+    type: DataFrameCellType.DATA,
+    arrowField: new Field("link_column", new Utf8(), true),
+    pandasType: {
+      field_name: "link_column",
+      name: "link_column",
+      pandas_type: "unicode",
+      numpy_type: "object",
+      metadata: null,
+    },
   },
 }
 
@@ -62,7 +71,7 @@ describe("LinkColumn", () => {
     // should also be supported by the UrlColumn.
   ])(
     "supports string-compatible value (%p parsed as %p)",
-    (input: any, value: any | null) => {
+    (input: unknown, value: unknown) => {
       const mockColumn = LinkColumn(MOCK_LINK_COLUMN_PROPS)
       const cell = mockColumn.getCell(input)
       expect(mockColumn.getCellValue(cell)).toEqual(value)
@@ -137,9 +146,12 @@ describe("LinkColumn", () => {
       columnTypeOptions: { validate: "[" }, // Invalid regex
     })
 
-    const cell = mockColumn.getCell("test", true) as UriCell
+    const cell = mockColumn.getCell("test", true)
     expect(isErrorCell(cell)).toEqual(true)
-    expect(cell.data).toContain("Invalid validate regex")
+    expect((cell as ErrorCell).data).toContain("test")
+    expect((cell as ErrorCell).errorDetails).toContain(
+      "Invalid validate regex"
+    )
   })
 
   it("ignores empty validate", () => {
@@ -220,7 +232,6 @@ describe("LinkColumn", () => {
   it("sets displayed value as the href, when displayText is a regex but there is no match", () => {
     const mockColumn = LinkColumn({
       ...MOCK_LINK_COLUMN_PROPS,
-      // eslint-disable-next-line prettier/prettier
       columnTypeOptions: { display_text: "https://(.*?)\\.google.com" },
     })
 
@@ -230,5 +241,125 @@ describe("LinkColumn", () => {
     ) as UriCell
 
     expect(cell.displayData).toBe("https://roadmap.streamlit.app")
+  })
+
+  it("displays material icon when display_text is a material icon", () => {
+    const mockColumn = LinkColumn({
+      ...MOCK_LINK_COLUMN_PROPS,
+      columnTypeOptions: { display_text: ":material/open_in_new:" },
+    })
+
+    const cell = mockColumn.getCell("https://streamlit.io", true) as UriCell
+
+    // The display should be the icon name for the icon font
+    expect(cell.displayData).toBe("open_in_new")
+    // Should center align when using icon
+    expect(cell.contentAlign).toBe("center")
+    // Should have theme override for icon font
+    expect(cell.themeOverride).toBeDefined()
+  })
+
+  it("does not allow overlay when using material icon display", () => {
+    const mockColumn = LinkColumn({
+      ...MOCK_LINK_COLUMN_PROPS,
+      columnTypeOptions: { display_text: ":material/link:" },
+    })
+
+    const cell = mockColumn.getCell("https://streamlit.io", true) as UriCell
+
+    expect(cell.allowOverlay).toBe(false)
+  })
+
+  it("returns false for validateInput when value is null and column is required", () => {
+    const mockColumn = LinkColumn({
+      ...MOCK_LINK_COLUMN_PROPS,
+      isRequired: true,
+    })
+
+    expect(mockColumn.validateInput!(null)).toBe(false)
+    expect(mockColumn.validateInput!(undefined)).toBe(false)
+  })
+
+  it("returns true for validateInput when value is null and column is not required", () => {
+    const mockColumn = LinkColumn(MOCK_LINK_COLUMN_PROPS)
+
+    expect(mockColumn.validateInput!(null)).toBe(true)
+    expect(mockColumn.validateInput!(undefined)).toBe(true)
+  })
+
+  it("returns null for getCellValue when cell data is null", () => {
+    const mockColumn = LinkColumn(MOCK_LINK_COLUMN_PROPS)
+    const cell = mockColumn.getCell(null) as UriCell
+
+    expect(mockColumn.getCellValue(cell)).toBeNull()
+  })
+
+  it("creates a missing value cell for null data", () => {
+    const mockColumn = LinkColumn(MOCK_LINK_COLUMN_PROPS)
+    const cell = mockColumn.getCell(null) as UriCell
+
+    expect(cell.data).toBeNull()
+    expect(isMissingValueCell(cell)).toBe(true)
+  })
+
+  it("opens link in new tab with correct parameters", () => {
+    const mockColumn = LinkColumn(MOCK_LINK_COLUMN_PROPS)
+    const cell = mockColumn.getCell("https://streamlit.io") as UriCell
+
+    const mockOpen = vi.spyOn(window, "open").mockImplementation(() => null)
+    const mockPreventDefault = vi.fn()
+
+    cell.onClickUri?.({ preventDefault: mockPreventDefault } as never)
+
+    expect(mockOpen).toHaveBeenCalledWith(
+      "https://streamlit.io",
+      "_blank",
+      "noopener,noreferrer"
+    )
+    expect(mockPreventDefault).toHaveBeenCalled()
+
+    mockOpen.mockRestore()
+  })
+
+  it("prepends https:// for www. links", () => {
+    const mockColumn = LinkColumn(MOCK_LINK_COLUMN_PROPS)
+    const cell = mockColumn.getCell("www.streamlit.io") as UriCell
+
+    const mockOpen = vi.spyOn(window, "open").mockImplementation(() => null)
+
+    cell.onClickUri?.({ preventDefault: vi.fn() } as never)
+
+    expect(mockOpen).toHaveBeenCalledWith(
+      "https://www.streamlit.io",
+      "_blank",
+      "noopener,noreferrer"
+    )
+
+    mockOpen.mockRestore()
+  })
+
+  it("has correct typeIcon", () => {
+    const mockColumn = LinkColumn(MOCK_LINK_COLUMN_PROPS)
+    expect(mockColumn.typeIcon).toBe(":material/link:")
+  })
+
+  it("has correct sortMode", () => {
+    const mockColumn = LinkColumn(MOCK_LINK_COLUMN_PROPS)
+    expect(mockColumn.sortMode).toBe("default")
+  })
+
+  it("sets correct copyData", () => {
+    const mockColumn = LinkColumn(MOCK_LINK_COLUMN_PROPS)
+    const cell = mockColumn.getCell("https://streamlit.io") as UriCell
+
+    expect(cell.copyData).toBe("https://streamlit.io")
+  })
+
+  it("handles empty href correctly", () => {
+    const mockColumn = LinkColumn(MOCK_LINK_COLUMN_PROPS)
+    const cell = mockColumn.getCell("") as UriCell
+
+    // Empty string should be treated similar to null for display
+    expect(cell.displayData).toBe("")
   })
 })

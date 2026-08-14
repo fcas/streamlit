@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,104 +19,111 @@
 # the second commit should pass,
 # because the files were linted after trying to do the first commit.
 repos:
-  - repo: https://github.com/psf/black
-    rev: 22.6.0
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    # We fix ruff to a version to be in sync with pyproject.toml:
+    rev: v0.16.2
     hooks:
-      - id: black
-        args:
-          # Configure Black to support only syntax supported by the minimum supported Python version in setup.py.
-          - --target-version=py37
-        files: \.py$|\.pyi$
-  - repo: https://github.com/PyCQA/isort
-    rev: 5.11.5
+      # Run the linter.
+      - id: ruff-check
+        args: [--fix]
+        types_or: [python, pyi]
+      # Run the formatter.
+      - id: ruff-format
+        types_or: [python, pyi]
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0.12.1
     hooks:
-      - id: isort
-        args:
-          - --filter-files
-        exclude: ^lib/streamlit/__init__\.py$
-  - repo: https://github.com/PyCQA/autoflake
-    rev: v1.7.7
-    hooks:
-      - id: autoflake
-        args:
-          - "--in-place"
-          - "--ignore-init-module-imports"
-          - "--ignore-pass-after-docstring"
-          - "--remove-unused-variables"
-        additional_dependencies:
-          - pyflakes==3.0.1
+      - id: uv-lock
+        files: ^(pyproject\.toml|lib/pyproject\.toml|uv\.lock)$
   - repo: local
     hooks:
-      # Script ./scripts/run_in_subdirectory.py was used to work around a
-      # known problem with hooks in subdirectories when pass_filenames option
-      # is set to true
-      # See: https://github.com/pre-commit/pre-commit/issues/1417
-      - id: prettier
-        name: Prettier
-        # NOTE: This hook currently does not work on Windows due to "yarn" not being an executable and win32api.CreateProcess
-        # turning `subprocess.run(["yarn", "prettier", "--write"])` into a call to `yarn.exe prettier --write` which does not exist
-        entry: ./scripts/run_in_subdirectory.py frontend/ yarn prettier --write
-        files: ^frontend/.*\.(js|jsx|ts|tsx)$
+      - id: oxlint-frontend
+        name: Oxlint Frontend
+        entry: ./scripts/run_in_subdirectory.py frontend yarn exec oxlint --config ./.oxlintrc.json --fix --deny-warnings
+        files: ^frontend/(app|component-v2-lib|connection|eslint-plugin-streamlit-custom|lib|utils)/.*\.(js|jsx|ts|tsx)$
         exclude: /vendor/
-        language: node
+        # Uses `language: system` (not `node`) because the tool is invoked via
+        # the frontend's yarn install, matching the buf hooks below. pre-commit
+        # 4.6.1+ rejects `language: node` hooks without package.json/deps.
+        language: system
         pass_filenames: true
-      - id: prettier-yaml
-        name: Prettier-yaml
-        # NOTE: This hook currently does not work on Windows due to "yarn" not being an executable and win32api.CreateProcess
-        # turning `subprocess.run(["yarn", "prettier", "--write"])` into a call to `yarn.exe prettier --write` which does not exist
-        entry: ./scripts/run_in_subdirectory.py frontend yarn prettier ../.github --write
+      # Single oxfmt hook for all frontend source files.
+      # Uses run_in_subdirectory.py to handle path translation for subdirectory files.
+      # See: https://github.com/pre-commit/pre-commit/issues/1417
+      - id: oxfmt-frontend
+        name: Oxfmt Frontend
+        entry: ./scripts/run_in_subdirectory.py frontend yarn exec oxfmt --config ./.oxfmtrc.json
+        files: ^frontend/(app|component-v2-lib|connection|eslint-plugin-streamlit-custom|lib|utils)/.*\.(js|jsx|ts|tsx)$
+        exclude: /vendor/
+        language: system
+        pass_filenames: true
+      - id: oxfmt-yaml
+        name: Oxfmt-yaml
+        # Keep these paths repo-root relative: with `yarn --cwd frontend exec`,
+        # oxfmt resolves file arguments from repo root and rejects paths
+        # containing `..`.
+        entry: yarn --cwd frontend exec oxfmt --config frontend/.oxfmtrc.json ".github/**/*.{yml,yaml}"
         files: ^.github/.*\.(yml|yaml)$
-        language: node
+        language: system
         pass_filenames: false
-      # Typecheck will be run on CI using --hook-stage manual flag,
-      # check out .github/workflows/js-tests.yml "Run linters" step for details.
-      - id: typecheck-app
-        name: Typecheck App
-        always_run: true
-        entry: yarn --cwd frontend/app tsc --noEmit
-        files: \.(js|jsx|ts|tsx)$
-        language: node
+      - id: oxfmt-vscode-devcontainer-json
+        name: Oxfmt VSCode/devcontainer JSON
+        # Keep these paths repo-root relative: with `yarn --cwd frontend exec`,
+        # oxfmt resolves file arguments from repo root and rejects paths
+        # containing `..`.
+        entry: yarn --cwd frontend exec oxfmt --config frontend/.oxfmtrc.json ".vscode/*.json" ".devcontainer/*.json"
+        files: ^(.vscode/.*\.json|\.devcontainer/.*\.json)$
+        language: system
         pass_filenames: false
-        stages:
-          - manual
-      - id: typecheck-lib
-        name: Typecheck Lib
-        always_run: true
-        # no noEmit flag bc tsconfig.json emitDeclaration key is used
-        entry: yarn --cwd frontend/lib tsc
-        files: \.(js|jsx|ts|tsx)$
-        language: node
-        pass_filenames: false
-        stages:
-          - manual
-      # Eslint will be run on CI using Makefile,
-      # check out .github/workflows/js-tests.yml "Run linters" step for details.
-      - id: eslint
-        name: Eslint
-        always_run: true
-        # TODO: This hook currently does not work on Windows due to "yarn" not being an executable and win32api.CreateProcess
-        # turning `subprocess.run(["yarn", "prettier", "--write"])` into a call to `yarn.exe prettier --write` which does not exist
-        entry: ./scripts/run_in_subdirectory.py frontend/ yarn lint --fix
-        files: ^frontend/src/.*\.(js|jsx|ts|tsx)$
-        language: node
-        pass_filenames: true
-        stages:
-          - manual
       - id: license-headers
-        name: Checks that all files have the required license headers
+        name: Checks license headers
         entry: ./scripts/check_license_headers.py
         language: system
         always_run: true
         pass_filenames: false
-      - id: no-relative-imports
-        language: pygrep
-        name: No relative imports
-        description: Streamlit style is to use absolute imports only (except docs building)
-        entry: "^\\s*from\\s+\\."
-        pass_filenames: true
-        files: \.py$
+      - id: generate-agent-rules
+        name: Check generated agent rules
+        entry: ./scripts/generate_agent_rules.py
+        language: system
+        pass_filenames: false
+        files: |
+          (?x)
+          (^|.*/)AGENTS\.md$
+          |^scripts/generate_agent_rules\.py$
+          |^scripts/assets/code-review-instructions\.md$
+          |^Makefile$
+      - id: vscode-devcontainer-sync
+        name: Check VSCode/devcontainer sync
+        entry: ./scripts/sync_vscode_devcontainer.py --check
+        language: system
+        files: ^(.vscode/(settings|extensions)\.json|\.devcontainer/devcontainer\.json)$
+        pass_filenames: false
+      - id: yarn-dedupe
+        name: Check frontend yarn.lock dedupe
+        entry: ./scripts/check_yarn_dedupe.sh frontend
+        language: system
+        pass_filenames: false
+        files: ^frontend/yarn\.lock$
+      - id: sync-ruff-version
+        name: Sync ruff version
+        entry: ./scripts/sync_ruff_version.py
+        language: system
+        pass_filenames: false
+        files: ^(pyproject\.toml|\.pre-commit-config\.yaml)$
+      - id: proto-format
+        name: Buf Format Protos
+        entry: ./scripts/run_in_subdirectory.py frontend yarn exec buf format -w ../proto
+        files: ^proto/.*\.proto$
+        language: system
+        pass_filenames: false
+      - id: proto-lint
+        name: Buf Lint Protos
+        entry: ./scripts/run_in_subdirectory.py frontend yarn exec buf lint ../proto
+        files: ^proto/.*\.proto$
+        language: system
+        pass_filenames: false
   - repo: https://github.com/Lucas-C/pre-commit-hooks
-    rev: v1.5.4
+    rev: v1.5.6
     hooks:
       - id: insert-license
         name: Add license for all (S)CSS/JS(X)/TS(X) files
@@ -125,15 +132,16 @@ repos:
           - --comment-style
           - "/**| *| */"
           - --license-filepath
-          - scripts/license-template.txt
+          - scripts/assets/license-template.txt
           - --fuzzy-match-generates-todo
         exclude: |
           (?x)
           /vendor/
           |^vendor/
-          |^component-lib/declarations/apache-arrow
-          |^frontend/app/src/assets/css/variables\.scss
+          |^frontend/component-lib/declarations/apache-arrow
           |^lib/tests/streamlit/elements/test_html\.js
+          |^lib/tests/streamlit/elements/test_html\.css
+          |^e2e_playwright/static/
       - id: insert-license
         name: Add license for all Proto files
         files: \.proto$
@@ -141,13 +149,13 @@ repos:
           - --comment-style
           - "/**!| *| */"
           - --license-filepath
-          - scripts/license-template.txt
+          - scripts/assets/license-template.txt
           - --fuzzy-match-generates-todo
         exclude: |
           (?x)
           /vendor/
           |^vendor/
-          |^component-lib/declarations/apache-arrow
+          |^frontend/component-lib/declarations/apache-arrow
           |^proto/streamlit/proto/openmetrics_data_model\.proto
       - id: insert-license
         name: Add license for all shell files
@@ -156,13 +164,13 @@ repos:
           - --comment-style
           - "|#|"
           - --license-filepath
-          - scripts/license-template.txt
+          - scripts/assets/license-template.txt
           - --fuzzy-match-generates-todo
         exclude: |
           (?x)
           /vendor/
           |^vendor/
-          |^component-lib/declarations/apache-arrow
+          |^frontend/component-lib/declarations/apache-arrow
       - id: insert-license
         name: Add license for all Python files
         files: \.py$|\.pyi$
@@ -170,14 +178,13 @@ repos:
           - --comment-style
           - "|#|"
           - --license-filepath
-          - scripts/license-template.txt
+          - scripts/assets/license-template.txt
           - --fuzzy-match-generates-todo
         exclude: |
           (?x)
           /vendor/
           |^vendor/
-          |^component-lib/declarations/apache-arrow
-          |^lib/tests/isolated_asyncio_test_case\.py$
+          |^frontend/component-lib/declarations/apache-arrow
       - id: insert-license
         name: Add license for all HTML files
         files: \.html$
@@ -185,15 +192,27 @@ repos:
           - --comment-style
           - "<!--||-->"
           - --license-filepath
-          - scripts/license-template.txt
+          - scripts/assets/license-template.txt
           - --fuzzy-match-generates-todo
         exclude: |
           (?x)
           /vendor/
           |^vendor/
-          |^component-lib/declarations/apache-arrow
+          |^frontend/component-lib/declarations/apache-arrow
+  - repo: https://gitlab.com/bmares/check-json5
+    rev: v1.0.1
+    hooks:
+      # Check JSON files that are allowed to have comments
+      - id: check-json5
+        # Note that this should be the same as the check-json hook's exclude
+        # property
+        files: |
+          (?x)
+          ^\.vscode/.*\.json$
+          |tsconfig.*\.json$
+          |.*tsconfig\.json$
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.3.0
+    rev: v6.0.0
     hooks:
       - id: trailing-whitespace
         exclude: |
@@ -202,3 +221,31 @@ repos:
           |^NOTICES$
           |^proto/streamlit/proto/openmetrics_data_model.proto$
           |\.snap$
+      - id: check-added-large-files
+        exclude: ^uv\.lock$
+      - id: check-json
+        # Note that this should be the same as the check-json5 hook's files
+        # property
+        exclude: |
+          (?x)
+          ^\.vscode/.*\.json$
+          |tsconfig.*\.json$
+          |.*tsconfig\.json$
+      - id: check-toml
+      - id: check-yaml
+      - id: check-symlinks
+      - id: check-case-conflict
+      - id: check-merge-conflict
+      - id: fix-byte-order-marker
+      - id: end-of-file-fixer
+        exclude: |
+          (?x)
+          /vendor/
+          |^NOTICES$
+          |^e2e_playwright/static/
+          |^LICENSE$
+      - id: mixed-line-ending
+        args: [--fix=lf]
+        exclude: |
+          (?x)
+          ^NOTICES$

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,383 +13,379 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import "@testing-library/jest-dom"
 
-import {
-  parseLassoPath,
-  parseBoxSelection,
-  sendEmptySelection,
-  handleSelection,
-  applyTheming,
-} from "./PlotlyChart"
-import { PlotlyChart as PlotlyChartProto } from "@streamlit/lib/src/proto"
-import { WidgetStateManager } from "@streamlit/lib/src/WidgetStateManager"
-import { applyStreamlitTheme, layoutWithThemeDefaults } from "./CustomTheme"
-import { mockTheme } from "@streamlit/lib/src/mocks/mockTheme"
+import { act, render, screen } from "@testing-library/react"
 
-jest.mock("./CustomTheme", () => ({
-  replaceTemporaryColors: jest.fn().mockReturnValue("{}"),
-  applyStreamlitTheme: jest.fn(),
-  layoutWithThemeDefaults: jest.fn().mockReturnValue({}),
+import { PlotlyChart as PlotlyChartProto } from "@streamlit/protobuf"
+
+import { ElementFullscreenContext } from "~lib/components/shared/ElementFullscreen/ElementFullscreenContext"
+import { mockTheme } from "~lib/mocks/mockTheme"
+import type { PlotParams } from "~lib/util/reactPlotlyCompat"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import { PlotlyChart } from "./PlotlyChart"
+import { applyTheming, handleSelection, sendEmptySelection } from "./utils"
+
+// Mock Plotly component to capture props
+const MockPlot = vi.fn((_props: unknown) => (
+  <div data-testid="stPlotlyChartMock" />
+))
+
+vi.mock("react-plotly.js", () => ({
+  default: (props: unknown) => MockPlot(props),
 }))
 
-/**
- * PlotlyChart.test.tsx does not contain any React-testing-library tests because Plotly doesn't support it
- * https://github.com/plotly/react-plotly.js/issues/176
- */
+// Mock dependencies
+vi.mock("~lib/hooks/useCalculatedDimensions", () => ({
+  useCalculatedDimensions: () => ({
+    height: 450,
+    elementRef: { current: null },
+  }),
+}))
 
-describe("parsePlotlySelections", () => {
-  describe("parseLassoPath", () => {
-    it("parses a simple lasso path string into x and y coordinates", () => {
-      const pathData = "M100,150L200,250L300,350Z"
-      const result = parseLassoPath(pathData)
-      expect(result).toEqual({
-        x: [100, 200, 300],
-        y: [150, 250, 350],
-      })
-    })
+vi.mock("~lib/hooks/useEmotionTheme", () => ({
+  useEmotionTheme: () => mockTheme.emotion,
+}))
 
-    it("does not error with an empty string", () => {
-      const result = parseLassoPath("")
-      expect(result).toEqual({
-        x: [],
-        y: [],
-      })
-    })
+vi.mock("./utils", () => ({
+  applyTheming: vi.fn(spec => spec),
+  handleSelection: vi.fn(),
+  sendEmptySelection: vi.fn(),
+}))
 
-    it("handles path with only one point", () => {
-      const pathData = "M100,150Z"
-      const result = parseLassoPath(pathData)
-      expect(result).toEqual({
-        x: [100],
-        y: [150],
-      })
-    })
-  })
-
-  describe("parseBoxSelection", () => {
-    it("parses a box selection into x and y ranges", () => {
-      const selection = { x0: 100, y0: 150, x1: 200, y1: 250 }
-      const result = parseBoxSelection(selection)
-      expect(result).toEqual({
-        x: [100, 200],
-        y: [150, 250],
-      })
-    })
-
-    it("returns an object of empty x and y", () => {
-      const selection = {}
-      const result = parseBoxSelection(selection)
-      expect(result).toEqual({
-        x: [],
-        y: [],
-      })
-    })
-  })
+vi.mock("~lib/components/widgets/Form/FormClearHelper", () => {
+  return {
+    FormClearHelper: vi.fn().mockImplementation(() => ({
+      manageFormClearListener: vi.fn(),
+      disconnect: vi.fn(),
+    })),
+  }
 })
 
-const getWidgetMgr = (): WidgetStateManager => {
-  const sendRerunBackMsg = jest.fn()
-  const formsDataChanged = jest.fn()
-  return new WidgetStateManager({
-    sendRerunBackMsg,
-    formsDataChanged,
+const createWidgetManager = (): WidgetStateManager => {
+  const mgr = new WidgetStateManager({
+    sendRerunBackMsg: vi.fn(),
+    formsDataChanged: vi.fn(),
   })
+  mgr.getElementState = vi.fn()
+  mgr.setElementState = vi.fn()
+  return mgr
 }
 
-describe("sendEmptySelection", () => {
-  it("sends a rerun msg if widget_state is empty", () => {
-    const widgetMgr = getWidgetMgr()
-    jest.spyOn(widgetMgr, "setStringValue")
+function getLastPlotProps(): PlotParams {
+  return MockPlot.mock.calls[MockPlot.mock.calls.length - 1][0] as PlotParams
+}
 
-    sendEmptySelection(
-      widgetMgr,
-      { id: "plotly_chart" } as PlotlyChartProto,
-      undefined
-    )
-
-    expect(widgetMgr.setStringValue).toHaveBeenCalledTimes(1)
-  })
-
-  it("does not send a rerun msg if widget_state is empty", () => {
-    const widgetMgr = getWidgetMgr()
-    jest.spyOn(widgetMgr, "setStringValue")
-
-    const plotlyProto = { id: "plotly_chart" } as PlotlyChartProto
-
-    widgetMgr.setStringValue(
-      plotlyProto,
-      '{"selection":{"points":[],"point_indices":[],"box":[],"lasso":[]}}',
-      { fromUi: true }
-    )
-
-    sendEmptySelection(
-      widgetMgr,
-      { id: "plotly_chart" } as PlotlyChartProto,
-      undefined
-    )
-
-    // setStringValue is not called again
-    expect(widgetMgr.setStringValue).toHaveBeenCalledTimes(1)
-  })
+// Static test data - extracted to module level per coding guidelines
+const DEFAULT_ELEMENT = new PlotlyChartProto({
+  spec: JSON.stringify({
+    data: [{ type: "scatter", x: [1, 2], y: [1, 2] }],
+    layout: { title: "Test Chart" },
+  }),
+  config: JSON.stringify({}),
+  selectionMode: [],
+  id: "test_chart_id",
+  theme: "streamlit",
 })
 
-describe("handleSelection", () => {
-  const mockFragmentId = "testFragment"
-  const proto = {
-    id: "plotly_chart",
-    selectionMode: [0, 1, 2],
-  } as PlotlyChartProto
+describe("PlotlyChart Component", () => {
+  // Create fresh widgetMgr for each test to avoid shared state
+  let widgetMgr: WidgetStateManager
 
-  it("should return early if no event is provided", () => {
-    const widgetMgr = getWidgetMgr()
-    jest.spyOn(widgetMgr, "setStringValue")
+  const renderComponent = (
+    props: Partial<React.ComponentProps<typeof PlotlyChart>> = {},
+    contextValue: Record<string, unknown> = {}
+  ): ReturnType<typeof render> => {
+    const finalContext = {
+      expanded: false,
+      width: 600,
+      height: 500,
+      expand: vi.fn(),
+      collapse: vi.fn(),
+      ...contextValue,
+    }
 
-    // @ts-expect-error
-    handleSelection(undefined, widgetMgr, proto, mockFragmentId)
-    expect(widgetMgr.setStringValue).not.toHaveBeenCalled()
+    return render(
+      <ElementFullscreenContext.Provider
+        value={
+          finalContext as React.ComponentProps<
+            typeof ElementFullscreenContext.Provider
+          >["value"]
+        }
+      >
+        <PlotlyChart
+          element={DEFAULT_ELEMENT}
+          widgetMgr={widgetMgr}
+          disabled={false}
+          width={600}
+          {...props}
+        />
+      </ElementFullscreenContext.Provider>
+    )
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    widgetMgr = createWidgetManager()
   })
 
-  it("should handle an event with no points or selections", () => {
-    const event = { points: undefined, selections: undefined } as any
-    const widgetMgr = getWidgetMgr()
-
-    jest.spyOn(widgetMgr, "setStringValue")
-
-    handleSelection(event, widgetMgr, proto, mockFragmentId)
-    expect(widgetMgr.setStringValue).toHaveBeenCalledTimes(1)
+  it("renders without crashing", () => {
+    renderComponent()
+    expect(screen.getByTestId("stPlotlyChart")).toBeVisible()
+    expect(MockPlot).toHaveBeenCalled()
   })
 
-  it("should process events with points correctly", () => {
-    const event = {
-      points: [
-        { pointIndex: 1, data: { legendgroup: "group1" }, pointIndices: [1] },
-      ],
-    } as any
-    const widgetMgr = getWidgetMgr()
-
-    jest.spyOn(widgetMgr, "setStringValue")
-
-    handleSelection(event, widgetMgr, proto, mockFragmentId)
-    expect(widgetMgr.setStringValue).toHaveBeenCalledWith(
-      { id: "plotly_chart", selectionMode: [0, 1, 2] },
-      '{"selection":{"points":[{"point_index":1,"point_indices":[1],"legendgroup":"group1"}],"point_indices":[1],"box":[],"lasso":[]}}',
-      { fromUi: true },
-      "testFragment"
+  it("initializes figure state correctly", () => {
+    renderComponent()
+    expect(applyTheming).toHaveBeenCalledWith(
+      expect.objectContaining({
+        layout: expect.objectContaining({ title: "Test Chart" }),
+      }),
+      "streamlit",
+      expect.anything()
     )
   })
 
-  it("should process box selections correctly", () => {
-    const event = {
-      selections: [
-        {
-          type: "rect",
-          xref: "x",
-          yref: "y",
-          x0: "0",
-          x1: "1",
-          y0: "0",
-          y1: "1",
-        },
-      ],
-    } as any
-    const widgetMgr = getWidgetMgr()
+  it("recovers state from widgetMgr if available", () => {
+    const savedFigure = { data: [], layout: { title: "Recovered" } }
+    vi.mocked(widgetMgr.getElementState).mockReturnValue(savedFigure)
 
-    jest.spyOn(widgetMgr, "setStringValue")
+    renderComponent()
 
-    handleSelection(event, widgetMgr, proto, undefined)
-    expect(widgetMgr.setStringValue).toHaveBeenCalledWith(
-      { id: "plotly_chart", selectionMode: [0, 1, 2] },
-      '{"selection":{"points":[],"point_indices":[],"box":[{"xref":"x","yref":"y","x":["0","1"],"y":["0","1"]}],"lasso":[]}}',
-      { fromUi: true },
+    const lastCallProps = getLastPlotProps()
+    expect(lastCallProps.layout.title).toBe("Recovered")
+  })
+
+  it("updates dimensions based on context", () => {
+    renderComponent({}, { width: 800 })
+
+    const lastCallProps = getLastPlotProps()
+
+    expect(lastCallProps.layout.width).toBe(800)
+    expect(lastCallProps.layout.height).toBe(450)
+  })
+
+  it("handles fullscreen mode dimensions", () => {
+    renderComponent({}, { expanded: true, height: 900, width: 1000 })
+
+    const lastCallProps = getLastPlotProps()
+
+    expect(lastCallProps.layout.width).toBe(1000)
+    expect(lastCallProps.layout.height).toBe(900)
+  })
+
+  it("configures selection modes correctly (Points)", () => {
+    const element = new PlotlyChartProto({
+      ...DEFAULT_ELEMENT,
+      selectionMode: [PlotlyChartProto.SelectionMode.POINTS],
+    })
+
+    renderComponent({ element })
+
+    const lastCallProps = getLastPlotProps()
+
+    // Points selection -> clickmode: "event+select", dragmode: "pan"
+    expect(lastCallProps.layout.clickmode).toBe("event+select")
+    expect(lastCallProps.layout.dragmode).toBe("pan")
+  })
+
+  it("configures selection modes correctly (Box)", () => {
+    const element = new PlotlyChartProto({
+      ...DEFAULT_ELEMENT,
+      selectionMode: [PlotlyChartProto.SelectionMode.BOX],
+    })
+
+    renderComponent({ element })
+
+    const lastCallProps = getLastPlotProps()
+
+    // Box selection -> dragmode: "select"
+    expect(lastCallProps.layout.dragmode).toBe("select")
+    // clickmode is set to "event" via effect when dragmode is select/lasso
+    expect(lastCallProps.layout.clickmode).toBe("event")
+  })
+
+  it("configures selection modes correctly (Lasso)", () => {
+    const element = new PlotlyChartProto({
+      ...DEFAULT_ELEMENT,
+      selectionMode: [PlotlyChartProto.SelectionMode.LASSO],
+    })
+
+    renderComponent({ element })
+
+    const lastCallProps = getLastPlotProps()
+
+    // Lasso selection -> dragmode: "lasso"
+    expect(lastCallProps.layout.dragmode).toBe("lasso")
+    // clickmode is set to "event" via effect when dragmode is select/lasso
+    expect(lastCallProps.layout.clickmode).toBe("event")
+  })
+
+  it("disables interactions when disabled prop is true", () => {
+    const element = new PlotlyChartProto({
+      ...DEFAULT_ELEMENT,
+      selectionMode: [PlotlyChartProto.SelectionMode.POINTS],
+    })
+
+    renderComponent({ element, disabled: true })
+
+    const lastCallProps = getLastPlotProps()
+
+    // When disabled, clickmode should be "none" and dragmode should be "pan"
+    expect(lastCallProps.layout.clickmode).toBe("none")
+    expect(lastCallProps.layout.dragmode).toBe("pan")
+  })
+
+  it("handles empty spec gracefully", () => {
+    const element = new PlotlyChartProto({
+      ...DEFAULT_ELEMENT,
+      spec: "",
+    })
+
+    renderComponent({ element })
+
+    const lastCallProps = getLastPlotProps()
+
+    expect(lastCallProps.data).toEqual([])
+    expect(lastCallProps.layout).toBeDefined()
+  })
+
+  it("calls handleSelection on selection event", () => {
+    const element = new PlotlyChartProto({
+      ...DEFAULT_ELEMENT,
+      selectionMode: [PlotlyChartProto.SelectionMode.POINTS],
+    })
+
+    renderComponent({ element })
+
+    const lastCallProps = getLastPlotProps()
+    const mockEvent = {} as Readonly<Plotly.PlotSelectionEvent>
+
+    act(() => {
+      lastCallProps.onSelected?.(mockEvent)
+    })
+
+    expect(handleSelection).toHaveBeenCalledWith(
+      mockEvent,
+      widgetMgr,
+      expect.objectContaining({ id: DEFAULT_ELEMENT.id }),
       undefined
     )
   })
 
-  it("should process lasso selections correctly", () => {
-    const event = {
-      selections: [
-        { type: "path", xref: "x", yref: "y", path: "M4.0,8.0L4.0,7.8Z" },
-      ],
-    } as any
-    const widgetMgr = getWidgetMgr()
+  it("calls sendEmptySelection on deselect event", () => {
+    const element = new PlotlyChartProto({
+      ...DEFAULT_ELEMENT,
+      selectionMode: [PlotlyChartProto.SelectionMode.POINTS],
+    })
 
-    jest.spyOn(widgetMgr, "setStringValue")
+    renderComponent({ element })
 
-    handleSelection(event, widgetMgr, proto, mockFragmentId)
-    expect(widgetMgr.setStringValue).toHaveBeenCalledWith(
-      { id: "plotly_chart", selectionMode: [0, 1, 2] },
-      '{"selection":{"points":[],"point_indices":[],"box":[],"lasso":[{"xref":"x","yref":"y","x":[4,4],"y":[8,7.8]}]}}',
-      { fromUi: true },
-      "testFragment"
-    )
-  })
+    const lastCallProps = getLastPlotProps()
 
-  it("should not rerun if lasso selection is present but has no lasso selection mode", () => {
-    const event = {
-      selections: [
-        { type: "path", xref: "x", yref: "y", path: "M4.0,8.0L4.0,7.8Z" },
-      ],
-    } as any
-    const widgetMgr = getWidgetMgr()
+    act(() => {
+      lastCallProps.onDeselect?.()
+    })
 
-    jest.spyOn(widgetMgr, "setStringValue")
-
-    handleSelection(
-      event,
+    // It should call sendEmptySelection
+    // And it also calls resetSelectionsCallback(false) inside component
+    expect(sendEmptySelection).toHaveBeenCalledWith(
       widgetMgr,
-      // @ts-expect-error
-      { ...proto, selectionMode: [] },
-      mockFragmentId
-    )
-    expect(widgetMgr.setStringValue).not.toHaveBeenCalled()
-  })
-
-  it("should not rerun if box selection is present but has no box selection mode", () => {
-    const event = {
-      selections: [
-        {
-          type: "rect",
-          xref: "x",
-          yref: "y",
-          x0: "0",
-          x1: "1",
-          y0: "0",
-          y1: "1",
-        },
-      ],
-    } as any
-    const widgetMgr = getWidgetMgr()
-
-    jest.spyOn(widgetMgr, "setStringValue")
-
-    handleSelection(
-      event,
-      widgetMgr,
-      // @ts-expect-error
-      { ...proto, selectionMode: [] },
-      mockFragmentId
-    )
-    expect(widgetMgr.setStringValue).not.toHaveBeenCalled()
-  })
-
-  it("should not rerun if the return value is the same", () => {
-    const event = {
-      points: [],
-      selections: [],
-    } as any
-    const widgetMgr = getWidgetMgr()
-
-    jest.spyOn(widgetMgr, "setStringValue")
-
-    widgetMgr.setStringValue(
-      proto,
-      '{"selection":{"points":[],"point_indices":[],"box":[],"lasso":[]}}',
-      { fromUi: true }
-    )
-
-    handleSelection(event, widgetMgr, proto, mockFragmentId)
-    expect(widgetMgr.setStringValue).toHaveBeenCalledTimes(1)
-  })
-
-  it('should rerun if there is a lasso select and a box select when selection_mode=["box", "lasso"]', () => {
-    const boxEvent = {
-      points: [
-        {
-          pointIndex: 0,
-          data: { legendgroup: "group2" },
-          pointIndices: [0],
-          x: 0,
-          y: 0,
-        },
-      ],
-      selections: [
-        {
-          type: "rect",
-          xref: "x",
-          yref: "y",
-          x0: "0",
-          x1: "1",
-          y0: "0",
-          y1: "1",
-        },
-      ],
-    } as any
-
-    const widgetMgr = getWidgetMgr()
-
-    jest.spyOn(widgetMgr, "setStringValue")
-    handleSelection(
-      boxEvent,
-      widgetMgr,
-      { ...proto, selectionMode: [1, 2] } as PlotlyChartProto,
-      undefined
-    )
-    expect(widgetMgr.setStringValue).toHaveBeenCalledTimes(1)
-
-    const lassoEventAndBoxEvent = {
-      points: [
-        {
-          pointIndex: 1,
-          data: { legendgroup: "group1" },
-          pointIndices: [1],
-          x: 1,
-          y: 1,
-        },
-        {
-          pointIndex: 0,
-          data: { legendgroup: "group2" },
-          pointIndices: [0],
-          x: 0,
-          y: 0,
-        },
-      ],
-      selections: [
-        { type: "path", xref: "x", yref: "y", path: "M4.0,8.0L4.0,7Z" },
-        {
-          type: "rect",
-          xref: "x",
-          yref: "y",
-          x0: "0",
-          x1: "1",
-          y0: "0",
-          y1: "1",
-        },
-      ],
-    } as any
-
-    handleSelection(
-      lassoEventAndBoxEvent,
-      widgetMgr,
-      { ...proto, selectionMode: [1, 2] } as PlotlyChartProto,
-      undefined
-    )
-    expect(widgetMgr.setStringValue).toHaveBeenCalledTimes(2)
-    expect(widgetMgr.setStringValue).toHaveBeenLastCalledWith(
-      { id: "plotly_chart", selectionMode: [1, 2] },
-      '{"selection":{"points":[{"point_index":1,"point_indices":[1],"x":1,"y":1,"legendgroup":"group1"},{"point_index":0,"point_indices":[0],"x":0,"y":0,"legendgroup":"group2"}],"point_indices":[1,0],"box":[{"xref":"x","yref":"y","x":["0","1"],"y":["0","1"]}],"lasso":[{"xref":"x","yref":"y","x":[4,4],"y":[8,7]}]}}',
-      { fromUi: true },
+      expect.objectContaining({ id: DEFAULT_ELEMENT.id }),
       undefined
     )
   })
-})
 
-describe("applyTheming", () => {
-  it("applies Streamlit theme when theme is streamlit", () => {
-    const mockPlotlyFigure = { data: [{}], layout: {}, frames: [] }
-    const chartTheme = "streamlit"
+  it("resets selections on double-click when selection is activated", () => {
+    const element = new PlotlyChartProto({
+      ...DEFAULT_ELEMENT,
+      selectionMode: [PlotlyChartProto.SelectionMode.POINTS],
+    })
 
-    applyTheming(mockPlotlyFigure, chartTheme, mockTheme.emotion)
+    renderComponent({ element })
 
-    expect(applyStreamlitTheme).toHaveBeenCalled()
+    const lastCallProps = getLastPlotProps()
+
+    // onDoubleClick should be defined when selection is activated
+    expect(lastCallProps.onDoubleClick).toBeDefined()
+
+    act(() => {
+      lastCallProps.onDoubleClick?.()
+    })
+
+    // Double-click should reset selections by calling sendEmptySelection
+    expect(sendEmptySelection).toHaveBeenCalledWith(
+      widgetMgr,
+      expect.objectContaining({ id: DEFAULT_ELEMENT.id }),
+      undefined
+    )
   })
 
-  it("applies default theme when not using the default plotly theme", () => {
-    const mockPlotlyFigure = { data: [{}], layout: {}, frames: [] }
-    const chartTheme = "default"
+  it("does not have double-click handler when selection is not activated", () => {
+    // No selection mode means selection is not activated
+    renderComponent()
 
-    applyTheming(mockPlotlyFigure, chartTheme, mockTheme.emotion)
+    const lastCallProps = getLastPlotProps()
 
-    expect(layoutWithThemeDefaults).toHaveBeenCalled()
+    // onDoubleClick should be undefined when selection is not activated
+    expect(lastCallProps.onDoubleClick).toBeUndefined()
+  })
+
+  it("saves figure to widget state on update", () => {
+    renderComponent()
+
+    const lastCallProps = getLastPlotProps()
+    const newFigure = {
+      data: [],
+      layout: { title: { text: "New Title" } },
+      frames: null,
+    }
+
+    act(() => {
+      lastCallProps.onUpdate?.(newFigure, document.createElement("div"))
+    })
+
+    expect(widgetMgr.setElementState).toHaveBeenCalledWith(
+      DEFAULT_ELEMENT.id,
+      "figure",
+      newFigure
+    )
+  })
+
+  it("adds fullscreen button to toolbar", () => {
+    renderComponent()
+
+    const lastCallProps = getLastPlotProps()
+    const config = lastCallProps.config
+
+    expect(config?.modeBarButtonsToAdd).toBeDefined()
+    const fullscreenButton = config?.modeBarButtonsToAdd?.find(
+      b => typeof b === "object" && b.name === "Fullscreen"
+    )
+    expect(fullscreenButton).toBeDefined()
+  })
+
+  it("handles fullscreen button click", () => {
+    const expandMock = vi.fn()
+    renderComponent({}, { expanded: false, expand: expandMock })
+
+    const lastCallProps = getLastPlotProps()
+    const config = lastCallProps.config
+    const fullscreenButton = config?.modeBarButtonsToAdd?.find(
+      b => typeof b === "object" && b.name === "Fullscreen"
+    )
+
+    act(() => {
+      if (typeof fullscreenButton === "object") {
+        fullscreenButton.click(
+          document.createElement("div") as unknown as Parameters<
+            typeof fullscreenButton.click
+          >[0],
+          new MouseEvent("click")
+        )
+      }
+    })
+
+    expect(expandMock).toHaveBeenCalled()
   })
 })

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -55,7 +55,7 @@ text = """
     following:
 
     * **Preferred:** modify your code to avoid using this type of object.
-    * Or add the argument `allow_output_mutation=True` to the `st.cache` decorator.
+    * If this object is a shared resource, cache it with `st.cache_resource`.
     """
 
 st.error(text)
@@ -85,3 +85,56 @@ st.success(
     "This is a success message with non emoji icon",
     icon=":material/celebration:",
 )
+
+st.error("""
+## Big error
+
+This is a big error message.
+
+""")
+
+### LATEST MATERIAL ICON TEST START ###
+st.success(
+    "Success message to test material icon from latest material symbols font",
+    icon=":material/high_quality_off:",
+)
+### LATEST MATERIAL ICON TEST END ###
+
+### Test width parameter with stretch and pixel values ###
+
+# Alerts with width="stretch" (explicitly set)
+st.error("This is an error with width='stretch'", width="stretch")
+st.warning("This is a warning with width='stretch'", width="stretch")
+st.info("This is an info message with width='stretch'", width="stretch")
+st.success("This is a success message with width='stretch'", width="stretch")
+
+# Alerts with width=200 (pixels)
+st.error("This is an error with width=200", width=200)
+st.warning("This is a warning with width=200", width=200)
+st.info("This is an info message with width=200", width=200)
+st.success("This is a success message with width=200", width=200)
+
+# Alerts with width="stretch" and icon
+st.error("This is an error with width='stretch' and icon", width="stretch", icon="🚨")
+
+# Alerts with width=200 and icon
+st.info("This is an info message with width=200 and icon", width=200, icon="👉🏻")
+
+### Test cases for icon extraction from body ###
+
+# Test case with emoji icon extracted from body
+st.warning("🔔 This warning has an emoji icon extracted from body")
+
+# Test case with material icon extracted from body
+st.info(":material/lightbulb: This info has a material icon extracted from body")
+
+### Test cases for title parameter ###
+
+# Alerts with title
+st.success(
+    "This is the success body text.",
+    title="Success _Title_ :material/celebration:",
+)
+
+# Alert with title and icon
+st.info("Body with title and icon.", title="Notice", icon=":material/info:")

@@ -1,0 +1,2310 @@
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from typing import Literal
+from unittest.mock import MagicMock, patch
+
+import pytest
+from parameterized import parameterized
+
+import streamlit as st
+from streamlit.elements.dialog_decorator import dialog_decorator
+from streamlit.errors import (
+    FragmentHandledException,
+    StreamlitAPIException,
+    StreamlitDuplicateElementId,
+    StreamlitInvalidColumnGapError,
+    StreamlitInvalidFormCallbackError,
+    StreamlitInvalidHorizontalAlignmentError,
+    StreamlitInvalidVerticalAlignmentError,
+    StreamlitValueError,
+)
+from streamlit.proto.Block_pb2 import Block as BlockProto
+from streamlit.proto.GapSize_pb2 import GapSize
+from streamlit.proto.RootContainer_pb2 import RootContainer
+from streamlit.proto.WidgetStates_pb2 import WidgetState, WidgetStates
+from streamlit.runtime.scriptrunner_utils.script_run_context import ThreadState
+from streamlit.runtime.state.session_state import get_script_run_ctx
+from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.elements.layout_test_utils import WidthConfigFields
+
+
+class ColumnsTest(DeltaGeneratorTestCase):
+    """Test columns."""
+
+    def test_equal_width_columns(self):
+        """Test that it works correctly when spec is int"""
+        columns = st.columns(3)
+
+        for column in columns:
+            with column:
+                st.write("Hello")
+
+        all_deltas = self.get_all_deltas_from_queue()
+
+        columns_blocks = all_deltas[1:4]
+        # 7 elements will be created: 1 horizontal block, 3 columns, 3 markdown
+        assert len(all_deltas) == 7
+
+        # Check the defaults have been applied correctly for the first column
+        assert (
+            columns_blocks[0].add_block.column.vertical_alignment
+            == BlockProto.Column.VerticalAlignment.TOP
+        )
+        assert columns_blocks[0].add_block.column.gap_config.gap_size == GapSize.SMALL
+        assert not columns_blocks[0].add_block.column.show_border
+
+        # Check the weights are correct
+        assert columns_blocks[0].add_block.column.weight == 1.0 / 3
+        assert columns_blocks[1].add_block.column.weight == 1.0 / 3
+        assert columns_blocks[2].add_block.column.weight == 1.0 / 3
+
+    @parameterized.expand(
+        [
+            ("bottom", BlockProto.Column.VerticalAlignment.BOTTOM),
+            ("top", BlockProto.Column.VerticalAlignment.TOP),
+            ("center", BlockProto.Column.VerticalAlignment.CENTER),
+        ]
+    )
+    def test_columns_with_vertical_alignment(
+        self, vertical_alignment: Literal["top", "bottom", "center"], expected_alignment
+    ):
+        """Test that it works correctly with vertical_alignment argument"""
+
+        st.columns(3, vertical_alignment=vertical_alignment)
+
+        all_deltas = self.get_all_deltas_from_queue()
+
+        # 7 elements will be created: 1 horizontal block, 3 columns, 3 markdown
+        columns_blocks = all_deltas[1:4]
+
+        # Check that the vertical alignment is correct for all columns
+        assert (
+            columns_blocks[0].add_block.column.vertical_alignment == expected_alignment
+        )
+        assert (
+            columns_blocks[1].add_block.column.vertical_alignment == expected_alignment
+        )
+        assert (
+            columns_blocks[2].add_block.column.vertical_alignment == expected_alignment
+        )
+
+    def test_columns_with_invalid_vertical_alignment(self):
+        """Test that it throws an error on invalid vertical_alignment argument"""
+        with pytest.raises(StreamlitAPIException):
+            st.columns(3, vertical_alignment="invalid")
+
+    def test_not_equal_width_int_columns(self):
+        """Test that it works correctly when spec is list of ints"""
+        weights = [3, 2, 1]
+        sum_weights = sum(weights)
+        columns = st.columns(weights)
+
+        for column in columns:
+            with column:
+                st.write("Hello")
+
+        all_deltas = self.get_all_deltas_from_queue()
+
+        columns_blocks = all_deltas[1:4]
+        # 7 elements will be created: 1 horizontal block, 3 columns, 3 markdown
+        assert len(all_deltas) == 7
+        assert columns_blocks[0].add_block.column.weight == 3.0 / sum_weights
+        assert columns_blocks[1].add_block.column.weight == 2.0 / sum_weights
+        assert columns_blocks[2].add_block.column.weight == 1.0 / sum_weights
+
+    def test_not_equal_width_float_columns(self):
+        """Test that it works correctly when spec is list of floats or ints"""
+        weights = [7.5, 2.5, 5]
+        sum_weights = sum(weights)
+        columns = st.columns(weights)
+
+        for column in columns:
+            with column:
+                # Noop
+                pass
+
+        all_deltas = self.get_all_deltas_from_queue()
+
+        columns_blocks = all_deltas[1:]
+        # 4 elements will be created: 1 horizontal block, 3 columns
+        assert len(all_deltas) == 4
+        assert len(columns_blocks) == 3
+        assert columns_blocks[0].add_block.column.weight == 7.5 / sum_weights
+        assert columns_blocks[1].add_block.column.weight == 2.5 / sum_weights
+        assert columns_blocks[2].add_block.column.weight == 5.0 / sum_weights
+
+    def test_columns_with_default_small_gap(self):
+        """Test that it works correctly with no gap argument
+        (gap size is default of small)"""
+
+        st.columns(3)
+
+        all_deltas = self.get_all_deltas_from_queue()
+
+        horizontal_container = all_deltas[0]
+        columns_blocks = all_deltas[1:4]
+
+        # 4 elements will be created: 1 horizontal block, 3 columns, each receives
+        # "small" gap arg
+        assert len(all_deltas) == 4
+        assert (
+            horizontal_container.add_block.flex_container.gap_config.WhichOneof(
+                "gap_spec"
+            )
+            == "gap_size"
+        )
+        assert (
+            horizontal_container.add_block.flex_container.gap_config.gap_size
+            == GapSize.SMALL
+        )
+
+        for col_block in columns_blocks:
+            assert (
+                col_block.add_block.column.gap_config.WhichOneof("gap_spec")
+                == "gap_size"
+            )
+            assert col_block.add_block.column.gap_config.gap_size == GapSize.SMALL
+
+    def test_columns_with_medium_gap(self):
+        """Test that it works correctly with "medium" gap argument"""
+
+        st.columns(3, gap="medium")
+
+        all_deltas = self.get_all_deltas_from_queue()
+
+        horizontal_container = all_deltas[0]
+        columns_blocks = all_deltas[1:4]
+
+        # 4 elements will be created: 1 horizontal block, 3 columns, each receives
+        # "medium" gap arg
+        assert len(all_deltas) == 4
+        assert (
+            horizontal_container.add_block.flex_container.gap_config.WhichOneof(
+                "gap_spec"
+            )
+            == "gap_size"
+        )
+        assert (
+            horizontal_container.add_block.flex_container.gap_config.gap_size
+            == GapSize.MEDIUM
+        )
+
+        for col_block in columns_blocks:
+            assert (
+                col_block.add_block.column.gap_config.WhichOneof("gap_spec")
+                == "gap_size"
+            )
+            assert col_block.add_block.column.gap_config.gap_size == GapSize.MEDIUM
+
+    def test_columns_with_large_gap(self):
+        """Test that it works correctly with "large" gap argument"""
+
+        st.columns(3, gap="LARGE")
+
+        all_deltas = self.get_all_deltas_from_queue()
+
+        horizontal_container = all_deltas[0]
+        columns_blocks = all_deltas[1:4]
+
+        # 4 elements will be created: 1 horizontal block, 3 columns, each receives
+        # "large" gap arg
+        assert len(all_deltas) == 4
+        assert (
+            horizontal_container.add_block.flex_container.gap_config.WhichOneof(
+                "gap_spec"
+            )
+            == "gap_size"
+        )
+        assert (
+            horizontal_container.add_block.flex_container.gap_config.gap_size
+            == GapSize.LARGE
+        )
+
+        for col_block in columns_blocks:
+            assert (
+                col_block.add_block.column.gap_config.WhichOneof("gap_spec")
+                == "gap_size"
+            )
+            assert col_block.add_block.column.gap_config.gap_size == GapSize.LARGE
+
+    def test_columns_with_none_gap(self):
+        """Test that it works correctly with "none" gap argument"""
+
+        st.columns(3, gap=None)
+
+        all_deltas = self.get_all_deltas_from_queue()
+
+        horizontal_container = all_deltas[0]
+        columns_blocks = all_deltas[1:4]
+
+        # 4 elements will be created: 1 horizontal block, 3 columns, each receives
+        # "none" gap arg
+        assert (
+            horizontal_container.add_block.flex_container.gap_config.WhichOneof(
+                "gap_spec"
+            )
+            == "gap_size"
+        )
+        assert (
+            horizontal_container.add_block.flex_container.gap_config.gap_size
+            == GapSize.NONE
+        )
+
+        for col_block in columns_blocks:
+            assert (
+                col_block.add_block.column.gap_config.WhichOneof("gap_spec")
+                == "gap_size"
+            )
+            assert col_block.add_block.column.gap_config.gap_size == GapSize.NONE
+
+    @parameterized.expand([(0,), (5,), (20,), (100,)])
+    def test_columns_with_pixel_gap(self, gap: int):
+        """Test that non-negative integer gaps set pixel_gap on the flex container and columns."""
+
+        st.columns(3, gap=gap)
+
+        all_deltas = self.get_all_deltas_from_queue()
+
+        horizontal_container = all_deltas[0]
+        columns_blocks = all_deltas[1:4]
+
+        assert (
+            horizontal_container.add_block.flex_container.gap_config.WhichOneof(
+                "gap_spec"
+            )
+            == "pixel_gap"
+        )
+        assert horizontal_container.add_block.flex_container.gap_config.pixel_gap == gap
+
+        for col_block in columns_blocks:
+            assert (
+                col_block.add_block.column.gap_config.WhichOneof("gap_spec")
+                == "pixel_gap"
+            )
+            assert col_block.add_block.column.gap_config.pixel_gap == gap
+
+    @parameterized.expand(
+        [
+            "invalid",
+            "5rem",
+            "10px",
+            -1,
+            -100,
+            True,
+        ]
+    )
+    def test_columns_with_invalid_gap(self, invalid_gap):
+        """Test that it throws an error on invalid gap argument"""
+        with pytest.raises(StreamlitInvalidColumnGapError):
+            st.columns(3, gap=invalid_gap)
+
+    def test_columns_with_border(self):
+        """Test that it works correctly with border argument"""
+
+        st.columns(3, border=True)
+
+        all_deltas = self.get_all_deltas_from_queue()
+
+        columns_blocks = all_deltas[1:4]
+
+        # 4 elements will be created: 1 horizontal block, 3 columns,
+        # each receives: border=True
+        assert len(all_deltas) == 4
+        assert columns_blocks[0].add_block.column.show_border
+        assert columns_blocks[1].add_block.column.show_border
+        assert columns_blocks[2].add_block.column.show_border
+
+    def test_width_config_pixel_width(self):
+        """Test that width configuration works correctly"""
+        st.columns(3, width=200)
+        columns_block = self.get_delta_from_queue(0)
+        assert columns_block.add_block.width_config.pixel_width == 200
+
+    def test_width_config_stretch(self):
+        """Test that width configuration works correctly"""
+        st.columns(3, width="stretch")
+        columns_block = self.get_delta_from_queue(0)
+        assert columns_block.add_block.width_config.use_stretch
+
+    @parameterized.expand(
+        [
+            (None,),
+            ("invalid",),
+            (-100,),
+            (0,),
+            ("content",),
+        ]
+    )
+    def test_invalid_width(self, invalid_width):
+        """Test that invalid width values raise an error"""
+        with pytest.raises(StreamlitAPIException):
+            st.columns(3, width=invalid_width)
+
+
+class ExpanderTest(DeltaGeneratorTestCase):
+    def test_label_required(self):
+        """Test that label is required"""
+        with pytest.raises(TypeError):
+            st.expander()
+
+    def test_label_none_raises(self):
+        """Test that an explicit label=None raises a StreamlitAPIException."""
+        with pytest.raises(StreamlitAPIException) as e:
+            st.expander(None)
+        assert "A label is required for an expander" in str(e.value)
+
+    def test_just_label(self):
+        """Test that it can be called with no params"""
+        expander = st.expander("label")
+
+        with expander:
+            # Noop
+            pass
+
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.expandable.label == "label"
+        assert not expander_block.add_block.expandable.expanded
+
+    def test_allow_empty(self):
+        """Test that it correctly applies allow_empty param."""
+        st.expander("label")
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.allow_empty
+
+    def test_width_config(self):
+        """Test that width configuration works correctly"""
+        st.expander("label", width=200)
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.width_config.pixel_width == 200
+
+        st.expander("label", width="stretch")
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.width_config.use_stretch
+
+    @parameterized.expand(
+        [
+            (None,),
+            ("invalid",),
+            (-100,),
+            (0,),
+            ("content",),
+        ]
+    )
+    def test_invalid_width(self, invalid_width):
+        """Test that invalid width values raise an error"""
+        with pytest.raises(StreamlitAPIException):
+            st.expander("label", width=invalid_width)
+
+    def test_valid_emoji_icon(self):
+        """Test that it can be called with an emoji icon"""
+        expander = st.expander("label", icon="🦄")
+
+        with expander:
+            # Noop
+            pass
+
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.expandable.label == "label"
+        assert expander_block.add_block.expandable.icon == "🦄"
+
+    def test_valid_material_icon(self):
+        """Test that it can be called with a material icon"""
+        expander = st.expander("label", icon=":material/download:")
+
+        with expander:
+            # Noop
+            pass
+
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.expandable.label == "label"
+        assert expander_block.add_block.expandable.icon == ":material/download:"
+
+    def test_invalid_emoji_icon(self):
+        """Test that it throws an error on invalid emoji icon"""
+        with pytest.raises(StreamlitAPIException) as e:
+            st.expander("label", icon="invalid")
+        assert (
+            str(e.value)
+            == 'The value "invalid" is not a valid emoji. Shortcodes are not allowed, '
+            "please use a single character instead."
+        )
+
+    def test_invalid_material_icon(self):
+        """Test that it throws an error on invalid material icon"""
+        icon = ":material/invalid:"
+        with pytest.raises(StreamlitAPIException) as e:
+            st.expander("label", icon=icon)
+        assert "is not a valid Material icon" in str(e.value)
+
+    def test_open_returns_none_by_default(self):
+        """Test that .open returns None when on_change is not set."""
+        expander = st.expander("label")
+        assert expander.open is None
+
+    def test_open_returns_none_when_expanded_true(self):
+        """Test that .open returns None even with expanded=True (no state tracking)."""
+        expander = st.expander("label", expanded=True)
+        assert expander.open is None
+
+    def test_invalid_on_change_raises(self):
+        """Test that invalid on_change values raise an error."""
+        with pytest.raises(StreamlitAPIException):
+            st.expander("label", on_change="invalid")
+
+    def test_on_change_rerun_sets_open_false(self):
+        """Test that on_change='rerun' with expanded=False sets .open to False."""
+        expander = st.expander("label", on_change="rerun")
+        assert expander.open is False
+
+    def test_on_change_rerun_sets_open_true(self):
+        """Test that on_change='rerun' with expanded=True sets .open to True."""
+        expander = st.expander("label", expanded=True, on_change="rerun")
+        assert expander.open is True
+
+    def test_on_change_rerun_without_key_sets_block_id(self):
+        """Test that on_change='rerun' without key still sets block-level id."""
+        st.expander("label", on_change="rerun")
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.id != ""
+
+    def test_on_change_rerun_with_key_sets_block_id(self):
+        """Test that on_change='rerun' with key sets the block-level id."""
+        st.expander("label", key="my_exp", on_change="rerun")
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.id != ""
+        assert "my_exp" in expander_block.add_block.id
+
+    def test_on_change_rerun_sets_id(self):
+        """Test that on_change='rerun' sets id in the expandable proto."""
+        st.expander("label", on_change="rerun")
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.expandable.id != ""
+
+    def test_on_change_ignore_does_not_set_block_id(self):
+        """Test that on_change='ignore' does not set the block id."""
+        st.expander("label", on_change="ignore")
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.id == ""
+
+    def test_on_change_ignore_does_not_set_id(self):
+        """Test that on_change='ignore' does not set id."""
+        st.expander("label", on_change="ignore")
+        expander_block = self.get_delta_from_queue()
+        assert not expander_block.add_block.expandable.HasField("id")
+
+    def test_passive_key_sets_block_id(self):
+        """Test that key with on_change='ignore' sets block-level id for stable identity."""
+        st.expander("label", key="my_expander")
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.id != ""
+        assert "my_expander" in expander_block.add_block.id
+        assert not expander_block.add_block.expandable.HasField("id")
+
+    def test_on_change_rerun_with_key_accessible_via_session_state(self):
+        """Test that on_change='rerun' with key makes state accessible."""
+        st.expander("label", key="my_exp", on_change="rerun")
+        assert "my_exp" in st.session_state
+        assert st.session_state.my_exp is False
+
+    def test_on_change_rerun_expanded_true_session_state(self):
+        """Test that expanded=True is reflected in session_state."""
+        st.expander("label", key="my_exp", expanded=True, on_change="rerun")
+        assert st.session_state.my_exp is True
+
+    def test_on_change_rerun_expanded_state_uses_widget_value(self):
+        """Test that the expanded proto state comes from widget registration."""
+        expander = st.expander("label", expanded=False, on_change="rerun")
+        expander_block = self.get_delta_from_queue()
+        # Widget state should match the initial expanded value
+        assert not expander_block.add_block.expandable.expanded
+        assert expander.open is False
+
+    @parameterized.expand(
+        [
+            ("default", BlockProto.Expandable.Type.DEFAULT),
+            ("compact", BlockProto.Expandable.Type.COMPACT),
+        ]
+    )
+    def test_type_parameter(self, type_param: str, expected_proto_type: int):
+        """Test that the type parameter sets the correct proto type."""
+        st.expander("label", type=type_param)
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.expandable.type == expected_proto_type
+
+    def test_invalid_type(self):
+        """Test that invalid type values raise StreamlitValueError."""
+        with pytest.raises(StreamlitValueError):
+            st.expander("label", type="invalid")
+
+    def test_on_change_callback_without_key_works(self):
+        """Test that a callback works without an explicit key."""
+        expander = st.expander("label", on_change=lambda: None)
+        assert expander.open is False
+
+    def test_on_change_callback_with_key_sets_open(self):
+        """Test that a callback with key enables state tracking."""
+        expander = st.expander(
+            "label", key="cb_exp", on_change=lambda: None, expanded=True
+        )
+        assert expander.open is True
+        assert st.session_state.cb_exp is True
+
+    def test_on_change_callback_sets_block_id(self):
+        """Test that a callback with key sets the block-level id."""
+        st.expander("label", key="cb_exp2", on_change=lambda: None)
+        expander_block = self.get_delta_from_queue()
+        assert expander_block.add_block.id != ""
+        assert "cb_exp2" in expander_block.add_block.id
+
+    def _get_expander_widget_state(self) -> WidgetState:
+        """Find the expander's WidgetState by matching its element id."""
+        expander_block = self.get_delta_from_queue()
+        element_id = expander_block.add_block.expandable.id
+
+        widget_states = self.script_run_ctx.session_state.get_widget_states()
+        for ws in widget_states:
+            if ws.id == element_id:
+                return ws
+        raise AssertionError(f"No widget state found for element id '{element_id}'")
+
+    def test_on_change_callback_fires_on_state_change(self):
+        """Test that the callback fires when the expander state changes."""
+        callback_calls: list[str] = []
+
+        def on_change() -> None:
+            callback_calls.append("called")
+
+        st.expander("label", key="cb_fire", on_change=on_change)
+
+        # Simulate a frontend state change (user toggles expander)
+        current_ws = self._get_expander_widget_state()
+        new_widget_state = WidgetState()
+        new_widget_state.CopyFrom(current_ws)
+        new_widget_state.bool_value = True
+        self.script_run_ctx.session_state.on_script_will_rerun(
+            WidgetStates(widgets=[new_widget_state])
+        )
+
+        assert len(callback_calls) == 1
+
+    def test_on_change_callback_receives_args_kwargs(self):
+        """Test that the callback receives provided args and kwargs."""
+        received_args: list[str] = []
+        received_kwargs: dict[str, str] = {}
+
+        def on_change(*args: str, **kwargs: str) -> None:
+            received_args.extend(args)
+            received_kwargs.update(kwargs)
+
+        st.expander(
+            "label",
+            key="cb_args",
+            on_change=on_change,
+            args=("arg1", "arg2"),
+            kwargs={"key1": "value1"},
+        )
+
+        # Simulate a frontend state change
+        current_ws = self._get_expander_widget_state()
+        new_widget_state = WidgetState()
+        new_widget_state.CopyFrom(current_ws)
+        new_widget_state.bool_value = True
+        self.script_run_ctx.session_state.on_script_will_rerun(
+            WidgetStates(widgets=[new_widget_state])
+        )
+
+        assert received_args == ["arg1", "arg2"]
+        assert received_kwargs == {"key1": "value1"}
+
+    def test_on_change_callback_no_fire_on_initial_render(self):
+        """Test that the callback does not fire on the initial render."""
+        callback_calls: list[str] = []
+
+        def on_change() -> None:
+            callback_calls.append("called")
+
+        st.expander("label", key="cb_no_fire", on_change=on_change)
+        assert len(callback_calls) == 0
+
+    def test_backwards_compat_rerun_still_works(self):
+        """Test that on_change='rerun' still works after callback support."""
+        expander = st.expander("label", on_change="rerun")
+        assert expander.open is False
+
+    def test_backwards_compat_ignore_still_works(self):
+        """Test that on_change='ignore' still works after callback support."""
+        expander = st.expander("label", on_change="ignore")
+        assert expander.open is None
+
+    @patch("streamlit.runtime.Runtime.exists", MagicMock(return_value=True))
+    def test_callable_on_change_inside_form_raises(self) -> None:
+        """Test that a callable on_change inside st.form raises StreamlitInvalidFormCallbackError."""
+        with pytest.raises(StreamlitInvalidFormCallbackError):
+            with st.form("form"):
+                st.expander("label", on_change=lambda: None)
+
+    @patch("streamlit.runtime.Runtime.exists", MagicMock(return_value=True))
+    def test_on_change_rerun_inside_form_does_not_raise(self) -> None:
+        """Test that on_change='rerun' inside st.form does not raise (not a callback)."""
+        with st.form("form"):
+            st.expander("label", on_change="rerun")
+
+
+class ContainerTest(DeltaGeneratorTestCase):
+    def test_border_parameter(self):
+        """Test that it can be called with border parameter"""
+        st.container(border=True)
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.flex_container.border
+
+    def test_allow_empty_with_border(self):
+        """Test that it allows empty when the container has a border."""
+        st.container(border=True)
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.allow_empty
+
+    def test_disallow_empty_without_border_or_height(self):
+        """Test that it disallows empty when no border or height is set."""
+        st.container()
+        container_block = self.get_delta_from_queue()
+        assert not container_block.add_block.allow_empty
+
+    def test_without_parameters(self):
+        """Test that it can be called without any parameters."""
+        st.container()
+        container_block = self.get_delta_from_queue()
+        assert not container_block.add_block.flex_container.border
+        assert not container_block.add_block.allow_empty
+        assert container_block.add_block.id == ""
+
+    def test_setting_key(self):
+        """Test that the key can be set and that it is included in the
+        generated element ID."""
+        st.container(key="container_key")
+        container_block = self.get_delta_from_queue()
+        assert "container_key" in container_block.add_block.id
+
+    def test_height_parameter(self):
+        """Test that it can be called with height parameter"""
+        st.container(height=100)
+
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.height_config.pixel_height == 100
+        # Should allow empty and have a border as default:
+        assert container_block.add_block.flex_container.border
+        assert container_block.add_block.allow_empty
+
+    def test_width_config(self):
+        """Test that width configuration works correctly"""
+        st.container(width=200)
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.width_config.pixel_width == 200
+
+        st.container(width="stretch")
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.width_config.use_stretch
+
+        st.container(width="content")
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.width_config.use_content
+
+    @parameterized.expand(
+        [
+            (None,),
+            ("invalid",),
+            (-100,),
+            (0,),
+        ]
+    )
+    def test_invalid_width(self, invalid_width):
+        """Test that invalid width values raise an error"""
+        with pytest.raises(StreamlitAPIException):
+            st.container(width=invalid_width)
+
+    def test_height_config(self):
+        """Test that height configuration works correctly"""
+        st.container(height=200)
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.height_config.pixel_height == 200
+
+        st.container(height="stretch")
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.height_config.use_stretch
+
+        st.container(height="content")
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.height_config.use_content
+
+    @parameterized.expand(
+        [
+            (None,),
+            ("invalid",),
+            (-100,),
+            (0,),
+        ]
+    )
+    def test_invalid_height(self, invalid_height):
+        """Test that invalid height values raise an error"""
+        with pytest.raises(StreamlitAPIException):
+            st.container(height=invalid_height)
+
+    @parameterized.expand(
+        [
+            (False, BlockProto.FlexContainer.Direction.VERTICAL),
+            (True, BlockProto.FlexContainer.Direction.HORIZONTAL),
+        ],
+    )
+    def test_container_direction(
+        self, direction: bool, expected_direction: int
+    ) -> None:
+        """Test that st.container sets the correct direction."""
+        st.container(horizontal=direction)
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.flex_container.direction == expected_direction
+
+    @parameterized.expand(
+        [
+            ("left", BlockProto.FlexContainer.Justify.JUSTIFY_START),
+            ("center", BlockProto.FlexContainer.Justify.JUSTIFY_CENTER),
+            ("right", BlockProto.FlexContainer.Justify.JUSTIFY_END),
+            ("distribute", BlockProto.FlexContainer.Justify.SPACE_BETWEEN),
+        ]
+    )
+    def test_container_horizontal_alignment(
+        self, horizontal_alignment: str, expected_justify: int
+    ) -> None:
+        """Test that st.container sets the correct horizontal alignment (justify)."""
+        st.container(horizontal=True, horizontal_alignment=horizontal_alignment)
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.flex_container.justify == expected_justify
+
+    @parameterized.expand(
+        [
+            ("top", BlockProto.FlexContainer.Align.ALIGN_START),
+            ("center", BlockProto.FlexContainer.Align.ALIGN_CENTER),
+            ("bottom", BlockProto.FlexContainer.Align.ALIGN_END),
+            ("distribute", BlockProto.FlexContainer.Align.ALIGN_UNDEFINED),
+        ],
+    )
+    def test_container_vertical_alignment(
+        self, vertical_alignment: str, expected_align: int
+    ) -> None:
+        """Test that st.container sets the correct vertical alignment (align)."""
+        st.container(horizontal=True, vertical_alignment=vertical_alignment)
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.flex_container.align == expected_align
+
+    @parameterized.expand(
+        [
+            ("top", BlockProto.FlexContainer.Justify.JUSTIFY_START),
+            ("center", BlockProto.FlexContainer.Justify.JUSTIFY_CENTER),
+            ("bottom", BlockProto.FlexContainer.Justify.JUSTIFY_END),
+            ("distribute", BlockProto.FlexContainer.Justify.SPACE_BETWEEN),
+        ]
+    )
+    def test_container_vertical_direction_vertical_alignment(
+        self, vertical_alignment: str, expected_justify: int
+    ) -> None:
+        """Test that st.container with direction='vertical' sets the correct justify value for vertical_alignment."""
+        st.container(horizontal=False, vertical_alignment=vertical_alignment)
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.flex_container.justify == expected_justify
+
+    @parameterized.expand(
+        [
+            ("left", BlockProto.FlexContainer.Align.ALIGN_START),
+            ("center", BlockProto.FlexContainer.Align.ALIGN_CENTER),
+            ("right", BlockProto.FlexContainer.Align.ALIGN_END),
+            ("distribute", BlockProto.FlexContainer.Align.ALIGN_UNDEFINED),
+        ]
+    )
+    def test_container_vertical_direction_horizontal_alignment(
+        self, horizontal_alignment: str, expected_align: int
+    ) -> None:
+        """Test that st.container with direction='vertical' sets the correct align value for horizontal_alignment."""
+        st.container(horizontal=False, horizontal_alignment=horizontal_alignment)
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.flex_container.align == expected_align
+
+    @parameterized.expand(
+        [
+            (True, True),
+            (False, False),
+        ],
+    )
+    def test_container_wrap(self, direction: bool, wrap: bool) -> None:
+        """Test that st.container sets the wrap property correctly."""
+        st.container(horizontal=direction)
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.flex_container.wrap == wrap
+
+    @parameterized.expand(
+        [
+            ("small", GapSize.SMALL),
+            ("medium", GapSize.MEDIUM),
+            ("large", GapSize.LARGE),
+            (None, GapSize.NONE),
+        ],
+    )
+    def test_container_gap(self, gap, expected_gap) -> None:
+        """Test that st.container sets the gap property correctly."""
+        st.container(gap=gap)
+        container_block = self.get_delta_from_queue()
+        assert (
+            container_block.add_block.flex_container.gap_config.gap_size == expected_gap
+        )
+
+    @parameterized.expand([(0,), (5,), (20,), (100,)])
+    def test_container_pixel_gap(self, gap: int) -> None:
+        """Test that st.container sets pixel_gap for integer gap values."""
+        st.container(gap=gap)
+        container_block = self.get_delta_from_queue()
+        assert (
+            container_block.add_block.flex_container.gap_config.WhichOneof("gap_spec")
+            == "pixel_gap"
+        )
+        assert container_block.add_block.flex_container.gap_config.pixel_gap == gap
+
+    @parameterized.expand([("invalid",), (-1,), (True,)])
+    def test_container_invalid_gap(self, invalid_gap) -> None:
+        """Test that st.container raises on invalid gap values."""
+        with pytest.raises(StreamlitInvalidColumnGapError):
+            st.container(gap=invalid_gap)
+
+    @parameterized.expand(
+        [
+            "invalid",
+            None,
+        ],
+    )
+    def test_container_invalid_horizontal_alignment(self, horizontal_alignment) -> None:
+        """Test that st.container raises on invalid horizontal_alignment."""
+        with pytest.raises(StreamlitInvalidHorizontalAlignmentError):
+            st.container(horizontal=True, horizontal_alignment=horizontal_alignment)
+
+    @parameterized.expand(
+        [
+            "invalid",
+            None,
+        ],
+    )
+    def test_container_invalid_vertical_alignment(self, vertical_alignment) -> None:
+        """Test that st.container raises on invalid vertical_alignment."""
+        with pytest.raises(StreamlitInvalidVerticalAlignmentError):
+            st.container(horizontal=True, vertical_alignment=vertical_alignment)
+
+    @parameterized.expand(
+        [
+            ("true_with_height", True, 300, True),
+            ("false_with_height", False, 300, False),
+        ],
+    )
+    def test_autoscroll_sets_proto_field(
+        self,
+        _name: str,
+        autoscroll: bool,
+        height: int,
+        expected_value: bool,
+    ) -> None:
+        """Test that explicit autoscroll values set the proto field."""
+        st.container(height=height, autoscroll=autoscroll)
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.HasField("autoscroll")
+        assert container_block.add_block.autoscroll is expected_value
+
+    def test_autoscroll_none_does_not_set_field(self) -> None:
+        """Test that autoscroll=None (default) does not set the proto field."""
+        st.container(height=300)
+        container_block = self.get_delta_from_queue()
+        assert not container_block.add_block.HasField("autoscroll")
+
+    def test_autoscroll_without_height(self) -> None:
+        """Test that autoscroll can be set without a fixed height."""
+        st.container(autoscroll=True)
+        container_block = self.get_delta_from_queue()
+        assert container_block.add_block.autoscroll is True
+
+
+class PopoverContainerTest(DeltaGeneratorTestCase):
+    def test_label_required(self):
+        """Test that label is required"""
+        with pytest.raises(TypeError):
+            st.popover()
+
+    def test_label_none_raises(self):
+        """Test that an explicit label=None raises a StreamlitAPIException."""
+        with pytest.raises(StreamlitAPIException) as e:
+            st.popover(None)
+        assert "A label is required for a popover" in str(e.value)
+
+    def test_invalid_type_raises(self):
+        """Test that an unsupported button type raises a StreamlitValueError."""
+        with pytest.raises(StreamlitValueError) as e:
+            st.popover("label", type="invalid")
+        assert "Invalid `type` value" in str(e.value)
+
+    def test_just_label(self):
+        """Test that it correctly applies label param."""
+        popover = st.popover("label")
+        with popover:
+            # Noop
+            pass
+
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.popover.label == "label"
+        assert not popover_block.add_block.popover.disabled
+        assert popover_block.add_block.popover.help == ""
+        assert popover_block.add_block.allow_empty
+        # Default width should be "content"
+        assert popover_block.add_block.width_config.use_content
+
+    def test_wrap_default(self):
+        """By default wrap is left unset (auto) so the frontend resolves it."""
+        with st.popover("label"):
+            pass
+
+        popover = self.get_delta_from_queue().add_block.popover
+        assert not popover.HasField("wrap")
+
+    def test_wrap(self):
+        """Test that the wrap parameter is forwarded to the popover proto."""
+        for wrap_value in (True, False):
+            with self.subTest(wrap=wrap_value):
+                with st.popover("label", wrap=wrap_value):
+                    pass
+
+                popover = self.get_delta_from_queue().add_block.popover
+                assert popover.wrap is wrap_value
+
+    def test_wrap_excluded_from_id(self):
+        """wrap is layout-only and must not change the popover element id.
+
+        A stateful popover registers an element id, so two otherwise-identical
+        popovers that differ only in wrap collide on the same auto-generated id,
+        proving wrap is excluded from id computation and so preserves widget
+        state when toggled.
+        """
+        with st.popover("same label", on_change="rerun"):
+            pass
+        with pytest.raises(StreamlitDuplicateElementId):
+            with st.popover("same label", on_change="rerun", wrap=False):
+                pass
+
+    def test_use_container_width_true(self):
+        """Test use_container_width=True is mapped to width='stretch'."""
+        test_widths = [200, "content", "stretch", None]
+
+        for width in test_widths:
+            with self.subTest(width=width):
+                if width is None:
+                    st.popover("label", use_container_width=True)
+                else:
+                    st.popover("label", use_container_width=True, width=width)
+
+                popover_block = self.get_delta_from_queue()
+                assert (
+                    popover_block.add_block.width_config.WhichOneof("width_spec")
+                    == WidthConfigFields.USE_STRETCH.value
+                )
+                assert popover_block.add_block.width_config.use_stretch is True
+
+    def test_use_container_width_false(self):
+        """Test use_container_width=False is mapped to width='content'."""
+        test_widths = [200, "stretch", "content", None]
+
+        for width in test_widths:
+            with self.subTest(width=width):
+                if width is None:
+                    st.popover("label", use_container_width=False)
+                else:
+                    st.popover("label", use_container_width=False, width=width)
+
+                popover_block = self.get_delta_from_queue()
+                assert (
+                    popover_block.add_block.width_config.WhichOneof("width_spec")
+                    == WidthConfigFields.USE_CONTENT.value
+                )
+                assert popover_block.add_block.width_config.use_content is True
+
+    def test_disabled(self):
+        """Test that it correctly applies disabled param."""
+        popover = st.popover("label", disabled=True)
+        with popover:
+            # Noop
+            pass
+
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.popover.label == "label"
+        assert popover_block.add_block.popover.disabled
+
+    def test_help(self):
+        """Test that it correctly applies help param."""
+        popover = st.popover("label", help="help text")
+        with popover:
+            # Noop
+            pass
+
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.popover.label == "label"
+        assert popover_block.add_block.popover.help == "help text"
+
+    def test_valid_emoji_icon(self):
+        """Test that it can be called with an emoji icon"""
+        popover = st.popover("label", icon="🦄")
+
+        with popover:
+            # Noop
+            pass
+
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.popover.label == "label"
+        assert popover_block.add_block.popover.icon == "🦄"
+
+    def test_valid_material_icon(self):
+        """Test that it can be called with a material icon"""
+        popover = st.popover("label", icon=":material/download:")
+
+        with popover:
+            # Noop
+            pass
+
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.popover.label == "label"
+        assert popover_block.add_block.popover.icon == ":material/download:"
+
+    def test_invalid_emoji_icon(self):
+        """Test that it throws an error on invalid emoji icon"""
+        with pytest.raises(StreamlitAPIException) as e:
+            st.popover("label", icon="invalid")
+        assert (
+            str(e.value)
+            == 'The value "invalid" is not a valid emoji. Shortcodes are not allowed, '
+            "please use a single character instead."
+        )
+
+    def test_invalid_material_icon(self):
+        """Test that it throws an error on invalid material icon"""
+        icon = ":material/invalid:"
+        with pytest.raises(StreamlitAPIException) as e:
+            st.popover("label", icon=icon)
+        assert "is not a valid Material icon" in str(e.value)
+
+    def test_width_pixel_value(self):
+        """Test that pixel width configuration works correctly"""
+        st.popover("label", width=200)
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.width_config.pixel_width == 200
+
+    def test_width_stretch(self):
+        """Test that stretch width configuration works correctly"""
+        st.popover("label", width="stretch")
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.width_config.use_stretch
+
+    def test_width_content(self):
+        """Test that content width configuration works correctly"""
+        st.popover("label", width="content")
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.width_config.use_content
+
+    @parameterized.expand(["invalid", -100, 0])
+    def test_invalid_width(self, invalid_width):
+        """Test that invalid width values raise an error"""
+        with pytest.raises(StreamlitAPIException):
+            st.popover("label", width=invalid_width)
+
+    def test_open_returns_none_by_default(self):
+        """Test that .open returns None when on_change is not set."""
+        popover = st.popover("label")
+        assert popover.open is None
+
+    def test_invalid_on_change_raises(self):
+        """Test that invalid on_change values raise an error."""
+        with pytest.raises(StreamlitAPIException):
+            st.popover("label", on_change="invalid")
+
+    def test_on_change_rerun_sets_open_false(self):
+        """Test that on_change='rerun' with open=False sets .open to False."""
+        popover = st.popover("label", on_change="rerun")
+        assert popover.open is False
+
+    def test_on_change_rerun_sets_id(self):
+        """Test that on_change='rerun' sets id on the popover proto."""
+        st.popover("label", on_change="rerun")
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.popover.id != ""
+
+    def test_on_change_ignore_does_not_set_id(self):
+        """Test that on_change='ignore' does not set id."""
+        st.popover("label", on_change="ignore")
+        popover_block = self.get_delta_from_queue()
+        assert not popover_block.add_block.popover.HasField("id")
+
+    def test_on_change_rerun_with_key_accessible_via_session_state(self):
+        """Test that on_change='rerun' with key stores the open state."""
+        st.popover("label", key="my_pop", on_change="rerun")
+        assert "my_pop" in st.session_state
+        assert st.session_state.my_pop is False
+
+    def test_on_change_ignore_with_key_open_remains_none(self):
+        """Test that on_change='ignore' with a key keeps .open as None,
+        does not register widget state, but sets block-level id."""
+        popover = st.popover("label", key="my_pop", on_change="ignore")
+        assert popover.open is None
+        assert "my_pop" not in st.session_state
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.id != ""
+        assert "my_pop" in popover_block.add_block.id
+        assert not popover_block.add_block.popover.HasField("id")
+
+    def test_on_change_rerun_with_key_sets_block_id(self):
+        """Test that on_change='rerun' with key sets the block-level id."""
+        st.popover("label", key="my_pop", on_change="rerun")
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.id != ""
+        assert "my_pop" in popover_block.add_block.id
+
+    def test_on_change_rerun_without_key_sets_block_id(self):
+        """Test that on_change='rerun' without key still sets block-level id."""
+        st.popover("label", on_change="rerun")
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.id != ""
+
+    def test_on_change_callback_sets_block_id(self):
+        """Test that a callable on_change with key sets the block-level id."""
+        st.popover("label", key="cb_pop2", on_change=lambda: None)
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.id != ""
+        assert "cb_pop2" in popover_block.add_block.id
+
+    def test_callback_enables_state_tracking(self):
+        """Test that passing a callable on_change enables state tracking."""
+        popover = st.popover("label", on_change=lambda: None)
+        # Callback implies stateful: .open should be a bool, not None
+        assert popover.open is False
+
+    def test_callback_sets_proto_id(self):
+        """Test that callable on_change sets the popover proto id."""
+        st.popover("label", on_change=lambda: None)
+        popover_block = self.get_delta_from_queue()
+        assert popover_block.add_block.popover.id != ""
+
+    def test_callback_registered_in_widget_metadata(self):
+        """Test that the callback is stored in widget metadata."""
+
+        st.popover("label", on_change=lambda: None)
+        ctx = get_script_run_ctx()
+        assert ctx is not None
+        session_state = ctx.session_state._state
+        widget_id = session_state.get_widget_states()[0].id
+        metadata = session_state._new_widget_state.widget_metadata.get(widget_id)
+        assert metadata is not None
+        assert metadata.callback is not None
+
+    def test_callback_fires_on_state_change(self):
+        """Test that callback fires when popover state changes."""
+
+        callback_calls: list[str] = []
+
+        def on_change() -> None:
+            callback_calls.append("called")
+
+        st.popover("label", key="cb_pop", on_change=on_change)
+
+        # Simulate opening the popover (False -> True)
+        current_states = self.script_run_ctx.session_state.get_widget_states()
+        new_state = WidgetState()
+        new_state.CopyFrom(current_states[0])
+        new_state.bool_value = True
+        self.script_run_ctx.session_state.on_script_will_rerun(
+            WidgetStates(widgets=[new_state])
+        )
+
+        assert len(callback_calls) == 1
+
+    def test_callback_fires_on_open_and_close(self):
+        """Test that callback fires on both open and close transitions."""
+
+        callback_calls: list[str] = []
+
+        def on_change() -> None:
+            callback_calls.append("called")
+
+        st.popover("label", key="cb_pop_both", on_change=on_change)
+
+        # Open the popover (False -> True) — callback fires
+        current_states = self.script_run_ctx.session_state.get_widget_states()
+        open_state = WidgetState()
+        open_state.CopyFrom(current_states[0])
+        open_state.bool_value = True
+        self.script_run_ctx.session_state.on_script_will_rerun(
+            WidgetStates(widgets=[open_state])
+        )
+        assert len(callback_calls) == 1
+
+        # Close the popover (True -> False) — callback fires again
+        close_state = WidgetState()
+        close_state.CopyFrom(open_state)
+        close_state.bool_value = False
+        self.script_run_ctx.session_state.on_script_will_rerun(
+            WidgetStates(widgets=[close_state])
+        )
+        assert len(callback_calls) == 2
+
+    def test_callback_does_not_fire_on_initial_render(self):
+        """Test that callback does not fire during the initial render."""
+        callback_calls: list[str] = []
+
+        def on_change() -> None:
+            callback_calls.append("called")
+
+        st.popover("label", on_change=on_change)
+        assert len(callback_calls) == 0
+
+    def test_callback_receives_args(self):
+        """Test that callback receives positional args."""
+
+        received_args: list[str] = []
+
+        def on_change(arg1: str, arg2: str) -> None:
+            received_args.extend([arg1, arg2])
+
+        st.popover("label", key="args_pop", on_change=on_change, args=("a", "b"))
+
+        current_states = self.script_run_ctx.session_state.get_widget_states()
+        new_state = WidgetState()
+        new_state.CopyFrom(current_states[0])
+        new_state.bool_value = True
+        self.script_run_ctx.session_state.on_script_will_rerun(
+            WidgetStates(widgets=[new_state])
+        )
+
+        assert received_args == ["a", "b"]
+
+    def test_callback_receives_kwargs(self):
+        """Test that callback receives keyword args."""
+
+        received_kwargs: dict[str, str] = {}
+
+        def on_change(prefix: str = "") -> None:
+            received_kwargs["prefix"] = prefix
+
+        st.popover(
+            "label",
+            key="kwargs_pop",
+            on_change=on_change,
+            kwargs={"prefix": "hello"},
+        )
+
+        current_states = self.script_run_ctx.session_state.get_widget_states()
+        new_state = WidgetState()
+        new_state.CopyFrom(current_states[0])
+        new_state.bool_value = True
+        self.script_run_ctx.session_state.on_script_will_rerun(
+            WidgetStates(widgets=[new_state])
+        )
+
+        assert received_kwargs == {"prefix": "hello"}
+
+    def test_callback_with_key_accessible_via_session_state(self):
+        """Test that callback with key makes state accessible."""
+        st.popover("label", key="my_cb_pop", on_change=lambda: None)
+        assert "my_cb_pop" in st.session_state
+        assert st.session_state.my_cb_pop is False
+
+    def test_callback_without_key_works(self):
+        """Test that callback works even without a user-provided key."""
+        callback_calls: list[str] = []
+
+        def on_change() -> None:
+            callback_calls.append("called")
+
+        popover = st.popover("label", on_change=on_change)
+        # Should still be stateful (widget registered with element_id)
+        assert popover.open is False
+
+    def test_invalid_on_change_with_callback_type_raises(self):
+        """Test that non-string, non-callable on_change raises."""
+        with pytest.raises(StreamlitAPIException):
+            st.popover("label", on_change=123)  # type: ignore[arg-type]
+
+    @patch("streamlit.runtime.Runtime.exists", MagicMock(return_value=True))
+    def test_callable_on_change_inside_form_raises(self) -> None:
+        """Test that a callable on_change inside st.form raises StreamlitInvalidFormCallbackError."""
+        with pytest.raises(StreamlitInvalidFormCallbackError):
+            with st.form("form"):
+                st.popover("label", on_change=lambda: None)
+
+    @patch("streamlit.runtime.Runtime.exists", MagicMock(return_value=True))
+    def test_on_change_rerun_inside_form_does_not_raise(self) -> None:
+        """Test that on_change='rerun' inside st.form does not raise (not a callback)."""
+        with st.form("form"):
+            st.popover("label", on_change="rerun")
+
+
+class StatusContainerTest(DeltaGeneratorTestCase):
+    def test_label_required(self):
+        """Test that label is required"""
+        with pytest.raises(TypeError):
+            st.status()
+
+    def test_throws_error_on_wrong_state(self):
+        """Test that it throws an error on unknown state."""
+        with pytest.raises(StreamlitValueError):
+            st.status("label", state="unknown")
+
+    def test_just_label(self):
+        """Test that it correctly applies label param."""
+        st.status("label")
+        status_block = self.get_delta_from_queue()
+        assert status_block.add_block.expandable.label == "label"
+        assert not status_block.add_block.expandable.expanded
+        assert status_block.add_block.expandable.icon == "spinner"
+
+    def test_expanded_param(self):
+        """Test that it correctly applies expanded param."""
+        st.status("label", expanded=True)
+
+        status_block = self.get_delta_from_queue()
+        assert status_block.add_block.expandable.label == "label"
+        assert status_block.add_block.expandable.expanded
+        assert status_block.add_block.expandable.icon == "spinner"
+
+    def test_state_param_complete(self):
+        """Test that it correctly applies state param with `complete`."""
+        st.status("label", state="complete")
+
+        status_block = self.get_delta_from_queue()
+        assert status_block.add_block.expandable.label == "label"
+        assert not status_block.add_block.expandable.expanded
+        assert status_block.add_block.expandable.icon == ":material/check:"
+
+    def test_state_param_error(self):
+        """Test that it correctly applies state param with `error`."""
+        st.status("label", state="error")
+
+        status_block = self.get_delta_from_queue()
+        assert status_block.add_block.expandable.label == "label"
+        assert not status_block.add_block.expandable.expanded
+        assert status_block.add_block.expandable.icon == ":material/error:"
+
+    def test_usage_with_context_manager(self):
+        """Test that it correctly switches to complete state when used as
+        context manager."""
+        status = st.status("label")
+
+        with status:
+            # Noop
+            pass
+
+        status_block = self.get_delta_from_queue()
+        assert status_block.add_block.expandable.label == "label"
+        assert not status_block.add_block.expandable.expanded
+        assert status_block.add_block.expandable.icon == ":material/check:"
+
+    def test_mutation_via_update(self):
+        """Test that update can be used to change the label, state and expand."""
+        status = st.status("label", expanded=False)
+        status.update(label="new label", state="error", expanded=True)
+
+        status_block = self.get_delta_from_queue()
+        assert status_block.add_block.expandable.label == "new label"
+        assert status_block.add_block.expandable.expanded
+        assert status_block.add_block.expandable.icon == ":material/error:"
+
+    def test_mutation_via_update_in_cm(self):
+        """Test that update can be used in context manager to change the label, state
+        and expand."""
+        with st.status("label", expanded=False) as status:
+            status.update(label="new label", state="error", expanded=True)
+
+        status_block = self.get_delta_from_queue()
+        assert status_block.add_block.expandable.label == "new label"
+        assert status_block.add_block.expandable.expanded
+        assert status_block.add_block.expandable.icon == ":material/error:"
+
+    def test_width_config(self):
+        """Test that width configuration works correctly"""
+        st.status("label", width=200)
+        status_block = self.get_delta_from_queue()
+        assert status_block.add_block.width_config.pixel_width == 200
+
+        st.expander("label", width="stretch")
+        status_block = self.get_delta_from_queue()
+        assert status_block.add_block.width_config.use_stretch
+
+    @parameterized.expand(
+        [
+            (None,),
+            ("invalid",),
+            (-100,),
+            (0,),
+            ("content",),
+        ]
+    )
+    def test_invalid_width(self, invalid_width):
+        """Test that invalid width values raise an error"""
+        with pytest.raises(StreamlitAPIException):
+            st.status("label", width=invalid_width)
+
+    @parameterized.expand(
+        [
+            ("default", BlockProto.Expandable.Type.DEFAULT),
+            ("compact", BlockProto.Expandable.Type.COMPACT),
+        ]
+    )
+    def test_type_parameter(self, type_param: str, expected_proto_type: int):
+        """Test that the type parameter sets the correct proto type."""
+        st.status("label", type=type_param)
+        status_block = self.get_delta_from_queue()
+        assert status_block.add_block.expandable.type == expected_proto_type
+
+    def test_invalid_type(self):
+        """Test that invalid type values raise StreamlitValueError."""
+        with pytest.raises(StreamlitValueError):
+            st.status("label", type="invalid")
+
+
+class StatusContainerDeltaPathTest(DeltaGeneratorTestCase):
+    """Tests that `st.status` re-sends its block proto at the block's real path.
+
+    `update()` enqueues the `expandable` block proto again at the path that `_create()`
+    stored. If that stored path points at the wrapper instead of the block, the frontend
+    replaces the wrong node and drops the status contents (see issue #16281).
+    """
+
+    def _enter_fragment(
+        self, fragment_id: str = "frag", delta_path: tuple[int, ...] = (0, 99)
+    ) -> None:
+        """Make the current thread look like a running fragment."""
+        ThreadState.update(fragment_id=fragment_id, delta_path=delta_path)
+        self.addCleanup(lambda: ThreadState.update(fragment_id=None, delta_path=None))
+
+    def _add_block_paths(self, block_type: str) -> list[list[int]]:
+        """Return the delta paths of every queued `add_block` of one block type."""
+        return [
+            list(msg.metadata.delta_path)
+            for msg in self.forward_msg_queue._queue
+            if msg.HasField("delta")
+            and msg.delta.WhichOneof("type") == "add_block"
+            and msg.delta.add_block.WhichOneof("type") == block_type
+        ]
+
+    def _new_element_paths(self) -> list[list[int]]:
+        """Return the delta paths of every queued `new_element` message."""
+        return [
+            list(msg.metadata.delta_path)
+            for msg in self.forward_msg_queue._queue
+            if msg.HasField("delta") and msg.delta.WhichOneof("type") == "new_element"
+        ]
+
+    def test_update_targets_status_block_without_fragment(self) -> None:
+        """Baseline: with no fragment, the update lands on the status block."""
+        st.title("head")
+        outside = st.container()
+
+        with outside.status("label"):
+            st.code("first")
+
+        status_paths = self._add_block_paths("expandable")
+        assert len(status_paths) == 2
+        assert status_paths[0] == [RootContainer.MAIN, 1, 0]
+        assert status_paths[-1] == status_paths[0]
+        # No fragment runs, so no transparent wrapper is created at all.
+        assert self._add_block_paths("transparent") == []
+
+    def test_update_targets_status_block_for_outside_container_write(self) -> None:
+        """A fragment status on an outside container updates at the block's real path.
+
+        This reproduces the reported crash: two separate `with` blocks write an
+        element after the update message.
+        """
+        st.title("head")
+        outside = st.container()
+        self._enter_fragment()
+
+        status = outside.status("query")
+        with status:
+            st.code("first")
+        with status:
+            st.text("second")
+
+        status_paths = self._add_block_paths("expandable")
+        assert len(status_paths) == 2
+        assert status_paths[0] == [RootContainer.MAIN, 1, 0, 0]
+        assert status_paths[-1] == status_paths[0]
+        # The write after the update must still resolve inside the status block.
+        second_element_path = self._new_element_paths()[-1]
+        assert second_element_path[: len(status_paths[0])] == status_paths[0]
+
+    def test_update_targets_status_block_for_single_with_block(self) -> None:
+        """One `with` block sends an update too, so its path must be right as well.
+
+        `__exit__` calls `update(state="complete")` and nothing writes afterwards, so
+        a wrong path corrupts the tree without a visible crash.
+        """
+        st.title("head")
+        outside = st.container()
+        self._enter_fragment()
+
+        with outside.status("query"):
+            st.code("first")
+
+        status_paths = self._add_block_paths("expandable")
+        wrapper_paths = self._add_block_paths("transparent")
+        assert len(status_paths) == 2
+        assert len(wrapper_paths) == 1
+        assert status_paths[-1] == status_paths[0]
+        assert status_paths[-1] != wrapper_paths[0]
+
+    def test_update_targets_status_block_with_two_wrapper_levels(self) -> None:
+        """Two nested wrapper levels still produce the correct update path.
+
+        A parent fragment creates a container inside an outside container, then a
+        child fragment creates a status on that container. Each fragment registers
+        its own wrapper, so the status sits two wrapper levels deep.
+        """
+        st.title("head")
+        outside = st.container()
+
+        self._enter_fragment(fragment_id="parent_frag")
+        inside = outside.container()
+
+        self._enter_fragment(fragment_id="child_frag")
+        with inside.status("query"):
+            st.code("first")
+
+        status_paths = self._add_block_paths("expandable")
+        wrapper_paths = self._add_block_paths("transparent")
+        assert len(wrapper_paths) == 2
+        assert len(status_paths) == 2
+        # The status lands at [MAIN, outside container, parent wrapper, inner container,
+        # child wrapper, status], so the path holds six entries.
+        assert len(status_paths[0]) == 6
+        assert status_paths[-1] == status_paths[0]
+        # A mis-stored path lands on a wrapper, so name both wrappers directly instead
+        # of trusting the length check to separate them.
+        for wrapper_path in wrapper_paths:
+            assert status_paths[-1] != wrapper_path
+
+    def test_update_targets_status_block_for_empty_outside_container(self) -> None:
+        """The update lands on the status block for an `st.empty()` outside container.
+
+        `st.empty()` gives the wrapper a locked cursor instead of a running one, so
+        this covers the second of the two wrapper cursor types.
+        """
+        st.title("head")
+        outside = st.empty()
+        self._enter_fragment()
+
+        with outside.status("query"):
+            st.code("first")
+
+        status_paths = self._add_block_paths("expandable")
+        assert len(status_paths) == 2
+        assert status_paths[0] == [RootContainer.MAIN, 1, 0]
+        assert status_paths[-1] == status_paths[0]
+
+    def test_update_targets_status_block_in_sidebar(self) -> None:
+        """A fragment status in the sidebar updates at the block's real path."""
+        self._enter_fragment()
+
+        with st.sidebar.status("query"):
+            st.code("first")
+
+        status_paths = self._add_block_paths("expandable")
+        assert len(status_paths) == 2
+        assert status_paths[0] == [RootContainer.SIDEBAR, 0, 0]
+        assert status_paths[-1] == status_paths[0]
+
+
+class TabsTest(DeltaGeneratorTestCase):
+    def test_tab_required(self):
+        """Test that at least one tab is required."""
+        with pytest.raises(TypeError):
+            st.tabs()
+
+        with pytest.raises(StreamlitAPIException):
+            st.tabs([])
+
+    def test_only_label_strings_allowed(self):
+        """Test that only strings are allowed as tab labels."""
+        with pytest.raises(StreamlitAPIException):
+            st.tabs(["tab1", True])
+
+        with pytest.raises(StreamlitAPIException):
+            st.tabs(["tab1", 10])
+
+    def test_returns_all_expected_tabs(self):
+        """Test that all labels are added in correct order."""
+        tabs = st.tabs([f"tab {i}" for i in range(5)])
+
+        assert len(tabs) == 5
+
+        for tab in tabs:
+            with tab:
+                pass
+
+        all_deltas = self.get_all_deltas_from_queue()
+
+        tabs_block = all_deltas[1:]
+        assert len(all_deltas) == 6
+        assert len(tabs_block) == 5
+        for index, tab_block in enumerate(tabs_block):
+            assert tab_block.add_block.tab.label == f"tab {index}"
+
+    def test_default_tab_index_first_tab(self):
+        """Test that the default tab index is 0 when default is not specified."""
+        tabs = ["Tab 1", "Tab 2", "Tab 3"]
+        st.tabs(tabs)
+
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+
+        assert tab_container_block.add_block.tab_container.default_tab_index == 0
+
+    def test_invalid_default_tab(self):
+        """Test that an exception is raised if the default tab is not in the list."""
+        tabs = ["Tab 1", "Tab 2", "Tab 3"]
+        default_tab = "Tab 4"
+
+        with pytest.raises(StreamlitAPIException) as context:
+            st.tabs(tabs, default=default_tab)
+
+        assert "The default tab 'Tab 4' is not in the list of tabs." in str(
+            context.value
+        )
+
+    def test_valid_default_tab(self):
+        """Test that a valid default tab sets the correct index."""
+        tabs = ["Home", "Profile", "Settings"]
+        default = "Profile"
+        st.tabs(tabs, default=default)
+
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+
+        assert tab_container_block.add_block.tab_container.default_tab_index == 1
+
+    def test_tab_labels_with_whitespace(self):
+        """Test that labels with leading/trailing spaces are accepted and preserved."""
+        tabs = ["  Tab 1", "Tab 2  ", "  Tab 3  "]
+        st.tabs(tabs)
+
+        all_deltas = self.get_all_deltas_from_queue()
+        labels = [delta.add_block.tab.label for delta in all_deltas[1:]]
+
+        assert labels == tabs
+
+    def test_duplicate_tab_labels(self):
+        """Test that duplicate tab labels are allowed."""
+        tabs = ["Tab", "Tab", "Tab"]
+        st.tabs(tabs)
+
+        all_deltas = self.get_all_deltas_from_queue()
+        labels = [delta.add_block.tab.label for delta in all_deltas[1:]]
+
+        assert labels == tabs
+
+    def test_default_tab_with_duplicate_labels_picks_first_occurrence_zero(self):
+        """If default label appears multiple times, pick the first occurrence (index 0)."""
+        tabs = ["Dupe", "Unique", "Dupe"]
+        st.tabs(tabs, default="Dupe")
+
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+
+        assert tab_container_block.add_block.tab_container.default_tab_index == 0
+
+    def test_default_tab_with_duplicate_labels_picks_first_occurrence_non_zero(self):
+        """If the first occurrence is not at index 0, pick that non-zero index."""
+        tabs = ["X", "Dupe", "Unique", "Dupe"]
+        st.tabs(tabs, default="Dupe")
+
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+
+        assert tab_container_block.add_block.tab_container.default_tab_index == 1
+
+    def test_open_returns_none_by_default(self):
+        """Test that .open returns None on all tabs when on_change is not set."""
+        tabs = st.tabs(["A", "B", "C"])
+        for tab in tabs:
+            assert tab.open is None
+
+    def test_open_returns_none_with_default_tab(self):
+        """Test that .open returns None even with a default tab (no state tracking)."""
+        tabs = st.tabs(["A", "B", "C"], default="B")
+        for tab in tabs:
+            assert tab.open is None
+
+    def test_invalid_on_change_raises(self):
+        """Test that invalid on_change values raise an error."""
+        with pytest.raises(StreamlitAPIException):
+            st.tabs(["A", "B"], on_change="invalid")
+
+    def test_on_change_rerun_sets_open_on_tabs(self):
+        """Test that on_change='rerun' sets .open correctly on each tab."""
+        tabs = st.tabs(["A", "B", "C"], on_change="rerun")
+        assert tabs[0].open is True
+        assert tabs[1].open is False
+        assert tabs[2].open is False
+
+    def test_on_change_rerun_with_default_sets_open(self):
+        """Test that on_change='rerun' with default sets the right tab as open."""
+        tabs = st.tabs(["A", "B", "C"], default="B", on_change="rerun")
+        assert tabs[0].open is False
+        assert tabs[1].open is True
+        assert tabs[2].open is False
+
+    def test_on_change_rerun_sets_id(self):
+        """Test that on_change='rerun' sets id on the tab container proto."""
+        st.tabs(["A", "B"], on_change="rerun")
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+        assert tab_container_block.add_block.tab_container.id != ""
+
+    def test_on_change_none_does_not_set_id(self):
+        """Test that on_change=None does not set id."""
+        st.tabs(["A", "B"])
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+        assert not tab_container_block.add_block.tab_container.HasField("id")
+
+    def test_on_change_rerun_with_key_accessible_via_session_state(self):
+        """Test that on_change='rerun' with key stores the active tab label."""
+        st.tabs(["A", "B", "C"], key="my_tabs", on_change="rerun")
+        assert "my_tabs" in st.session_state
+        assert st.session_state.my_tabs == "A"
+
+    def test_on_change_rerun_with_default_session_state(self):
+        """Test that default tab is reflected in session_state."""
+        st.tabs(["A", "B", "C"], key="my_tabs", default="C", on_change="rerun")
+        assert st.session_state.my_tabs == "C"
+
+    def test_on_change_rerun_with_default_sets_correct_tab_index(self):
+        """Test that default + on_change='rerun' sets the correct tab index in proto."""
+        st.tabs(["A", "B", "C"], default="C", on_change="rerun")
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+        assert tab_container_block.add_block.tab_container.default_tab_index == 2
+
+    def test_on_change_rerun_falls_back_when_label_not_in_tabs(self):
+        """Test that a stale session state label falls back to the default tab."""
+        # Pre-populate session state with a label that won't be in the new tab list
+        st.session_state["my_tabs"] = "OldTab"
+        tabs = st.tabs(["X", "Y", "Z"], key="my_tabs", on_change="rerun")
+        # Should fall back to first tab since "OldTab" is not in ["X", "Y", "Z"]
+        assert tabs[0].open is True
+        assert tabs[1].open is False
+
+    def test_on_change_ignore_with_key_open_remains_none(self):
+        """Test that on_change='ignore' with key leaves .open as None and no widget state."""
+        tabs = st.tabs(["A", "B", "C"], key="my_tabs", on_change="ignore")
+        for tab in tabs:
+            assert tab.open is None
+        assert "my_tabs" not in st.session_state
+
+    def test_passive_key_sets_block_id(self):
+        """Test that key with on_change='ignore' sets block-level id for stable identity."""
+        st.tabs(["A", "B"], key="my_tabs", on_change="ignore")
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+        assert tab_container_block.add_block.id != ""
+        assert "my_tabs" in tab_container_block.add_block.id
+        assert not tab_container_block.add_block.tab_container.HasField("id")
+
+    def test_passive_key_without_key_does_not_set_block_id(self):
+        """Test that tabs without key does not set block-level id."""
+        st.tabs(["A", "B"])
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+        assert tab_container_block.add_block.id == ""
+
+    def test_on_change_rerun_with_key_sets_block_id(self):
+        """Test that on_change='rerun' with key sets the block-level id."""
+        st.tabs(["A", "B"], key="my_tabs", on_change="rerun")
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+        assert tab_container_block.add_block.id != ""
+        assert "my_tabs" in tab_container_block.add_block.id
+
+    def test_on_change_rerun_without_key_sets_block_id(self):
+        """Test that on_change='rerun' without key still sets block-level id."""
+        st.tabs(["A", "B"], on_change="rerun")
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+        assert tab_container_block.add_block.id != ""
+
+    def test_on_change_callback_sets_block_id(self):
+        """Test that a callable on_change with key sets the block-level id."""
+        st.tabs(["A", "B"], key="cb_tabs2", on_change=lambda: None)
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+        assert tab_container_block.add_block.id != ""
+        assert "cb_tabs2" in tab_container_block.add_block.id
+
+    def test_on_change_callback_sets_id(self) -> None:
+        """Test that a callable on_change sets id on the tab container proto."""
+
+        def on_change() -> None:
+            pass
+
+        st.tabs(["A", "B"], key="cb_tabs", on_change=on_change)
+        all_deltas = self.get_all_deltas_from_queue()
+        tab_container_block = all_deltas[0]
+        assert tab_container_block.add_block.tab_container.id != ""
+
+    def test_on_change_callback_sets_open_on_tabs(self) -> None:
+        """Test that a callable on_change sets .open correctly on each tab."""
+
+        def on_change() -> None:
+            pass
+
+        tabs = st.tabs(["A", "B", "C"], key="cb_tabs", on_change=on_change)
+        assert tabs[0].open is True
+        assert tabs[1].open is False
+        assert tabs[2].open is False
+
+    def test_on_change_callback_with_default_tab(self) -> None:
+        """Test that a callable on_change with default sets correct tab open."""
+
+        def on_change() -> None:
+            pass
+
+        tabs = st.tabs(["A", "B", "C"], key="cb_tabs", default="B", on_change=on_change)
+        assert tabs[0].open is False
+        assert tabs[1].open is True
+        assert tabs[2].open is False
+
+    def _get_tabs_widget_state(self) -> WidgetState:
+        """Get the single tabs WidgetState from session state."""
+        widget_states = self.script_run_ctx.session_state.get_widget_states()
+        assert len(widget_states) == 1, (
+            f"Expected exactly 1 widget state, got {len(widget_states)}"
+        )
+        return widget_states[0]
+
+    def test_on_change_callback_fires_on_state_change(self) -> None:
+        """Test that callback function is invoked when active tab switches."""
+        callback_calls: list[str] = []
+
+        def on_tab_change() -> None:
+            callback_calls.append("called")
+
+        st.tabs(["A", "B"], key="cb_tabs", on_change=on_tab_change)
+
+        # Simulate tab switch from frontend
+        current_ws = self._get_tabs_widget_state()
+        new_ws = WidgetState()
+        new_ws.CopyFrom(current_ws)
+        new_ws.string_value = "B"
+        self.script_run_ctx.session_state.on_script_will_rerun(
+            WidgetStates(widgets=[new_ws])
+        )
+        assert len(callback_calls) == 1
+
+    def test_on_change_callback_no_fire_on_initial_render(self) -> None:
+        """Test that callback does not fire on initial render."""
+        callback_calls: list[str] = []
+
+        def on_tab_change() -> None:
+            callback_calls.append("called")
+
+        st.tabs(["A", "B"], key="cb_tabs", on_change=on_tab_change)
+        assert len(callback_calls) == 0
+
+    def test_on_change_callback_receives_args_kwargs(self) -> None:
+        """Test that callback receives provided args and kwargs."""
+        received_args: list[object] = []
+        received_kwargs: dict[str, object] = {}
+
+        def on_change(*args: object, **kwargs: object) -> None:
+            received_args.extend(args)
+            received_kwargs.update(kwargs)
+
+        st.tabs(
+            ["A", "B"],
+            key="cb_tabs",
+            on_change=on_change,
+            args=("arg1", "arg2"),
+            kwargs={"key1": "value1"},
+        )
+
+        current_ws = self._get_tabs_widget_state()
+        new_ws = WidgetState()
+        new_ws.CopyFrom(current_ws)
+        new_ws.string_value = "B"
+        self.script_run_ctx.session_state.on_script_will_rerun(
+            WidgetStates(widgets=[new_ws])
+        )
+
+        assert received_args == ["arg1", "arg2"]
+        assert received_kwargs == {"key1": "value1"}
+
+    def test_on_change_callback_accessible_via_session_state(self) -> None:
+        """Test that active tab label is accessible via session_state with callback."""
+
+        def on_change() -> None:
+            pass
+
+        st.tabs(["A", "B", "C"], key="cb_tabs", on_change=on_change)
+        assert "cb_tabs" in st.session_state
+        assert st.session_state.cb_tabs == "A"
+
+    def test_invalid_on_change_with_callback_type_still_raises(self) -> None:
+        """Test that non-string, non-callable on_change raises an error."""
+        with pytest.raises(StreamlitAPIException):
+            st.tabs(["A", "B"], on_change=123)  # type: ignore[arg-type]
+
+    def test_backwards_compat_rerun_still_works(self) -> None:
+        """Test that on_change='rerun' still works after callback support."""
+        tabs = st.tabs(["A", "B"], on_change="rerun")
+        assert tabs[0].open is True
+        assert tabs[1].open is False
+
+    def test_on_change_none_raises(self) -> None:
+        """Test that on_change=None raises an error."""
+        with pytest.raises(StreamlitAPIException):
+            st.tabs(["A", "B"], on_change=None)
+
+    @patch("streamlit.runtime.Runtime.exists", MagicMock(return_value=True))
+    def test_callable_on_change_inside_form_raises(self) -> None:
+        """Test that a callable on_change inside st.form raises StreamlitInvalidFormCallbackError."""
+        with pytest.raises(StreamlitInvalidFormCallbackError):
+            with st.form("form"):
+                st.tabs(["A", "B"], on_change=lambda: None)
+
+    @patch("streamlit.runtime.Runtime.exists", MagicMock(return_value=True))
+    def test_on_change_rerun_inside_form_does_not_raise(self) -> None:
+        """Test that on_change='rerun' inside st.form does not raise (not a callback)."""
+        with st.form("form"):
+            st.tabs(["A", "B"], on_change="rerun")
+
+    def test_default_height_is_content(self) -> None:
+        """Test that the default height matches the content height."""
+        st.tabs(["A", "B"])
+        tab_container_block = self.get_all_deltas_from_queue()[0]
+        assert tab_container_block.add_block.height_config.use_content
+        assert not tab_container_block.add_block.allow_empty
+
+    def test_height_pixel(self) -> None:
+        """Test that an integer height sets pixel_height and enables allow_empty."""
+        st.tabs(["A", "B"], height=250)
+        tab_container_block = self.get_all_deltas_from_queue()[0]
+        assert tab_container_block.add_block.height_config.pixel_height == 250
+        # Fixed-height tab containers should render even when active tab is empty.
+        assert tab_container_block.add_block.allow_empty
+
+    def test_height_stretch(self) -> None:
+        """Test that height='stretch' sets use_stretch on the height config."""
+        st.tabs(["A", "B"], height="stretch")
+        tab_container_block = self.get_all_deltas_from_queue()[0]
+        assert tab_container_block.add_block.height_config.use_stretch
+        # Only fixed pixel heights reserve space via allow_empty.
+        assert not tab_container_block.add_block.allow_empty
+
+    def test_height_content(self) -> None:
+        """Test that height='content' sets use_content on the height config."""
+        st.tabs(["A", "B"], height="content")
+        tab_container_block = self.get_all_deltas_from_queue()[0]
+        assert tab_container_block.add_block.height_config.use_content
+
+    @parameterized.expand(
+        [
+            ("invalid",),
+            (-100,),
+            (0,),
+            (1.5,),
+        ]
+    )
+    def test_invalid_height(self, invalid_height: object) -> None:
+        """Test that invalid height values raise an error."""
+        with pytest.raises(StreamlitAPIException):
+            st.tabs(["A", "B"], height=invalid_height)  # type: ignore[arg-type]
+
+    def test_height_included_in_element_id(self) -> None:
+        """Test that height participates in identity for stateful tabs so that
+        two otherwise-identical tabs with different heights get distinct ids."""
+        st.tabs(["A", "B"], on_change="rerun")
+        st.tabs(["A", "B"], on_change="rerun", height=200)
+        tab_container_blocks = [
+            delta
+            for delta in self.get_all_deltas_from_queue()
+            if delta.add_block.HasField("tab_container")
+        ]
+        assert len(tab_container_blocks) == 2
+        first_id = tab_container_blocks[0].add_block.tab_container.id
+        second_id = tab_container_blocks[1].add_block.tab_container.id
+        assert first_id != ""
+        assert second_id != ""
+        assert first_id != second_id
+
+
+class DialogTest(DeltaGeneratorTestCase):
+    """Run unit tests for the non-public delta-generator dialog and also the dialog
+    decorator."""
+
+    title = "Test Dialog"
+
+    def test_dialog_deltagenerator_usage_with_context_manager(self):
+        """Test that the delta-generator dialog works as a context manager"""
+
+        dialog = st._main._dialog(DialogTest.title)
+
+        with dialog:
+            """No content so that 'get_delta_from_queue' returns the dialog."""
+
+        dialog_block = self.get_delta_from_queue()
+        assert dialog_block.add_block.dialog.title == DialogTest.title
+        assert not dialog_block.add_block.dialog.is_open
+        assert dialog_block.add_block.dialog.dismissible
+        assert not dialog_block.add_block.dialog.id
+
+    @parameterized.expand(
+        [
+            ("medium", BlockProto.Dialog.DialogWidth.MEDIUM),
+            ("large", BlockProto.Dialog.DialogWidth.LARGE),
+            ("small", BlockProto.Dialog.DialogWidth.SMALL),
+        ]
+    )
+    def test_dialog_width(
+        self, width: str, expected_width: BlockProto.Dialog.DialogWidth.ValueType
+    ):
+        """Test that the dialog width parameter works correctly for all supported values"""
+        dialog = st._main._dialog(DialogTest.title, width=width)
+        with dialog:
+            # No content so that 'get_delta_from_queue' returns the dialog.
+            pass
+        dialog_block = self.get_delta_from_queue()
+        assert dialog_block.add_block.dialog.width == expected_width
+
+    def test_dialog_sets_icon(self):
+        """Test that the dialog icon is propagated."""
+        dialog = st._main._dialog(DialogTest.title, icon="🎈")
+        with dialog:
+            # No content so that 'get_delta_from_queue' returns the dialog.
+            pass
+
+        dialog_block = self.get_delta_from_queue()
+        assert dialog_block.add_block.dialog.icon == "🎈"
+
+    def test_dialog_decorator_sets_icon(self):
+        """Test that the dialog decorator propagates the icon."""
+
+        @st.dialog("With icon", icon="✅")
+        def test_dialog():
+            st.write("content")
+
+        test_dialog()
+        deltas = self.get_all_deltas_from_queue()
+        assert any(
+            delta.add_block.dialog.icon == "✅"
+            for delta in deltas
+            if delta.HasField("add_block") and delta.add_block.HasField("dialog")
+        )
+
+    def test_dialog_deltagenerator_opens_and_closes(self):
+        """Test that dialog opens and closes"""
+        dialog = st._main._dialog(DialogTest.title)
+
+        assert dialog is not None
+        dialog_block = self.get_delta_from_queue()
+        assert not dialog_block.add_block.dialog.is_open
+
+        dialog.open()
+        dialog_block = self.get_delta_from_queue()
+        assert dialog_block.add_block.dialog.is_open
+
+        dialog.close()
+        dialog_block = self.get_delta_from_queue()
+        assert not dialog_block.add_block.dialog.is_open
+
+    def test_dialog_deltagenerator_only_call_open_once(self):
+        """Test that only a single dialog can be opened"""
+        dialog = st._main._dialog(DialogTest.title)
+
+        assert dialog is not None
+
+        # Open first time
+        dialog.open()
+        with pytest.raises(StreamlitAPIException):
+            # Cannot call open while the dialog is already open
+            dialog.open()
+        dialog.close()
+        with pytest.raises(StreamlitAPIException):
+            # Close does not reset the dialog-flag as this is handled per script-run
+            # context
+            dialog.open()
+
+    def test_dialog_decorator_with_title_opens(self):
+        """Test that the dialog decorator having a title does not throw an error"""
+
+        @st.dialog("example title")
+        def dialog():
+            return None
+
+        dialog()
+
+    def test_dialog_decorator_title_required(self):
+        """Test that the title is required in decorator"""
+        with pytest.raises(TypeError) as e:
+
+            @st.dialog()
+            def dialog():
+                return None
+
+            dialog()
+
+        assert e.value.args[0].startswith(
+            "dialog_decorator() missing 1 required positional argument: 'title'"
+        )
+
+        with pytest.raises(TypeError) as e:
+
+            @st.dialog()
+            def dialog_with_arguments(a, b):
+                return None
+
+            dialog_with_arguments("", "")
+
+        assert e.value.args[0].startswith(
+            "dialog_decorator() missing 1 required positional argument: 'title'"
+        )
+
+        with pytest.raises(StreamlitAPIException) as e:
+
+            @st.dialog("")
+            def dialog():
+                return None
+
+            dialog()
+
+        assert e.value.args[0].startswith("A non-empty `title`")
+
+    def test_dialog_decorator_must_be_called_like_a_function_with_a_title(self):
+        """Test that the decorator must be called like a function."""
+        with pytest.raises(StreamlitAPIException):
+
+            @st.dialog
+            def dialog():
+                return None
+
+            dialog()
+
+        with pytest.raises(StreamlitAPIException):
+
+            @st.dialog
+            def dialog_with_arg(a):
+                return None
+
+            dialog_with_arg("a")
+
+        with pytest.raises(StreamlitAPIException):
+
+            @st.dialog
+            def dialog_with_args(a, b):
+                return None
+
+            dialog_with_args("a", "b")
+
+    def test_nested_dialog_raises_error(self):
+        """Test that dialogs cannot be called nested."""
+
+        @st.dialog("Level2 dialog")
+        def level2_dialog():
+            st.empty()
+
+        @st.dialog("Level1 dialog")
+        def level1_dialog():
+            level2_dialog()
+
+        with pytest.raises(FragmentHandledException) as e:
+            level1_dialog()
+        assert str(e.value) == "Dialogs may not be nested inside other dialogs."
+
+    def test_only_one_dialog_can_be_opened_at_same_time(self):
+        @st.dialog("Dialog1")
+        def dialog1():
+            st.empty()
+
+        @st.dialog("Dialog2")
+        def dialog2():
+            st.empty()
+
+        with pytest.raises(StreamlitAPIException) as e:
+            dialog1()
+            dialog2()
+
+        assert e.value.args[0].startswith(
+            "Only one dialog is allowed to be opened at the same time."
+        )
+
+    def test_dialog_deltagenerator_dismissible_false(self):
+        """Test that the delta-generator dialog properly handles dismissible=False"""
+
+        dialog = st._main._dialog(DialogTest.title, dismissible=False)
+
+        with dialog:
+            """No content so that 'get_delta_from_queue' returns the dialog."""
+
+        dialog_block = self.get_delta_from_queue()
+        assert dialog_block.add_block.dialog.title == DialogTest.title
+        assert not dialog_block.add_block.dialog.is_open
+        assert dialog_block.add_block.dialog.dismissible is False
+
+    def test_dialog_decorator_invalid_on_dismiss(self):
+        """Test dialog decorator with invalid on_dismiss raises error"""
+        with pytest.raises(StreamlitValueError) as exc_info:
+
+            @dialog_decorator("Test Dialog", on_dismiss="invalid")
+            def test_dialog():
+                pass
+
+            test_dialog()
+
+        assert "Invalid `on_dismiss` value" in str(exc_info.value)
+
+    def test_dialog_on_dismiss_rerun(self):
+        """Test that the dialog decorator with on_dismiss='rerun'."""
+
+        with patch("streamlit.elements.lib.dialog.register_widget") as mock_register:
+            dialog = st._main._dialog(DialogTest.title, on_dismiss="rerun")
+
+            with dialog:
+                # No content so that 'get_delta_from_queue' returns the dialog.
+                pass
+
+            mock_register.assert_called_once()
+
+        dialog_block = self.get_delta_from_queue()
+        assert dialog_block.add_block.dialog.id
+
+    def test_dialog_on_dismiss_callback(self):
+        """Test that the dialog decorator with on_dismiss=callback."""
+
+        def callback():
+            pass
+
+        with patch("streamlit.elements.lib.dialog.register_widget") as mock_register:
+            dialog = st._main._dialog(DialogTest.title, on_dismiss=callback)
+
+            with dialog:
+                # No content so that 'get_delta_from_queue' returns the dialog.
+                pass
+            mock_register.assert_called_once()
+
+        dialog_block = self.get_delta_from_queue()
+        assert dialog_block.add_block.dialog.id

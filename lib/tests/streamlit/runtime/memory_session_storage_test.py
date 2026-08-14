@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import unittest
 from unittest.mock import MagicMock
 
-from cachetools import TTLCache
-
+from streamlit.runtime.caching.ttl_cache import TTLCache
 from streamlit.runtime.memory_session_storage import MemorySessionStorage
 
 
@@ -24,7 +25,7 @@ class MemorySessionStorageTest(unittest.TestCase):
     """Test MemorySessionStorage.
 
     These tests are intentionally extremely simple to ensure that we don't just end up
-    testing cachetools.TTLCache. We try to just verify that we've wrapped TTLCache
+    testing TTLCache. We try to just verify that we've wrapped TTLCache
     correctly, and in particular we avoid testing cache expiry functionality.
     """
 
@@ -32,19 +33,19 @@ class MemorySessionStorageTest(unittest.TestCase):
         """Verify that the backing cache of a MemorySessionStorage is a TTLCache.
 
         We do this because we're intentionally avoiding writing tests around cache
-        expiry because the cachetools library should do this for us. In the case
+        expiry because TTLCache should do this for us. In the case
         that the backing cache for a MemorySessionStorage ever changes, we'll likely be
         responsible for adding our own tests.
         """
         store = MemorySessionStorage()
-        self.assertIsInstance(store._cache, TTLCache)
+        assert isinstance(store._cache, TTLCache)
 
     def test_get(self):
         store = MemorySessionStorage()
         store._cache["foo"] = "bar"
 
-        self.assertEqual(store.get("foo"), "bar")
-        self.assertEqual(store.get("baz"), None)
+        assert store.get("foo") == "bar"
+        assert store.get("baz") is None
 
     def test_save(self):
         store = MemorySessionStorage()
@@ -52,18 +53,18 @@ class MemorySessionStorageTest(unittest.TestCase):
         session_info.session.id = "foo"
 
         store.save(session_info)
-        self.assertEqual(store.get("foo"), session_info)
+        assert store.get("foo") == session_info
 
     def test_delete(self):
         store = MemorySessionStorage()
         store._cache["foo"] = "bar"
 
         store.delete("foo")
-        self.assertEqual(store.get("foo"), None)
+        assert store.get("foo") is None
 
     def test_list(self):
         store = MemorySessionStorage()
         store._cache["foo"] = "bar"
         store._cache["baz"] = "qux"
 
-        self.assertEqual(store.list(), ["bar", "qux"])
+        assert store.list() == ["bar", "qux"]

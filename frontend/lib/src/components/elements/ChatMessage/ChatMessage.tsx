@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,21 +14,21 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
-import { useTheme } from "@emotion/react"
-import { Face, SmartToy } from "@emotion-icons/material-outlined"
+import { memo, ReactElement } from "react"
 
-import { Block as BlockProto } from "@streamlit/lib/src/proto"
-import Icon, { DynamicIcon } from "@streamlit/lib/src/components/shared/Icon"
-import { EmotionTheme } from "@streamlit/lib/src/theme"
-import { StreamlitEndpoints } from "@streamlit/lib/src/StreamlitEndpoints"
+import { Block as BlockProto } from "@streamlit/protobuf"
+
+import { DynamicIcon } from "~lib/components/shared/Icon/DynamicIcon"
+import { useCrossOriginAttribute } from "~lib/hooks/useCrossOriginAttribute"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
+import { StreamlitEndpoints } from "~lib/StreamlitEndpoints"
 
 import {
+  StyledAvatarBackground,
+  StyledAvatarIcon,
+  StyledAvatarImage,
   StyledChatMessageContainer,
   StyledMessageContent,
-  StyledAvatarImage,
-  StyledAvatarIcon,
-  StyledAvatarBackground,
 } from "./styled-components"
 
 interface ChatMessageAvatarProps {
@@ -38,17 +38,24 @@ interface ChatMessageAvatarProps {
   endpoints: StreamlitEndpoints
 }
 
-function ChatMessageAvatar(props: ChatMessageAvatarProps): ReactElement {
+function ChatMessageAvatar(
+  props: Readonly<ChatMessageAvatarProps>
+): ReactElement {
   const { avatar, avatarType, name, endpoints } = props
-  const theme: EmotionTheme = useTheme()
+  const theme = useEmotionTheme()
+  const crossOrigin = useCrossOriginAttribute(avatar)
 
   if (avatar) {
     switch (avatarType) {
+      case undefined:
+        // Fall through to default avatar
+        break
       case BlockProto.ChatMessage.AvatarType.IMAGE:
         return (
           <StyledAvatarImage
             src={endpoints.buildMediaURL(avatar)}
             alt={`${name} avatar`}
+            crossOrigin={crossOrigin}
           />
         )
       case BlockProto.ChatMessage.AvatarType.EMOJI:
@@ -57,24 +64,24 @@ function ChatMessageAvatar(props: ChatMessageAvatarProps): ReactElement {
         if (avatar === "user") {
           return (
             <StyledAvatarIcon
-              data-testid="chatAvatarIcon-user"
-              background={theme.colors.red60}
+              data-testid="stChatMessageAvatarUser"
+              background={theme.colors.redColor}
             >
-              <Icon content={Face} size="lg" />
+              <DynamicIcon size="lg" iconValue=":material/face:" />
             </StyledAvatarIcon>
           )
         } else if (avatar === "assistant") {
           return (
             <StyledAvatarIcon
-              data-testid="chatAvatarIcon-assistant"
-              background={theme.colors.orange60}
+              data-testid="stChatMessageAvatarAssistant"
+              background={theme.colors.orangeColor}
             >
-              <Icon content={SmartToy} size="lg" />
+              <DynamicIcon size="lg" iconValue=":material/smart_toy:" />
             </StyledAvatarIcon>
           )
         } else if (avatar.startsWith(":material")) {
           return (
-            <StyledAvatarBackground data-testid="chatAvatarIcon-custom">
+            <StyledAvatarBackground data-testid="stChatMessageAvatarCustom">
               <DynamicIcon
                 size="lg"
                 iconValue={avatar}
@@ -128,4 +135,4 @@ const ChatMessage: React.FC<React.PropsWithChildren<ChatMessageProps>> = ({
   )
 }
 
-export default ChatMessage
+export default memo(ChatMessage)

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,16 +13,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import React from "react"
 
-import { ImageEditorType } from "@glideapps/glide-data-grid"
 import styled from "@emotion/styled"
+import { ImageEditorType } from "@glideapps/glide-data-grid"
 
-const StyledImage = styled.img(() => ({
+const StyledImage = styled.img({
   maxWidth: "100%",
-  maxHeight: "600px",
+  maxHeight: "37.5rem",
   objectFit: "scale-down",
-}))
+})
 
 export const ImageCellEditor: ImageEditorType = ({ urls }) => {
   const imageData = urls && urls.length > 0 ? urls[0] : ""

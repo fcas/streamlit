@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,13 +14,13 @@
  * limitations under the License.
  */
 
-import React from "react"
-import "@testing-library/jest-dom"
-import { screen, fireEvent } from "@testing-library/react"
-import { render } from "@streamlit/lib/src/test_util"
+import { act, screen } from "@testing-library/react"
+import { userEvent } from "@testing-library/user-event"
 
-import { ColorPicker as ColorPickerProto } from "@streamlit/lib/src/proto"
-import { WidgetStateManager } from "@streamlit/lib/src/WidgetStateManager"
+import { ColorPicker as ColorPickerProto } from "@streamlit/protobuf"
+
+import { render } from "~lib/test_util"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
 
 import ColorPicker, { Props } from "./ColorPicker"
 
@@ -34,11 +34,10 @@ const getProps = (
     default: "#000000",
     ...elementProps,
   }),
-  width: 0,
   disabled: false,
   widgetMgr: new WidgetStateManager({
-    sendRerunBackMsg: jest.fn(),
-    formsDataChanged: jest.fn(),
+    sendRerunBackMsg: vi.fn(),
+    formsDataChanged: vi.fn(),
   }),
   ...widgetProps,
 })
@@ -49,11 +48,12 @@ describe("ColorPicker widget", () => {
     render(<ColorPicker {...props} />)
     const colorPicker = screen.getByTestId("stColorPicker")
     expect(colorPicker).toBeInTheDocument()
+    expect(colorPicker).toHaveClass("stColorPicker")
   })
 
   it("sets widget value on mount", () => {
     const props = getProps()
-    jest.spyOn(props.widgetMgr, "setStringValue")
+    vi.spyOn(props.widgetMgr, "setStringValue")
 
     render(<ColorPicker {...props} />)
 
@@ -67,7 +67,7 @@ describe("ColorPicker widget", () => {
 
   it("can pass fragmentId to setStringValue", () => {
     const props = getProps(undefined, { fragmentId: "myFragmentId" })
-    jest.spyOn(props.widgetMgr, "setStringValue")
+    vi.spyOn(props.widgetMgr, "setStringValue")
 
     render(<ColorPicker {...props} />)
 
@@ -79,33 +79,41 @@ describe("ColorPicker widget", () => {
     )
   })
 
-  it("renders a default color in the preview and the color picker", () => {
+  it("renders a default color in the preview and the color picker", async () => {
+    const user = userEvent.setup()
     const props = getProps()
     render(<ColorPicker {...props} />)
 
-    const colorBlock = screen.getByTestId("stColorBlock")
-    fireEvent.click(colorBlock)
+    const colorBlock = screen.getByTestId("stColorPickerBlock")
+    await user.click(colorBlock)
     expect(colorBlock).toHaveStyle("background-color: #000000")
 
     const colorInput = screen.getByRole("textbox")
     expect(colorInput).toHaveValue("#000000")
   })
 
-  it("updates its widget value when it's changed", () => {
+  it("updates its widget value when it's changed", async () => {
+    const user = userEvent.setup()
     const props = getProps()
-    jest.spyOn(props.widgetMgr, "setStringValue")
+    vi.spyOn(props.widgetMgr, "setStringValue")
 
     render(<ColorPicker {...props} />)
 
-    const newColor = "#e91e63"
-    const colorBlock = screen.getByTestId("stColorBlock")
-    fireEvent.click(colorBlock)
+    // Open the color picker
+    const colorBlock = screen.getByTestId("stColorPickerBlock")
+    await user.click(colorBlock)
 
-    // Our widget should be updated.
+    // Clear the color input text field
     const colorInput = screen.getByRole("textbox")
-    fireEvent.change(colorInput, { target: { value: newColor } })
+    await user.tripleClick(colorInput)
+    await user.keyboard("{backspace}")
+
+    // Enter the new color in the input field
+    const newColor = "#e91e63"
+    await user.type(colorInput, newColor)
+
     // Close out of the popover
-    fireEvent.click(colorBlock)
+    await user.click(colorBlock)
 
     // And the WidgetMgr should also be updated.
     expect(props.widgetMgr.setStringValue).toHaveBeenLastCalledWith(
@@ -116,26 +124,32 @@ describe("ColorPicker widget", () => {
     )
   })
 
-  it("resets its value when form is cleared", () => {
+  it("resets its value when form is cleared", async () => {
     // Create a widget in a clearOnSubmit form
+    const user = userEvent.setup()
     const props = getProps({ formId: "form" })
-    jest.spyOn(props.widgetMgr, "setStringValue")
-    props.widgetMgr.setFormClearOnSubmit("form", true)
+    vi.spyOn(props.widgetMgr, "setStringValue")
+    props.widgetMgr.setFormSubmitBehaviors("form", true)
 
     render(<ColorPicker {...props} />)
 
-    // Choose a new color
-    const newColor = "#e91e63"
-    const colorBlock = screen.getByTestId("stColorBlock")
-    fireEvent.click(colorBlock)
+    // Open the color picker
+    const colorBlock = screen.getByTestId("stColorPickerBlock")
+    await user.click(colorBlock)
 
-    // Update the color
+    // Clear the color input text field
     const colorInput = screen.getByRole("textbox")
-    fireEvent.change(colorInput, { target: { value: newColor } })
-    // Close out of the popover
-    fireEvent.click(colorBlock)
+    await user.tripleClick(colorInput)
+    await user.keyboard("{backspace}")
 
-    expect(colorInput).toHaveValue(newColor)
+    // Enter the new color in the input field
+    const newColor = "#e91e63"
+    await user.type(colorInput, newColor)
+
+    // Close out of the popover
+    await user.click(colorBlock)
+
+    expect(colorInput).toHaveValue(newColor.toUpperCase())
     expect(colorBlock).toHaveStyle(`background-color: ${newColor}`)
     expect(props.widgetMgr.setStringValue).toHaveBeenLastCalledWith(
       props.element,
@@ -144,8 +158,10 @@ describe("ColorPicker widget", () => {
       undefined
     )
 
-    // "Submit" the form
-    props.widgetMgr.submitForm("form")
+    act(() => {
+      // "Submit" the form
+      props.widgetMgr.submitForm("form", undefined)
+    })
 
     // Our widget should be reset, and the widgetMgr should be updated
     expect(colorBlock).toHaveStyle("background-color: #000000")
@@ -157,5 +173,74 @@ describe("ColorPicker widget", () => {
       },
       undefined
     )
+  })
+})
+
+describe("ColorPicker query param binding", () => {
+  it("registers query param binding on mount when queryParamKey is set", () => {
+    const props = getProps({ queryParamKey: "my_color" })
+    vi.spyOn(props.widgetMgr, "registerQueryParamBinding")
+
+    render(<ColorPicker {...props} />)
+
+    expect(props.widgetMgr.registerQueryParamBinding).toHaveBeenCalledWith(
+      props.element.id,
+      "my_color",
+      "string_value",
+      props.element.default,
+      false,
+      undefined
+    )
+  })
+
+  it("unregisters query param binding on unmount", () => {
+    const props = getProps({ queryParamKey: "my_color" })
+    const unregisterSpy = vi.spyOn(
+      props.widgetMgr,
+      "unregisterQueryParamBinding"
+    )
+
+    const { unmount } = render(<ColorPicker {...props} />)
+
+    // Clear any calls from React Strict Mode's initial mount/unmount/remount cycle
+    unregisterSpy.mockClear()
+
+    unmount()
+
+    expect(props.widgetMgr.unregisterQueryParamBinding).toHaveBeenCalledWith(
+      props.element.id
+    )
+  })
+
+  it("does not register query param binding when queryParamKey is not set", () => {
+    const props = getProps()
+    vi.spyOn(props.widgetMgr, "registerQueryParamBinding")
+
+    render(<ColorPicker {...props} />)
+
+    expect(props.widgetMgr.registerQueryParamBinding).not.toHaveBeenCalled()
+  })
+
+  it("registers query param binding with custom default color", () => {
+    const props = getProps({
+      queryParamKey: "theme_color",
+      default: "#750dc5",
+    })
+    vi.spyOn(props.widgetMgr, "registerQueryParamBinding")
+
+    render(<ColorPicker {...props} />)
+
+    expect(props.widgetMgr.registerQueryParamBinding).toHaveBeenCalledWith(
+      props.element.id,
+      "theme_color",
+      "string_value",
+      "#750dc5",
+      false,
+      undefined
+    )
+
+    // Verify the widget displays the custom default color
+    const colorBlock = screen.getByTestId("stColorPickerBlock")
+    expect(colorBlock).toHaveStyle("background-color: #750dc5")
   })
 })

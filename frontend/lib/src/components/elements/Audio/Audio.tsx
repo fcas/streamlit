@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,24 +14,30 @@
  * limitations under the License.
  */
 
-import React, { ReactElement, useEffect, useRef, useMemo } from "react"
-import { Audio as AudioProto } from "@streamlit/lib/src/proto"
-import { StreamlitEndpoints } from "@streamlit/lib/src/StreamlitEndpoints"
-import { WidgetStateManager as ElementStateManager } from "@streamlit/lib/src/WidgetStateManager"
+import { memo, ReactElement, useEffect, useMemo, useRef } from "react"
 
+import { getLogger } from "loglevel"
+
+import { Audio as AudioProto } from "@streamlit/protobuf"
+
+import { useCrossOriginAttribute } from "~lib/hooks/useCrossOriginAttribute"
+import { StreamlitEndpoints } from "~lib/StreamlitEndpoints"
+import { WidgetStateManager as ElementStateManager } from "~lib/WidgetStateManager"
+
+import { StyledAudio, StyledAudioContainer } from "./styled-components"
+
+const LOG = getLogger("Audio")
 export interface AudioProps {
   endpoints: StreamlitEndpoints
-  width: number
   element: AudioProto
   elementMgr: ElementStateManager
 }
 
-export default function Audio({
+function Audio({
   element,
-  width,
   endpoints,
   elementMgr,
-}: AudioProps): ReactElement {
+}: Readonly<AudioProps>): ReactElement {
   const audioRef = useRef<HTMLAudioElement>(null)
 
   const { startTime, endTime, loop, autoplay } = element
@@ -44,17 +50,17 @@ export default function Audio({
 
     // Recover the state in case this component got unmounted
     // and mounted again for the same element.
-    const preventAutoplay = elementMgr.getElementState(
+    const preventAutoplayState = elementMgr.getElementState<boolean>(
       element.id,
       "preventAutoplay"
     )
 
-    if (!preventAutoplay) {
+    if (!preventAutoplayState) {
       // Set the state to prevent autoplay in case there is an unmount + mount
       // for the same element.
       elementMgr.setElementState(element.id, "preventAutoplay", true)
     }
-    return preventAutoplay ?? false
+    return preventAutoplayState ?? false
   }, [element.id, elementMgr])
 
   // Handle startTime changes
@@ -88,7 +94,9 @@ export default function Audio({
   // Stop the audio at 'endTime' and handle loop
   useEffect(() => {
     const audioNode = audioRef.current
-    if (!audioNode) return
+    if (!audioNode) {
+      return
+    }
 
     // Flag to avoid calling 'audioNode.pause()' multiple times
     let stoppedByEndTime = false
@@ -98,6 +106,7 @@ export default function Audio({
         if (loop) {
           // If loop is true and we reached 'endTime', reset to 'startTime'
           audioNode.currentTime = startTime || 0
+          // eslint-disable-next-line @typescript-eslint/no-floating-promises -- TODO: Fix this
           audioNode.play()
         } else if (!stoppedByEndTime) {
           stoppedByEndTime = true
@@ -120,12 +129,15 @@ export default function Audio({
   // Handle looping the audio
   useEffect(() => {
     const audioNode = audioRef.current
-    if (!audioNode) return
+    if (!audioNode) {
+      return
+    }
 
     // Loop the audio when it has ended
     const handleAudioEnd = (): void => {
       if (loop) {
         audioNode.currentTime = startTime || 0 // Reset to startTime or to the start if not specified
+        // eslint-disable-next-line @typescript-eslint/no-floating-promises -- TODO: Fix this
         audioNode.play()
       }
     }
@@ -139,18 +151,36 @@ export default function Audio({
     }
   }, [loop, startTime])
 
+  const crossOrigin = useCrossOriginAttribute(element.url)
   const uri = endpoints.buildMediaURL(element.url)
 
+  const handleAudioError = (
+    e: React.SyntheticEvent<HTMLAudioElement>
+  ): void => {
+    const audioUrl = e.currentTarget.src
+    LOG.error(`Client Error: Audio source error - ${audioUrl}`)
+    endpoints.sendClientErrorToHost(
+      "Audio",
+      "Audio source failed to load",
+      "onerror triggered",
+      audioUrl
+    )
+  }
+
   return (
-    <audio
-      data-testid="stAudio"
-      id="audio"
-      ref={audioRef}
-      controls
-      autoPlay={autoplay && !preventAutoplay}
-      src={uri}
-      className="stAudio"
-      style={{ width }}
-    />
+    <StyledAudioContainer>
+      <StyledAudio
+        className="stAudio"
+        data-testid="stAudio"
+        ref={audioRef}
+        controls
+        autoPlay={autoplay && !preventAutoplay}
+        src={uri}
+        onError={handleAudioError}
+        crossOrigin={crossOrigin}
+      />
+    </StyledAudioContainer>
   )
 }
+
+export default memo(Audio)

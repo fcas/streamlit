@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # limitations under the License.
 
 """st.cache_data unit tests."""
+
 from __future__ import annotations
 
 import logging
@@ -24,22 +25,23 @@ import unittest
 from typing import Any
 from unittest.mock import MagicMock, Mock, mock_open, patch
 
+import pytest
 from parameterized import parameterized
 
 import streamlit as st
 from streamlit import file_util
-from streamlit.errors import StreamlitAPIException
+from streamlit.errors import StreamlitAPIException, StreamlitValueError
 from streamlit.proto.Text_pb2 import Text as TextProto
 from streamlit.runtime import Runtime
-from streamlit.runtime.caching import cache_data_api
-from streamlit.runtime.caching.cache_data_api import get_data_cache_stats_provider
+from streamlit.runtime.caching import cached_message_replay
+from streamlit.runtime.caching.cache_data_api import (
+    _data_caches,
+    get_data_cache_stats_provider,
+)
 from streamlit.runtime.caching.cache_errors import CacheError
-from streamlit.runtime.caching.cache_type import CacheType
 from streamlit.runtime.caching.cached_message_replay import (
     CachedResult,
     ElementMsgData,
-    MultiCacheResults,
-    _make_widget_key,
 )
 from streamlit.runtime.caching.hashing import UserHashError
 from streamlit.runtime.caching.storage import (
@@ -48,7 +50,7 @@ from streamlit.runtime.caching.storage import (
     CacheStorageManager,
 )
 from streamlit.runtime.caching.storage.cache_storage_protocol import (
-    InvalidCacheStorageContext,
+    InvalidCacheStorageContextError,
 )
 from streamlit.runtime.caching.storage.dummy_cache_storage import (
     DummyCacheStorage,
@@ -59,31 +61,33 @@ from streamlit.runtime.caching.storage.local_disk_cache_storage import (
     get_cache_folder_path,
 )
 from streamlit.runtime.scriptrunner import add_script_run_ctx
-from streamlit.runtime.stats import CacheStat
+from streamlit.runtime.stats import CACHE_MEMORY_FAMILY, CacheStat
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.element_mocks import (
+    ELEMENT_PRODUCER,
+    NON_WIDGET_ELEMENTS,
+    WIDGET_ELEMENTS,
+)
 from tests.streamlit.runtime.caching.common_cache_test import (
     as_cached_result as _as_cached_result,
 )
 from tests.testutil import create_mock_script_run_ctx
 
 
-def as_cached_result(value: Any) -> MultiCacheResults:
-    return _as_cached_result(value, CacheType.DATA)
+def as_cached_result(value: Any) -> CachedResult:
+    return _as_cached_result(value)
 
 
-def as_replay_test_data() -> MultiCacheResults:
+def as_replay_test_data() -> CachedResult:
     """Creates cached results for a function that returned 1
     and executed `st.text(1)`.
     """
-    widget_key = _make_widget_key([], CacheType.DATA)
-    d = {}
-    d[widget_key] = CachedResult(
+    return CachedResult(
         1,
-        [ElementMsgData("text", TextProto(body="1"), st._main.id, "")],
-        st._main.id,
-        st.sidebar.id,
+        [ElementMsgData("text", TextProto(body="1"), st._main._id, "")],
+        st._main._id,
+        st.sidebar._id,
     )
-    return MultiCacheResults(set(), d)
 
 
 class CacheDataTest(unittest.TestCase):
@@ -116,65 +120,8 @@ class CacheDataTest(unittest.TestCase):
 
         exception.assert_not_called()
 
-        self.assertEqual(r1, [1, 1])
-        self.assertEqual(r2, [0, 1])
-
-    def test_multiple_api_names(self):
-        """`st.experimental_memo` is effectively an alias for `st.cache_data`, and we
-        support both APIs while experimental_memo is being deprecated.
-        """
-        num_calls = [0]
-
-        def foo():
-            num_calls[0] += 1
-            return 42
-
-        # Annotate a function with both `cache_data` and `experimental_memo`.
-        cache_data_func = st.cache_data(foo)
-        memo_func = st.experimental_memo(foo)
-
-        # Call both versions of the function and assert the results.
-        self.assertEqual(42, cache_data_func())
-        self.assertEqual(42, memo_func())
-
-        # Because these decorators share the same cache, calling both functions
-        # results in just a single call to the decorated function.
-        self.assertEqual(1, num_calls[0])
-
-    @parameterized.expand(
-        [
-            ("cache_data", st.cache_data, False),
-            ("experimental_memo", st.experimental_memo, True),
-        ]
-    )
-    @patch("streamlit.runtime.caching.cache_data_api.show_deprecation_warning")
-    def test_deprecation_warnings(
-        self, _, decorator: Any, should_show_warning: bool, show_warning_mock: Mock
-    ):
-        """We show deprecation warnings when using `@st.experimental_memo`, but not `@st.cache_data`."""
-        warning_str = (
-            "`st.experimental_memo` is deprecated. Please use the new command `st.cache_data` instead, "
-            "which has the same behavior. More information [in our docs](https://docs.streamlit.io/library/advanced-features/caching)."
-        )
-
-        # We show the deprecation warning at declaration time:
-        @decorator
-        def foo():
-            return 42
-
-        if should_show_warning:
-            show_warning_mock.assert_called_once_with(warning_str)
-        else:
-            show_warning_mock.assert_not_called()
-
-        # And also when clearing the cache:
-        show_warning_mock.reset_mock()
-        decorator.clear()
-
-        if should_show_warning:
-            show_warning_mock.assert_called_once_with(warning_str)
-        else:
-            show_warning_mock.assert_not_called()
+        assert r1 == [1, 1]
+        assert r2 == [0, 1]
 
     def test_cached_member_function_with_hash_func(self):
         """@st.cache_data can be applied to class member functions
@@ -184,7 +131,9 @@ class CacheDataTest(unittest.TestCase):
         class TestClass:
             @st.cache_data(
                 hash_funcs={
-                    "tests.streamlit.runtime.caching.cache_data_api_test.CacheDataTest.test_cached_member_function_with_hash_func.<locals>.TestClass": id
+                    "tests.streamlit.runtime.caching.cache_data_api_test."
+                    "CacheDataTest.test_cached_member_function_with_hash_func."
+                    "<locals>.TestClass": id
                 }
             )
             def member_func(self):
@@ -201,9 +150,9 @@ class CacheDataTest(unittest.TestCase):
                 return "static method!"
 
         obj = TestClass()
-        self.assertEqual("member func!", obj.member_func())
-        self.assertEqual("class method!", obj.class_method())
-        self.assertEqual("static method!", obj.static_method())
+        assert obj.member_func() == "member func!"
+        assert obj.class_method() == "class method!"
+        assert obj.static_method() == "static method!"
 
     def test_function_name_does_not_use_hashfuncs(self):
         """Hash funcs should only be used on arguments to a function,
@@ -237,7 +186,7 @@ class CacheDataTest(unittest.TestCase):
         def user_hash_error_func(x):
             pass
 
-        with self.assertRaises(UserHashError) as ctx:
+        with pytest.raises(UserHashError) as ctx:
             my_obj = MyObj()
             user_hash_error_func(my_obj)
 
@@ -257,8 +206,8 @@ Object of type tests.streamlit.runtime.caching.cache_data_api_test.CacheDataTest
 ```
 
 If you think this is actually a Streamlit bug, please
-[file a bug report here](https://github.com/streamlit/streamlit/issues/new/choose)."""
-        self.assertEqual(str(ctx.exception), expected_message)
+[file a bug report here](https://github.com/streamlit/streamlit/issues/new/choose)."""  # noqa: E501
+        assert str(ctx.value) == expected_message
 
     def test_cached_st_function_clear_args(self):
         self.x = 0
@@ -273,6 +222,55 @@ If you think this is actually a Streamlit bug, please
         assert foo(1) == 1
         foo.clear(1)
         assert foo(1) == 2
+
+    def test_cached_class_method_clear_args(self):
+        self.x = 0
+
+        class ExampleClass:
+            @st.cache_data
+            def foo(_self, y):
+                self.x += y
+                return self.x
+
+        example_instance = ExampleClass()
+        # Calling method foo produces the side effect of incrementing self.x
+        # and returning it as the result.
+
+        # calling foo(1) should return 1
+        assert example_instance.foo(1) == 1
+        # calling foo.clear(2) should clear the cache for the argument 2,
+        # and keep the cache for the argument 1, therefore calling foo(1) should return
+        # cached value 1
+        example_instance.foo.clear(2)
+        assert example_instance.foo(1) == 1
+        # calling foo.clear(1) should clear the cache for the argument 1,
+        # therefore calling foo(1) should return the new value 2
+        example_instance.foo.clear(1)
+        assert example_instance.foo(1) == 2
+
+        # Try the same with a keyword argument:
+        example_instance.foo.clear(y=1)
+        assert example_instance.foo(1) == 3
+
+    def test_cached_class_method_clear(self):
+        self.x = 0
+
+        class ExampleClass:
+            @st.cache_data
+            def foo(_self, y):
+                self.x += y
+                return self.x
+
+        example_instance = ExampleClass()
+        # Calling method foo produces the side effect of incrementing self.x
+        # and returning it as the result.
+
+        # calling foo(1) should return 1
+        assert example_instance.foo(1) == 1
+        example_instance.foo.clear()
+        # calling foo.clear() should clear all cached values:
+        # So the call to foo() should return the new value 2
+        assert example_instance.foo(1) == 2
 
 
 class CacheDataPersistTest(DeltaGeneratorTestCase):
@@ -312,7 +310,7 @@ class CacheDataPersistTest(DeltaGeneratorTestCase):
         match = re.fullmatch(
             r"/mock/home/folder/.streamlit/cache/.*?\.memo", write_path
         )
-        self.assertIsNotNone(match)
+        assert match is not None
 
     @patch("streamlit.file_util.os.stat", MagicMock())
     @patch(
@@ -332,7 +330,7 @@ class CacheDataPersistTest(DeltaGeneratorTestCase):
 
         data = foo()
         mock_read.assert_called_once()
-        self.assertEqual("mock_pickled_value", data)
+        assert data == "mock_pickled_value"
 
     @patch("streamlit.file_util.os.stat", MagicMock())
     @patch("streamlit.file_util.open", mock_open(read_data="bad_pickled_value"))
@@ -347,10 +345,10 @@ class CacheDataPersistTest(DeltaGeneratorTestCase):
         def foo():
             return "actual_value"
 
-        with self.assertRaises(CacheError) as error:
+        with pytest.raises(CacheError) as error:
             foo()
         mock_read.assert_called_once()
-        self.assertEqual("Unable to read from cache", str(error.exception))
+        assert str(error.value) == "Unable to read from cache"
 
     @patch("streamlit.file_util.os.stat", MagicMock())
     @patch("streamlit.file_util.open", mock_open(read_data=b"bad_binary_pickled_value"))
@@ -365,22 +363,21 @@ class CacheDataPersistTest(DeltaGeneratorTestCase):
         def foo():
             return "actual_value"
 
-        with self.assertRaises(CacheError) as error:
+        with pytest.raises(CacheError) as error:
             foo()
         mock_read.assert_called_once()
-        self.assertIn("Failed to unpickle", str(error.exception))
+        assert "Failed to unpickle" in str(error.value)
 
     def test_bad_persist_value(self):
         """Throw an error if an invalid value is passed to 'persist'."""
-        with self.assertRaises(StreamlitAPIException) as e:
+        with pytest.raises(StreamlitValueError) as e:
 
             @st.cache_data(persist="yesplz")
             def foo():
                 pass
 
-        self.assertEqual(
-            "Unsupported persist option 'yesplz'. Valid values are 'disk' or None.",
-            str(e.exception),
+        assert (
+            str(e.value) == "Invalid `persist` value. Supported values: 'disk', None."
         )
 
     @patch("shutil.rmtree")
@@ -417,7 +414,7 @@ class CacheDataPersistTest(DeltaGeneratorTestCase):
         foo(1)
 
         # We should've opened two files, one for each distinct "foo" call.
-        self.assertEqual(2, mock_open.call_count)
+        assert mock_open.call_count == 2
 
         # Get the names of the two files that were created. These will look
         # something like '/mock/home/folder/.streamlit/cache/[long_hash].memo'
@@ -432,14 +429,15 @@ class CacheDataPersistTest(DeltaGeneratorTestCase):
 
         mock_os_remove.assert_not_called()
 
-        with patch(
-            "os.listdir", MagicMock(return_value=created_files_base_names)
-        ), patch("os.path.isdir", MagicMock(return_value=True)):
+        with (
+            patch("os.listdir", MagicMock(return_value=created_files_base_names)),
+            patch("os.path.isdir", MagicMock(return_value=True)),
+        ):
             # Clear foo's cache
             foo.clear()
 
         # os.remove should have been called once for each of our created cache files
-        self.assertEqual(2, mock_os_remove.call_count)
+        assert mock_os_remove.call_count == 2
 
         removed_filenames = {
             mock_os_remove.call_args_list[0][0][0],
@@ -447,7 +445,7 @@ class CacheDataPersistTest(DeltaGeneratorTestCase):
         }
 
         # The two files we removed should be the same two files we created.
-        self.assertEqual(created_filenames, removed_filenames)
+        assert created_filenames == removed_filenames
 
     @patch("streamlit.file_util.os.stat", MagicMock())
     @patch(
@@ -526,9 +524,9 @@ class CacheDataPersistTest(DeltaGeneratorTestCase):
             st.write(user_function())
 
             output = "".join(logs.output)
-            self.assertIn(
-                "The cached function 'user_function' has a TTL that will be ignored.",
-                output,
+            assert (
+                "The cached function 'user_function' has a TTL that will be ignored."
+                in output
             )
 
     @parameterized.expand(
@@ -577,7 +575,7 @@ class CacheDataStatsProviderTest(unittest.TestCase):
         st.cache_data.clear()
 
     def test_no_stats(self):
-        self.assertEqual([], get_data_cache_stats_provider().get_stats())
+        assert get_data_cache_stats_provider().get_stats() == {}
 
     def test_multiple_stats(self):
         @st.cache_data
@@ -614,9 +612,9 @@ class CacheDataStatsProviderTest(unittest.TestCase):
 
         # The order of these is non-deterministic, so check Set equality
         # instead of List equality
-        self.assertEqual(
-            set(expected), set(get_data_cache_stats_provider().get_stats())
-        )
+        stats_dict = get_data_cache_stats_provider().get_stats()
+        assert CACHE_MEMORY_FAMILY in stats_dict
+        assert set(expected) == set(stats_dict[CACHE_MEMORY_FAMILY])
 
 
 class CacheDataValidateParamsTest(DeltaGeneratorTestCase):
@@ -629,17 +627,231 @@ class CacheDataValidateParamsTest(DeltaGeneratorTestCase):
         Runtime._instance = mock_runtime
 
     def test_error_logged_and_raised_on_improperly_configured_cache_data(self):
-        with self.assertRaises(InvalidCacheStorageContext) as e, self.assertLogs(
-            "streamlit.runtime.caching.cache_data_api", level=logging.ERROR
-        ) as logs:
+        with (
+            pytest.raises(InvalidCacheStorageContextError) as e,
+            self.assertLogs(
+                "streamlit.runtime.caching.cache_data_api", level=logging.ERROR
+            ) as logs,
+        ):
 
             @st.cache_data(persist="disk")
             def foo():
                 return "data"
 
-        self.assertEqual(str(e.exception), "This CacheStorageManager always fails")
+        assert str(e.value) == "This CacheStorageManager always fails"
         output = "".join(logs.output)
-        self.assertIn("This CacheStorageManager always fails", output)
+        assert "This CacheStorageManager always fails" in output
+
+
+class CacheDataMessageReplayTest(DeltaGeneratorTestCase):
+    def setUp(self):
+        super().setUp()
+        # Guard against external tests not properly cache-clearing
+        # in their teardowns.
+        st.cache_data.clear()
+
+    def tearDown(self):
+        st.cache_data.clear()
+
+    def test_media_data_tracking_only_in_cached_functions(self):
+        """Test that media data gets tracked only when called inside a cache_data function.
+
+        The test creates:
+        1. A cached function that uses st.image (should save media data)
+        2. A non-cached function that uses st.image (should NOT save media data)
+        """
+        # Create some test image data (numpy array) that will trigger media processing
+        import numpy as np
+
+        from streamlit.runtime.caching.cache_data_api import (
+            CACHE_DATA_MESSAGE_REPLAY_CTX,
+        )
+
+        test_image = np.random.randint(0, 255, (64, 64, 3), dtype=np.uint8)
+
+        # Track when media data is actually added vs when it's skipped
+        original_save_media_data = CACHE_DATA_MESSAGE_REPLAY_CTX.save_media_data
+        media_data_saved = []
+
+        def tracking_save_media_data(media_data, mimetype, media_id):
+            # Call original first to check the in_cached_function logic
+            list_length_before = len(CACHE_DATA_MESSAGE_REPLAY_CTX._media_data)
+            result = original_save_media_data(media_data, mimetype, media_id)
+            list_length_after = len(CACHE_DATA_MESSAGE_REPLAY_CTX._media_data)
+
+            # Record whether media data was actually added
+            was_added = list_length_after > list_length_before
+            media_data_saved.append(was_added)
+            return result
+
+        with patch.object(
+            CACHE_DATA_MESSAGE_REPLAY_CTX,
+            "save_media_data",
+            side_effect=tracking_save_media_data,
+        ):
+            # Test 1: Call a cached function - should add media data
+            @st.cache_data
+            def cached_function_with_image():
+                st.image(test_image, caption="Test Image")
+                return "cached_result"
+
+            media_data_saved.clear()
+            cached_function_with_image()
+
+            # Should have at least one call where media data was added
+            cached_saves = sum(media_data_saved)
+            assert cached_saves > 0, (
+                f"Media data should be saved when in cached function. "
+                f"Got {cached_saves} saves out of {len(media_data_saved)} calls"
+            )
+
+            # Test 2: Call a non-cached function - should NOT add media data
+            def non_cached_function_with_image():
+                st.image(test_image, caption="Test Image")
+                return "non_cached_result"
+
+            media_data_saved.clear()
+            non_cached_function_with_image()
+
+            # Should have no calls where media data was added
+            non_cached_saves = sum(media_data_saved)
+            assert non_cached_saves == 0, (
+                f"Media data should NOT be saved when not in cached function. "
+                f"Got {non_cached_saves} saves out of {len(media_data_saved)} calls"
+            )
+
+    @parameterized.expand(WIDGET_ELEMENTS)
+    def test_shows_cached_widget_replay_warning(
+        self, _widget_name: str, widget_producer: ELEMENT_PRODUCER
+    ):
+        """Test that a warning is shown when a widget is created inside a cached function."""
+
+        @st.cache_data(show_spinner=False)
+        def cache_widget():
+            widget_producer()
+
+        cache_widget()
+
+        # There should be only two elements in the queue:
+        assert len(self.get_all_deltas_from_queue()) == 2
+
+        # The widget itself is still created, so we need to go back one element more:
+        el = self.get_delta_from_queue(-2).new_element.exception
+        assert el.type == "CachedWidgetWarning"
+        assert el.is_warning is True
+
+    @parameterized.expand(NON_WIDGET_ELEMENTS)
+    def test_works_with_element_replay(
+        self, element_name: str, element_producer: ELEMENT_PRODUCER
+    ):
+        """Test that it works with element replay if used as non-widget element."""
+
+        if element_name in {"toast", "spinner", "logo", "echo"}:
+            # These elements are not supported in the cache_data API
+            #   - toast only corresponds to the event dg
+            #   - spinner is transient and not replayed
+            #   - logo is not replayed because it's not tied to a specific dg
+            #   - echo does not produce an element unless it's executed with code
+
+            return
+
+        @st.cache_data(show_spinner=False)
+        def cache_element():
+            element_producer()
+
+        with patch(
+            "streamlit.runtime.caching.cache_utils.replay_cached_messages",
+            wraps=cached_message_replay.replay_cached_messages,
+        ) as replay_cached_messages_mock:
+            # Call first time:
+            cache_element()
+            assert self.get_delta_from_queue().HasField("new_element") is True
+            # The first time the cached function is called, the replay function is not called
+            replay_cached_messages_mock.assert_not_called()
+
+            # Call second time:
+            cache_element()
+            assert self.get_delta_from_queue().HasField("new_element") is True
+            # The second time the cached function is called, the replay function is called
+            replay_cached_messages_mock.assert_called()
+
+            # Call third time:
+            cache_element()
+            assert self.get_delta_from_queue().HasField("new_element") is True
+            # The third time the cached function is called, the replay function is called
+            replay_cached_messages_mock.assert_called()
+
+    def _assert_layout_config(
+        self, element, expected_width: int, expected_height: int, description: str
+    ):
+        """Helper to assert both width and height config are set correctly."""
+        assert element.HasField("width_config"), (
+            f"{description} should have width_config"
+        )
+        assert element.width_config.HasField("pixel_width"), (
+            "Should have pixel_width set"
+        )
+        actual_width = element.width_config.pixel_width
+        expected_msg = (
+            f"Expected {description.lower()} width {expected_width}, got {actual_width}"
+        )
+        assert actual_width == expected_width, expected_msg
+
+        assert element.HasField("height_config"), (
+            f"{description} should have height_config"
+        )
+        assert element.height_config.HasField("pixel_height"), (
+            "Should have pixel_height set"
+        )
+        actual_height = element.height_config.pixel_height
+        expected_msg = f"Expected {description.lower()} height {expected_height}, got {actual_height}"
+        assert actual_height == expected_height, expected_msg
+
+    def test_layout_config_preserved_during_replay(self):
+        """Test that width_config and height_config are preserved during cache replay."""
+        expected_width = 400
+        expected_height = 200
+
+        @st.cache_data(show_spinner=False)
+        def cache_code_with_layout():
+            st.code(
+                "print('Hello, World!')", width=expected_width, height=expected_height
+            )
+
+        # Call first time to cache the element
+        cache_code_with_layout()
+        first_delta = self.get_delta_from_queue()
+
+        assert first_delta.HasField("new_element"), (
+            "First call should create new_element"
+        )
+        first_element = first_delta.new_element
+        self._assert_layout_config(
+            first_element, expected_width, expected_height, "First element"
+        )
+
+        # Call second time to trigger cache replay
+        cache_code_with_layout()
+        second_delta = self.get_delta_from_queue()
+
+        assert second_delta.HasField("new_element"), (
+            "Replayed call should create new_element"
+        )
+        second_element = second_delta.new_element
+        self._assert_layout_config(
+            second_element, expected_width, expected_height, "Replayed element"
+        )
+
+        # Verify both are identical
+        assert (
+            first_element.width_config.pixel_width
+            == second_element.width_config.pixel_width
+        ), "Width config should be identical between original and replayed elements"
+
+        assert (
+            first_element.height_config.pixel_height
+            == second_element.height_config.pixel_height
+        ), "Height config should be identical between original and replayed elements"
 
 
 def get_byte_length(value):
@@ -657,4 +869,157 @@ class AlwaysFailingTestCacheStorageManager(CacheStorageManager):
         pass
 
     def check_context(self, context: CacheStorageContext) -> None:
-        raise InvalidCacheStorageContext("This CacheStorageManager always fails")
+        raise InvalidCacheStorageContextError("This CacheStorageManager always fails")
+
+
+class CacheDataBackgroundRefreshTest(unittest.TestCase):
+    """st.cache_data refresh_mode="background" tests."""
+
+    def setUp(self) -> None:
+        add_script_run_ctx(threading.current_thread(), create_mock_script_run_ctx())
+        mock_runtime = MagicMock(spec=Runtime)
+        mock_runtime.cache_storage_manager = MemoryCacheStorageManager()
+        Runtime._instance = mock_runtime
+
+    def tearDown(self) -> None:
+        st.cache_data.clear()
+
+    def test_background_without_ttl_raises(self) -> None:
+        """refresh_mode="background" without a ttl raises a StreamlitAPIException."""
+        with pytest.raises(StreamlitAPIException) as exc:
+
+            @st.cache_data(refresh_mode="background")
+            def foo() -> int:
+                return 1
+
+        assert "requires a 'ttl' value" in str(exc.value)
+
+    def test_background_with_zero_ttl_raises(self) -> None:
+        """A non-positive ttl is treated as no ttl for background refresh."""
+        with pytest.raises(StreamlitAPIException) as exc:
+
+            @st.cache_data(ttl=0, refresh_mode="background")
+            def foo() -> int:
+                return 1
+
+        assert "requires a 'ttl' value" in str(exc.value)
+
+    def test_background_with_persist_disk_raises(self) -> None:
+        """refresh_mode="background" with persist="disk" raises a StreamlitAPIException."""
+        with pytest.raises(StreamlitAPIException) as exc:
+
+            @st.cache_data(ttl="1h", persist="disk", refresh_mode="background")
+            def foo() -> int:
+                return 1
+
+        assert "not compatible with 'persist'" in str(exc.value)
+
+    def test_background_with_persist_true_raises(self) -> None:
+        """refresh_mode="background" with persist=True raises a StreamlitAPIException."""
+        with pytest.raises(StreamlitAPIException) as exc:
+
+            @st.cache_data(ttl="1h", persist=True, refresh_mode="background")
+            def foo() -> int:
+                return 1
+
+        assert "not compatible with 'persist'" in str(exc.value)
+
+    def test_invalid_refresh_mode_raises(self) -> None:
+        """An unknown refresh_mode value raises a StreamlitValueError."""
+        with pytest.raises(StreamlitValueError) as exc:
+
+            @st.cache_data(ttl="1h", refresh_mode="sideways")
+            def foo() -> int:
+                return 1
+
+        assert (
+            str(exc.value)
+            == "Invalid `refresh_mode` value. Supported values: foreground, background."
+        )
+
+    def test_hard_ttl_is_double_fresh_ttl(self) -> None:
+        """In background mode the underlying storage ttl is 2x the user-facing ttl."""
+        cache = _data_caches.get_cache(
+            key="bg_key",
+            persist=None,
+            max_entries=None,
+            ttl=100,
+            display_name="bg",
+            refresh_mode="background",
+        )
+        assert cache.fresh_ttl_seconds == 100
+        assert cache.ttl_seconds == 200
+
+    def test_stored_at_set_only_in_background_mode(self) -> None:
+        """stored_at is set (and survives pickling) in background mode, and None otherwise."""
+        bg_cache = _data_caches.get_cache(
+            key="bg",
+            persist=None,
+            max_entries=None,
+            ttl=100,
+            display_name="bg",
+            refresh_mode="background",
+        )
+        bg_cache.write_result("vk", 123, [])
+        bg_result = bg_cache.read_result("vk")
+        assert bg_result.value == 123
+        assert isinstance(bg_result.stored_at, float)
+
+        fg_cache = _data_caches.get_cache(
+            key="fg",
+            persist=None,
+            max_entries=None,
+            ttl=100,
+            display_name="fg",
+            refresh_mode="foreground",
+        )
+        fg_cache.write_result("vk", 456, [])
+        assert fg_cache.read_result("vk").stored_at is None
+
+    def test_background_writeback_checks_presence_without_reading_value(self) -> None:
+        """A background write-back doesn't deserialize the existing cached value."""
+        cache = _data_caches.get_cache(
+            key="bg_presence",
+            persist=None,
+            max_entries=None,
+            ttl=100,
+            display_name="bg_presence",
+            refresh_mode="background",
+        )
+        cache.write_result("vk", 123, [])
+
+        with (
+            patch.object(cache.storage, "has", wraps=cache.storage.has) as mock_has,
+            patch.object(cache.storage, "get", wraps=cache.storage.get) as mock_get,
+        ):
+            cache.write_background_refresh_result(
+                "vk",
+                456,
+                expected_generation=cache.generation,
+                expected_key_generation=cache.key_generation("vk"),
+            )
+            mock_has.assert_called_once_with("vk")
+            mock_get.assert_not_called()
+
+        assert cache.read_result("vk").value == 456
+
+    def test_cache_recreated_on_mode_change(self) -> None:
+        """Changing refresh_mode across reruns rebuilds the cache."""
+        common_kwargs = {
+            "key": "mode_key",
+            "persist": None,
+            "max_entries": None,
+            "ttl": 100,
+            "display_name": "mode",
+        }
+        cache_fg = _data_caches.get_cache(**common_kwargs, refresh_mode="foreground")
+        # Same params -> same cache object.
+        assert (
+            _data_caches.get_cache(**common_kwargs, refresh_mode="foreground")
+            is cache_fg
+        )
+        # Different refresh_mode -> new cache object.
+        cache_bg = _data_caches.get_cache(**common_kwargs, refresh_mode="background")
+        assert cache_bg is not cache_fg
+        # The replaced cache is detached so an in-flight refresh would be discarded.
+        assert cache_fg.is_active is False

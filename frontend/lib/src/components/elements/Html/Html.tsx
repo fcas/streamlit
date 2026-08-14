@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,62 +14,28 @@
  * limitations under the License.
  */
 
-import React, { ReactElement, useState, useEffect, useRef } from "react"
-import DOMPurify from "dompurify"
+import { memo, ReactElement } from "react"
 
-import { Html as HtmlProto } from "@streamlit/lib/src/proto"
+import { Html as HtmlProto } from "@streamlit/protobuf"
 
-export interface HtmlProps {
-  width: number
+import HtmlWithJs from "./HtmlWithJs"
+import SanitizedHtml from "./SanitizedHtml"
+
+interface HtmlProps {
   element: HtmlProto
-}
-
-const sanitizeString = (html: string): string => {
-  const sanitizationOptions = {
-    // Default to permit HTML, SVG and MathML, this limits to HTML only
-    USE_PROFILES: { html: true },
-    // glue elements like style, script or others to document.body and prevent unintuitive browser behavior in several edge-cases
-    FORCE_BODY: true,
-  }
-  return DOMPurify.sanitize(html, sanitizationOptions)
 }
 
 /**
  * HTML code to insert into the page.
  */
-export default function Html({ element, width }: HtmlProps): ReactElement {
-  const { body } = element
-  const [sanitizedHtml, setSanitizedHtml] = useState(sanitizeString(body))
-  const htmlRef = useRef<HTMLDivElement | null>(null)
+function Html({ element }: Readonly<HtmlProps>): ReactElement {
+  const { body, unsafeAllowJavascript } = element
 
-  useEffect(() => {
-    if (sanitizeString(body) !== sanitizedHtml) {
-      setSanitizedHtml(sanitizeString(body))
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [body])
-
-  useEffect(() => {
-    if (
-      htmlRef.current?.clientHeight === 0 &&
-      htmlRef.current.parentElement?.childElementCount === 1
-    ) {
-      // div has no rendered content - hide to avoid unnecessary spacing
-      htmlRef.current.parentElement.classList.add("empty-html")
-    }
-  })
-
-  return (
-    <>
-      {sanitizedHtml && (
-        <div
-          className="stHtml"
-          data-testid="stHtml"
-          ref={htmlRef}
-          style={{ width: width }}
-          dangerouslySetInnerHTML={{ __html: sanitizedHtml }}
-        />
-      )}
-    </>
+  return unsafeAllowJavascript ? (
+    <HtmlWithJs body={body} />
+  ) : (
+    <SanitizedHtml body={body} />
   )
 }
+
+export default memo(Html)

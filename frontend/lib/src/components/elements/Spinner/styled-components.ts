@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,44 +15,16 @@
  */
 
 import styled from "@emotion/styled"
-import { Spinner } from "baseui/spinner"
-import isPropValid from "@emotion/is-prop-valid"
-interface ThemedStyledSpinnerProps {
-  usingCustomTheme: boolean
-}
-
-export const ThemedStyledSpinner = styled(Spinner, {
-  shouldForwardProp: isPropValid,
-})<ThemedStyledSpinnerProps>(({ theme, usingCustomTheme }) => {
-  return {
-    fontSize: theme.fontSizes.sm,
-    width: "1.375rem",
-    height: "1.375rem",
-    borderWidth: "3px",
-    radius: "4px",
-    justifyContents: "center",
-    padding: theme.spacing.none,
-    margin: theme.spacing.none,
-    borderColor: theme.colors.fadedText10,
-    borderTopColor: usingCustomTheme
-      ? theme.colors.primary
-      : theme.colors.blue70,
-    flexGrow: 0,
-    flexShrink: 0,
-  }
-})
 
 interface StyledSpinnerProps {
-  width: number
   cache: boolean
 }
 
 export const StyledSpinner = styled.div<StyledSpinnerProps>(
-  ({ theme, width, cache }) => ({
-    width: width,
+  ({ theme, cache }) => ({
     ...(cache
       ? {
-          paddingBottom: "1rem",
+          paddingBottom: theme.spacing.lg,
           background: `linear-gradient(to bottom, ${theme.colors.bgColor} 0%, ${theme.colors.bgColor} 80%, transparent 100%)`,
         }
       : null),
@@ -61,7 +33,20 @@ export const StyledSpinner = styled.div<StyledSpinnerProps>(
 
 export const StyledSpinnerContainer = styled.div(({ theme }) => ({
   display: "flex",
-  gap: theme.spacing.sm,
   alignItems: "center",
   width: "100%",
+  gap: theme.spacing.sm,
+}))
+
+export const StyledSpinnerText = styled.div(({ theme }) => ({
+  display: "flex",
+  gap: theme.spacing.sm,
+  alignItems: "baseline",
+}))
+
+export const StyledSpinnerTimeText = styled.span(({ theme }) => ({
+  opacity: theme.opacities.secondary,
+  fontSize: theme.fontSizes.sm,
+  lineHeight: theme.lineHeights.none,
+  whiteSpace: "nowrap",
 }))

@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,151 +12,242 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from playwright.sync_api import Page, expect
+from __future__ import annotations
 
-from e2e_playwright.conftest import ImageCompareFunction, wait_for_app_run
+import re
+
+from playwright.sync_api import Locator, Page, expect
+
+from e2e_playwright.conftest import (
+    ImageCompareFunction,
+    build_app_url,
+    wait_for_app_loaded,
+    wait_for_app_run,
+    wait_until,
+)
+from e2e_playwright.shared.app_utils import (
+    check_top_level_class,
+    click_checkbox,
+    click_toggle,
+    expect_help_tooltip,
+    expect_prefixed_markdown,
+    expect_text,
+    get_element_by_key,
+    get_multiselect,
+    open_popover,
+)
+
+MULTISELECT_COUNT = 29
 
 
-def select_for_kth_multiselect(
-    page: Page, option_text: str, k: int, close_after_selecting: bool
+def _get_multiselect_input(locator: Locator | Page, label: str) -> Locator:
+    return get_multiselect(locator, label).locator("input").first
+
+
+def select_for_multiselect(
+    page: Page, label: str, option_text: str, close_after_selecting: bool
 ) -> None:
-    """Select an option from a multiselect widget.
-
-    Parameters
-    ----------
-    page : Page
-        The playwright page to use.
-    option_text : str
-        The text of the option to select.
-    k : int
-        The index of the multiselect widget to select from.
-    close_after_selecting : bool
-        Whether to close the dropdown after selecting the option.
-    """
-
-    multiselect_elem = page.get_by_test_id("stMultiSelect").nth(k)
-    multiselect_elem.locator("input").click()
-    page.locator("li").filter(has_text=option_text).first.click()
+    """Select an option from a multiselect widget identified by its label."""
+    ms = get_multiselect(page, label)
+    ms.scroll_into_view_if_needed()
+    ms.locator("input").click()
+    option = page.get_by_role("option", name=option_text, exact=True).first
+    expect(option).to_be_visible()
+    option.click()
+    # Wait until the selection is committed in the UI before Escape. On WebKit
+    # under CI load, pressing Escape immediately after click can close the
+    # listbox before the option selection is applied, so the subsequent rerun
+    # never updates the value text.
+    expect(ms.locator(f'span[title="{option_text}"]')).to_be_visible()
     if close_after_selecting:
         page.keyboard.press("Escape")
     wait_for_app_run(page)
 
 
-def del_from_kth_multiselect(page: Page, option_text: str, k: int):
-    """Delete an option from a multiselect widget.
-
-    Parameters
-    ----------
-    page : Page
-        The playwright page to use.
-    option_text : str
-        The text of the option to delete.
-    k : int
-        The index of the multiselect widget to delete from.
-    """
-    multiselect_elem = page.get_by_test_id("stMultiSelect").nth(k)
-    multiselect_elem.locator(
-        f'span[data-baseweb="tag"] span[title="{option_text}"] + span[role="presentation"]'
-    ).first.click()
+def remove_from_multiselect(page: Page, label: str, option_text: str) -> None:
+    """Remove a tag from the multiselect. Dropdown must be closed before calling."""
+    ms = get_multiselect(page, label)
+    ms.get_by_role("button", name=f"Remove {option_text}", exact=True).click()
+    wait_for_app_run(page)
 
 
 def test_multiselect_on_load(themed_app: Page, assert_snapshot: ImageCompareFunction):
     """Should show widgets correctly when loaded."""
-    multiselect_elements = themed_app.get_by_test_id("stMultiSelect")
-    expect(multiselect_elements).to_have_count(11)
-    for idx, el in enumerate(multiselect_elements.all()):
-        assert_snapshot(el, name="st_multiselect-" + str(idx))
+    expect(themed_app.get_by_test_id("stMultiSelect")).to_have_count(MULTISELECT_COUNT)
+
+    assert_snapshot(
+        get_multiselect(themed_app, "multiselect 1"),
+        name="st_multiselect-placeholder_help",
+    )
+    assert_snapshot(
+        get_multiselect(themed_app, "multiselect 2"), name="st_multiselect-format_func"
+    )
+    assert_snapshot(
+        get_multiselect(themed_app, "multiselect 3"), name="st_multiselect-empty_list"
+    )
+    assert_snapshot(
+        get_multiselect(themed_app, "multiselect 4"),
+        name="st_multiselect-initial_value",
+    )
+    assert_snapshot(
+        get_multiselect(themed_app, "multiselect 5"), name="st_multiselect-long_values"
+    )
+    assert_snapshot(
+        get_multiselect(themed_app, "multiselect 6"), name="st_multiselect-disabled"
+    )
+    assert_snapshot(
+        get_multiselect(themed_app, "Hidden label"), name="st_multiselect-hidden_label"
+    )
+    assert_snapshot(
+        get_multiselect(themed_app, "Collapsed label"),
+        name="st_multiselect-collapsed_label",
+    )
+    # The other multiselect widgets do not need to be screenshot tested since they
+    # don't have any visually interesting differences.
+    assert_snapshot(
+        get_multiselect(themed_app, "multiselect 12"),
+        name="st_multiselect-narrow_column",
+    )
+    assert_snapshot(
+        get_multiselect(themed_app, re.compile(r"^multiselect 13")),
+        name="st_multiselect-markdown_label",
+    )
+    assert_snapshot(
+        get_multiselect(themed_app, "multiselect 17 - show maxHeight"),
+        name="st_multiselect-maxHeight",
+    )
+    assert_snapshot(
+        get_multiselect(themed_app, "multiselect 18 (width=300px)"),
+        name="st_multiselect-width_300px",
+    )
+    assert_snapshot(
+        get_multiselect(themed_app, "multiselect 19 (width='stretch')"),
+        name="st_multiselect-width_stretch",
+    )
+
+
+def test_help_tooltip_works(app: Page):
+    element_with_help = get_multiselect(app, "multiselect 1")
+    expect_help_tooltip(app, element_with_help, "Help text")
 
 
 def test_multiselect_initial_value(app: Page):
     """Should show the correct initial values."""
-    text_elements = app.get_by_test_id("stText")
-    expect(text_elements).to_have_count(12)
-
-    expected = [
-        "value 1: []",
-        "value 2: []",
-        "value 3: []",
-        "value 4: ['tea', 'water']",
-        "value 5: []",
-        "value 6: []",
-        "value 7: []",
-        "value 8: []",
-        "value 9: []",
-        "value 10: []",
-        "value 11: []",
-        "multiselect changed: False",
-    ]
-
-    for text_element, expected_text in zip(text_elements.all(), expected):
-        expect(text_element).to_have_text(expected_text, use_inner_text=True)
+    expect_text(app, "value 1: []")
+    expect_text(app, "value 2: []")
+    expect_text(app, "value 3: []")
+    expect_text(app, "value 4: ['tea', 'water']")
+    expect_text(app, "value 5: []")
+    expect_text(app, "value 6: []")
+    expect_text(app, "value 7: []")
+    expect_text(app, "value 8: []")
+    expect_text(app, "value 9: []")
+    expect_text(app, "value 10: []")
+    expect_text(app, "value 11: []")
+    expect_text(app, "multiselect changed: False")
+    expect_text(app, "value 12: ['A long option']")
+    expect_text(app, "value 14: []")
+    expect_text(app, "value 15: ['apple', 'orange']")
+    expect_text(app, "value 16: []")
+    expect_text(app, "value 21: []")
+    expect_text(app, "value 22: []")
+    expect_text(app, "value 23: []")
 
 
 def test_multiselect_clear_all(app: Page):
     """Should clear all options when clicking clear all."""
-    select_for_kth_multiselect(app, "Female", 1, True)
-    app.locator('.stMultiSelect [role="button"][aria-label="Clear all"]').first.click()
-    expect(app.get_by_test_id("stText").nth(1)).to_have_text("value 2: []")
+    select_for_multiselect(app, "multiselect 2", "Female", True)
+    get_multiselect(app, "multiselect 2").locator(
+        'button[aria-label="Clear all"]'
+    ).first.click()
+    expect_text(app, "value 2: []")
 
 
 def test_multiselect_show_values_in_dropdown(
     app: Page, assert_snapshot: ImageCompareFunction
 ):
     """Screenshot test to check that values are shown in dropdown."""
-    multiselect_elem = app.get_by_test_id("stMultiSelect").nth(0)
+    multiselect_elem = get_multiselect(app, "multiselect 1")
     multiselect_elem.locator("input").click()
     wait_for_app_run(app)
-    dropdown_elements = app.locator("li")
-    expect(dropdown_elements).to_have_count(2)
-    assert_snapshot(dropdown_elements.nth(0), name="st_multiselect-dropdown_0")
-    assert_snapshot(dropdown_elements.nth(1), name="st_multiselect-dropdown_1")
+    dropdown_elements = app.get_by_role("option")
+    # 3 elements: "Select all", "male", "female"
+    expect(dropdown_elements).to_have_count(3)
+
+    assert_snapshot(
+        app.get_by_role("option", name="male", exact=True),
+        name="st_multiselect-dropdown_0",
+    )
+    assert_snapshot(
+        app.get_by_role("option", name="female", exact=True),
+        name="st_multiselect-dropdown_1",
+    )
 
 
 def test_multiselect_long_values_in_dropdown(
     app: Page, assert_snapshot: ImageCompareFunction
 ):
     """Should show long values correctly (with ellipses) in the dropdown menu."""
-    multiselect_elem = app.get_by_test_id("stMultiSelect").nth(4)
+    multiselect_elem = get_multiselect(app, "multiselect 5")
     multiselect_elem.locator("input").click()
     wait_for_app_run(app)
-    dropdown_elems = app.locator("li").all()
+    # Skip the first element which is "Select all"
+    dropdown_elems = app.get_by_role("option").all()[1:]
     for idx, el in enumerate(dropdown_elems):
         assert_snapshot(el, name="st_multiselect-dropdown_long_label_" + str(idx))
 
 
+def test_multiselect_long_values_in_narrow_column(
+    app: Page, assert_snapshot: ImageCompareFunction
+):
+    """Should show long values correctly (with ellipses) when in narrow column
+    widths.
+    """
+    multiselect_elem = get_multiselect(app, "multiselect 12")
+    wait_for_app_run(app)
+    # Wait for list items to be loaded in
+    assert_snapshot(multiselect_elem, name="st_multiselect-dropdown_narrow_column")
+
+
 def test_multiselect_register_callback(app: Page):
     """Should call the callback when an option is selected."""
-    app.get_by_test_id("stMultiSelect").nth(10).locator("input").click()
-    app.locator("li").first.click()
-    expect(app.get_by_test_id("stText").nth(10)).to_have_text("value 11: ['male']")
-    expect(app.get_by_test_id("stText").nth(11)).to_have_text(
-        "multiselect changed: True"
-    )
+    ms = get_multiselect(app, "multiselect 11")
+    ms.scroll_into_view_if_needed()
+    ms.locator("input").click()
+    app.get_by_role("option", name="male", exact=True).first.click()
+    wait_for_app_run(app)
+    expect_text(app, "value 11: ['male']")
+    expect_text(app, "multiselect changed: True")
 
 
 def test_multiselect_max_selections_form(app: Page):
     """Should apply max selections when used in form."""
-    select_for_kth_multiselect(app, "male", 8, False)
-    expect(app.locator("li")).to_have_text(
+    select_for_multiselect(app, "multiselect 10", "male", False)
+    expect(app.get_by_test_id("stMultiSelectDropdown")).to_have_text(
         "You can only select up to 1 option. Remove an option first.",
         use_inner_text=True,
     )
 
 
 def test_multiselect_max_selections_1(app: Page):
-    """Should show the correct text when maxSelections is reached and closing after selecting."""
-    select_for_kth_multiselect(app, "male", 9, True)
-    app.get_by_test_id("stMultiSelect").nth(9).click()
-    expect(app.locator("li")).to_have_text(
+    """Should show the correct text when maxSelections is reached and closing after
+    selecting.
+    """
+    select_for_multiselect(app, "multiselect 9", "male", True)
+    ms = get_multiselect(app, "multiselect 9")
+    ms.locator("input").click()
+    expect(app.get_by_test_id("stMultiSelectDropdown")).to_have_text(
         "You can only select up to 1 option. Remove an option first.",
         use_inner_text=True,
     )
 
 
 def test_multiselect_max_selections_2(app: Page):
-    """Should show the correct text when maxSelections is reached and not closing after selecting."""
-    select_for_kth_multiselect(app, "male", 9, False)
-    expect(app.locator("li")).to_have_text(
+    """Should show the correct text when maxSelections is reached and not closing after
+    selecting.
+    """
+    select_for_multiselect(app, "multiselect 9", "male", False)
+    expect(app.get_by_test_id("stMultiSelectDropdown")).to_have_text(
         "You can only select up to 1 option. Remove an option first.",
         use_inner_text=True,
     )
@@ -164,52 +255,692 @@ def test_multiselect_max_selections_2(app: Page):
 
 def test_multiselect_valid_options(app: Page):
     """Should allow selections when there are valid options."""
-    expect(app.get_by_test_id("stMultiSelect").first).to_have_text(
-        "multiselect 1\n\nPlease select", use_inner_text=True
-    )
+    ms = get_multiselect(app, "multiselect 1")
+    expect(ms).to_contain_text("multiselect 1")
+    expect(ms.locator("input")).to_have_attribute("placeholder", "Please select")
 
 
 def test_multiselect_no_valid_options(app: Page):
-    """Should show that their are no options."""
-    expect(app.get_by_test_id("stMultiSelect").nth(2)).to_have_text(
-        "multiselect 3\n\nNo options to select.", use_inner_text=True
-    )
+    """Should show that there are no options."""
+    ms = get_multiselect(app, "multiselect 3")
+    expect(ms).to_contain_text("multiselect 3")
+    expect(ms.locator("input")).to_have_attribute("placeholder", "No options to select")
 
 
 def test_multiselect_single_selection(app: Page, assert_snapshot: ImageCompareFunction):
     """Should allow selections."""
-    select_for_kth_multiselect(app, "Female", 1, True)
-    expect(app.get_by_test_id("stMultiSelect").locator("span").nth(1)).to_have_text(
-        "Female", use_inner_text=True
-    )
+    select_for_multiselect(app, "multiselect 2", "Female", True)
+    expect(
+        get_multiselect(app, "multiselect 2").locator('span[title="Female"]')
+    ).to_be_visible()
     assert_snapshot(
-        app.get_by_test_id("stMultiSelect").nth(1), name="st_multiselect-selection"
+        get_multiselect(app, "multiselect 2"), name="st_multiselect-selection"
     )
-    expect(app.get_by_test_id("stText").nth(1)).to_have_text(
-        "value 2: ['female']", use_inner_text=True
-    )
+    expect_text(app, "value 2: ['female']")
 
 
 def test_multiselect_deselect_option(app: Page):
     """Should deselect an option when deselecting it."""
-    select_for_kth_multiselect(app, "Female", 1, True)
-    select_for_kth_multiselect(app, "Male", 1, True)
-    del_from_kth_multiselect(app, "Female", 1)
-    expect(app.get_by_test_id("stText").nth(1)).to_have_text("value 2: ['male']")
+    select_for_multiselect(app, "multiselect 2", "Female", True)
+    select_for_multiselect(app, "multiselect 2", "Male", True)
+    remove_from_multiselect(app, "multiselect 2", "Female")
+    expect_text(app, "value 2: ['male']")
+
+
+def test_multiselect_esc_in_popover_preserves_selection(app: Page):
+    """Pressing ESC should close a containing popover without clearing the
+    multiselect selection.
+
+    Regression test for issue #15637.
+    """
+    popover_container = open_popover(app, "Popover with multiselect")
+    multiselect = popover_container.get_by_test_id("stMultiSelect")
+    expect(
+        multiselect.get_by_role("button", name=re.compile(r"^Remove "))
+    ).to_have_count(4)
+
+    multiselect.locator("input").first.click()
+    # First ESC closes the open dropdown.
+    app.keyboard.press("Escape")
+    # Second ESC closes the popover; it must not clear the selection.
+    app.keyboard.press("Escape")
+    expect(app.get_by_test_id("stPopoverBody")).not_to_be_visible()
+
+    # Reopen the popover and verify the selection is preserved.
+    popover_container = open_popover(app, "Popover with multiselect")
+    multiselect = popover_container.get_by_test_id("stMultiSelect")
+    expect(
+        multiselect.get_by_role("button", name=re.compile(r"^Remove "))
+    ).to_have_count(4)
+    expect_text(
+        popover_container, "value esc popover: ['Green', 'Yellow', 'Red', 'Blue']"
+    )
 
 
 def test_multiselect_option_over_max_selections(app: Page):
     """Should show an error when more than max_selections got selected."""
-    app.get_by_test_id("stCheckbox").first.click()
+    click_checkbox(app, "set_multiselect_9")
     expect(app.get_by_test_id("stException")).to_contain_text(
-        "Multiselect has 2 options selected but max_selections\nis set to 1"
+        "Multiselect has 2 options selected but max_selections is set to 1"
     )
 
 
 def test_multiselect_double_selection(app: Page):
     """Should allow multiple selections."""
-    select_for_kth_multiselect(app, "Female", 1, True)
-    select_for_kth_multiselect(app, "Male", 1, True)
-    expect(app.get_by_test_id("stText").nth(1)).to_have_text(
-        "value 2: ['female', 'male']"
+    select_for_multiselect(app, "multiselect 2", "Female", True)
+    select_for_multiselect(app, "multiselect 2", "Male", True)
+    expect_text(app, "value 2: ['female', 'male']")
+
+
+def test_check_top_level_class(app: Page):
+    """Check that the top level class is correctly set."""
+    check_top_level_class(app, "stMultiSelect")
+
+
+def test_custom_css_class_via_key(app: Page):
+    """Test that the element can have a custom css class via the key argument."""
+    expect(get_element_by_key(app, "multiselect 9")).to_be_visible()
+
+
+def test_dynamic_multiselect_props(app: Page, assert_snapshot: ImageCompareFunction):
+    """Test that the multiselect can be updated dynamically while keeping the state.
+
+    This tests that:
+    1. Options can be changed dynamically when a key is provided
+    2. Format function can be changed dynamically
+    3. Selection resets (filters invalid) when selected values are removed from options
+    4. Selection is preserved when the selected values exist in new options
+
+    Initial options: [apple, banana, mango, orange] with format_func=capitalize, default=['apple']
+    Updated options: [mango, papaya, grape, apple] with format_func=capitalize, default=[]
+    """
+    dynamic_ms = get_element_by_key(app, "dynamic_multiselect_with_key")
+    expect(dynamic_ms).to_be_visible()
+
+    # Initial state and selection
+    expect(dynamic_ms).to_contain_text("Initial dynamic multiselect")
+    expect_prefixed_markdown(app, "Initial multiselect value:", "['apple']")
+    assert_snapshot(dynamic_ms, name="st_multiselect-dynamic_initial")
+
+    # Check that the help tooltip is correct:
+    expect_help_tooltip(app, dynamic_ms, "initial help")
+
+    # --- Test 1: Selection RESETS when value is removed from options ---
+    # Select "banana" (only exists in initial options, NOT in updated)
+    select_for_multiselect(app, "Initial dynamic multiselect", "Banana", True)
+    expect_prefixed_markdown(app, "Initial multiselect value:", "['apple', 'banana']")
+
+    # Toggle to update props - options change from [apple, banana, mango, orange]
+    # to [mango, papaya, grape, apple]. "banana" is NOT in updated options.
+    click_toggle(app, "Update multiselect props")
+
+    # Updated multiselect is visible
+    expect(dynamic_ms).to_contain_text("Updated dynamic multiselect")
+
+    # Selection should filter out "banana" (not in updated options), keeping only "apple"
+    expect_prefixed_markdown(app, "Updated multiselect value:", "['apple']")
+
+    dynamic_ms.scroll_into_view_if_needed()
+    assert_snapshot(dynamic_ms, name="st_multiselect-dynamic_updated")
+
+    # Check that the help tooltip is correct:
+    expect_help_tooltip(app, dynamic_ms, "updated help")
+
+    # --- Test 2: Selection PRESERVED when value exists in both option sets ---
+    # Select "mango" - it exists in BOTH option sets at different indices:
+    # Initial: index 2 (displayed "Mango"), Updated: index 0 (displayed "Mango")
+    select_for_multiselect(app, "Updated dynamic multiselect", "Mango", True)
+    expect_prefixed_markdown(app, "Updated multiselect value:", "['apple', 'mango']")
+
+    # Toggle back to initial options - "mango" and "apple" exist in initial too
+    click_toggle(app, "Update multiselect props")
+    expect(dynamic_ms).to_contain_text("Initial dynamic multiselect")
+
+    # Selection should be PRESERVED since both "apple" and "mango" are in both option sets
+    expect_prefixed_markdown(app, "Initial multiselect value:", "['apple', 'mango']")
+
+    # Toggle again and check that the selection is preserved:
+    click_toggle(app, "Update multiselect props")
+    expect(dynamic_ms).to_contain_text("Updated dynamic multiselect")
+    expect_prefixed_markdown(app, "Updated multiselect value:", "['apple', 'mango']")
+
+
+def test_multiselect_accept_new_options(app: Page):
+    """Should allow adding new options when accept_new_options is True and respect
+    max_selections.
+    """
+    # Get the last multiselect (index 13)
+    multiselect_elem = get_multiselect(app, "multiselect 14 - accept new options")
+    multiselect_elem.scroll_into_view_if_needed()
+
+    input_elem = multiselect_elem.locator("input")
+    input_elem.click()
+
+    # Type and add new option "mango"
+    input_elem.press_sequentially("mango")
+    input_elem.press("Enter")
+    wait_for_app_run(app)
+
+    # Reopen dropdown and type to add another option "grape"
+    input_elem.click()
+    input_elem.press_sequentially("grape")
+    input_elem.press("Enter")
+    wait_for_app_run(app)
+
+    # Reopen dropdown to select from original options
+    input_elem.click()
+    options_list = app.get_by_role("option")
+    # 5 elements: "Select all", "apple", "banana", "orange", "cherry"
+    expect(options_list).to_have_count(5)
+    options_list.filter(has_text="apple").click()
+    wait_for_app_run(app)
+
+    # Verify three options were added successfully
+    expect_text(app, "value 14: ['mango', 'grape', 'apple']")
+    # Verify that format_func was applied to original option but not to the dynamically
+    # added option
+    expect(multiselect_elem.locator('span[title="APPLE"]')).to_be_visible()
+    expect(multiselect_elem.locator('span[title="grape"]')).to_be_visible()
+    expect(multiselect_elem.locator('span[title="mango"]')).to_be_visible()
+
+    # Try to add a fourth option - prevented by max_selections
+    input_elem.click()
+    expect(app.get_by_test_id("stMultiSelectDropdown")).to_have_text(
+        "You can only select up to 3 options. Remove an option first.",
+        use_inner_text=True,
+    )
+    # Type and add another option "berries" - this should not be added
+    input_elem.press_sequentially("berries")
+    input_elem.press("Enter")
+    wait_for_app_run(app)
+    # Verify that this option was not added as it would have exceeded max_selections
+    expect_text(app, "value 14: ['mango', 'grape', 'apple']")
+
+    # Close the dropdown (still open from failed "berries" attempt) then remove a tag.
+    # Two Escapes: first clears filter text, second closes the dropdown.
+    input_elem.press("Escape")
+    input_elem.press("Escape")
+    remove_from_multiselect(app, "multiselect 14 - accept new options", "mango")
+
+    # Verify we can add another option after removing one
+    input_elem.click()
+    input_elem.press_sequentially("kiwi")
+    input_elem.press("Enter")
+    wait_for_app_run(app)
+
+    # Verify final selections are correct
+    expect_text(app, "value 14: ['grape', 'apple', 'kiwi']")
+
+
+def test_multiselect_accept_new_options_no_duplicate(app: Page):
+    """Should not allow re-adding an already-selected custom value."""
+    multiselect_elem = get_multiselect(
+        app, "multiselect 16 - empty options with accept_new_options"
+    )
+    multiselect_elem.scroll_into_view_if_needed()
+    input_elem = multiselect_elem.locator("input")
+
+    # Add a custom value "cherry"
+    input_elem.click()
+    input_elem.press_sequentially("cherry")
+    expect(app.get_by_role("option", name="Add: cherry")).to_be_visible()
+    input_elem.press("Enter")
+    wait_for_app_run(app)
+
+    # Verify "cherry" was added
+    expect_text(app, "value 16: ['cherry']")
+
+    # Type "cherry" again — "Add: cherry" should NOT appear
+    input_elem.click()
+    input_elem.press_sequentially("cherry")
+    expect(app.get_by_role("option", name="Add: cherry")).not_to_be_visible()
+
+    # Pressing Enter should not create a duplicate
+    input_elem.press("Enter")
+    wait_for_app_run(app)
+    expect_text(app, "value 16: ['cherry']")
+
+
+def test_multiselect_preset_session_state(app: Page):
+    """Should display values from session_state."""
+    # Check the initial values from session_state
+    expect_text(app, "value 15: ['apple', 'orange']")
+    multiselect_elem = get_multiselect(app, "multiselect 15 - session_state values")
+    tags = multiselect_elem.get_by_role("button", name=re.compile(r"^Remove "))
+    expect(tags).to_have_count(2)
+    expect(multiselect_elem.locator('span[title="apple"]')).to_be_visible()
+    expect(multiselect_elem.locator('span[title="orange"]')).to_be_visible()
+
+
+def test_multiselect_empty_options_with_accept_new_options(app: Page):
+    """Should allow adding new options when options list is empty but accept_new_options is True."""
+    # Get the multiselect with empty options but accept_new_options=True (index 15)
+    multiselect_elem = get_multiselect(
+        app, "multiselect 16 - empty options with accept_new_options"
+    )
+    multiselect_elem.scroll_into_view_if_needed()
+
+    # Verify the initial placeholder shows "Add options"
+    expect(multiselect_elem.locator("input")).to_have_attribute(
+        "placeholder", "Add options"
+    )
+
+    input_elem = multiselect_elem.locator("input")
+    input_elem.click()
+
+    # Type and add new option "strawberry"
+    input_elem.press_sequentially("strawberry")
+    input_elem.press("Enter")
+    wait_for_app_run(app)
+
+    # Reopen dropdown and type to add another option "blueberry"
+    input_elem.click()
+    input_elem.press_sequentially("blueberry")
+    input_elem.press("Enter")
+    wait_for_app_run(app)
+
+    # Verify options were added successfully
+    expect_text(app, "value 16: ['strawberry', 'blueberry']")
+
+    # Close dropdown so tags are accessible, then verify selections
+    input_elem.press("Escape")
+    expect(multiselect_elem.locator('span[title="strawberry"]')).to_be_visible()
+    expect(multiselect_elem.locator('span[title="blueberry"]')).to_be_visible()
+    tags = multiselect_elem.get_by_role("button", name=re.compile(r"^Remove "))
+    expect(tags).to_have_count(2)
+
+    # Remove one option
+    remove_from_multiselect(
+        app, "multiselect 16 - empty options with accept_new_options", "strawberry"
+    )
+
+    # Verify one option was removed
+    expect_text(app, "value 16: ['blueberry']")
+
+
+def test_multiselect_empty_options_disabled_when_no_accept_new(app: Page):
+    """Should show 'No options to select' placeholder and be disabled when empty and accept_new_options=False."""
+    # Get multiselect 3 (index 2) which has empty options and accept_new_options=False (default)
+    multiselect_elem = get_multiselect(app, "multiselect 3")
+
+    # Verify the placeholder shows "No options to select"
+    expect(multiselect_elem.locator("input")).to_have_attribute(
+        "placeholder", "No options to select"
+    )
+
+    # Verify the input field is disabled
+    input_elem = multiselect_elem.locator("input")
+    expect(input_elem).to_be_disabled()
+
+    # Verify clicking on the multiselect doesn't open a dropdown
+    multiselect_elem.click()
+    wait_for_app_run(app)
+
+    # Verify no dropdown options appear
+    dropdown_options = app.get_by_role("option")
+    expect(dropdown_options).to_have_count(0)
+
+    # Verify the widget value remains empty
+    expect_text(app, "value 3: []")
+
+
+def test_multiselect_preserves_scroll_position_on_remove(app: Page):
+    """Should preserve scroll position when removing an item from the multiselect."""
+    multiselect_elem = get_multiselect(app, "multiselect 17 - show maxHeight")
+
+    # Get the tags container (scrollable area inside the trigger group)
+    value_container = multiselect_elem.get_by_test_id("stMultiSelectTagsContainer")
+
+    # Scroll to the bottom of the tags container and wait for scroll to settle
+    value_container.evaluate("el => { el.scrollTop = el.scrollHeight; }")
+    wait_until(app, lambda: value_container.evaluate("el => el.scrollTop") > 0)
+
+    # Get initial scroll position (should be > 0 since there are many items)
+    initial_scroll = value_container.evaluate("el => el.scrollTop")
+    assert initial_scroll > 0
+
+    # Remove the last tag ("forty") which is visible at the bottom scroll position.
+    # Using the last tag avoids Playwright's auto-scroll-into-view changing scrollTop
+    # before the click handler fires.
+    remove_from_multiselect(app, "multiselect 17 - show maxHeight", "forty")
+
+    # Verify scroll position is preserved (or clamped to the new max if content shrank).
+    # The scroll restore happens in a rAF callback, so use wait_until.
+    wait_until(
+        app,
+        lambda: (
+            abs(
+                value_container.evaluate("el => el.scrollTop")
+                - min(
+                    initial_scroll,
+                    value_container.evaluate("el => el.scrollHeight - el.clientHeight"),
+                )
+            )
+            <= 1
+        ),
+    )
+
+
+def test_multiselect_custom_objects_without_eq(app: Page):
+    """Test that custom class objects without __eq__ work correctly with format_func.
+
+    This tests the fix for https://github.com/streamlit/streamlit/issues/13646
+    where custom objects without __eq__ would have their selections cleared
+    after script reruns because the validation used identity comparison after
+    deepcopy created new instances.
+    """
+    # Get the multiselect with custom objects
+    multiselect_elem = get_multiselect(app, "multiselect 20 - custom objects")
+
+    # Initial state - no selections
+    expect_text(app, "value 20: []")
+
+    # Select first option "Option A"
+    select_for_multiselect(app, "multiselect 20 - custom objects", "Option A", True)
+
+    # Verify selection is preserved after the script rerun
+    # This is the key test - without the fix, the selection would be cleared
+    # because deepcopy creates new object instances and the validation used
+    # identity comparison (==) which fails for objects without __eq__
+    expect_text(app, "value 20: ['opt_a']")
+
+    # Verify the selection is visible in the UI
+    expect(
+        multiselect_elem.get_by_role("button", name=re.compile(r"^Remove "))
+    ).to_have_count(1)
+    expect(multiselect_elem.locator('span[title="Option A"]')).to_be_visible()
+
+    # Select another option to verify multiple selections work
+    select_for_multiselect(app, "multiselect 20 - custom objects", "Option B", True)
+    expect_text(app, "value 20: ['opt_a', 'opt_b']")
+
+    # Verify both selections are visible
+    expect(
+        multiselect_elem.get_by_role("button", name=re.compile(r"^Remove "))
+    ).to_have_count(2)
+
+
+def test_multiselect_prefix_filter_mode_matches_prefix_only(app: Page):
+    """Test that prefix mode only shows prefix matches and keeps bulk actions in sync."""
+    input_elem = _get_multiselect_input(app, "multiselect 21 (filter_mode='prefix')")
+    input_elem.click()
+    input_elem.type("A123")
+
+    options = app.get_by_role("option")
+    expect(options).to_have_count(3)
+    expect(options.nth(0)).to_have_text("Select 2 matches")
+    expect(options.nth(1)).to_have_text("A123")
+    expect(options.nth(2)).to_have_text("A1234")
+    expect(app.get_by_role("option", name="BA123", exact=True)).to_have_count(0)
+
+
+def test_multiselect_contains_filter_mode_matches_substrings(app: Page):
+    """Test that contains mode matches case-insensitive substrings without reordering."""
+    input_elem = _get_multiselect_input(app, "multiselect 22 (filter_mode='contains')")
+    input_elem.click()
+    input_elem.type("AP")
+
+    options = app.get_by_role("option")
+    expect(options).to_have_count(3)
+    expect(options.nth(0)).to_have_text("Select 2 matches")
+    expect(options.nth(1)).to_have_text("apple")
+    expect(options.nth(2)).to_have_text("grape")
+    expect(app.get_by_role("option", name="banana", exact=True)).to_have_count(0)
+
+
+def test_multiselect_filter_mode_none_disables_typing_but_keeps_selection(app: Page):
+    """Test that filter_mode=None keeps typing disabled while leaving selection enabled."""
+    ms = get_multiselect(app, "multiselect 23 (filter_mode=None)")
+    input_elem = ms.locator("input").first
+    expect(input_elem).to_have_attribute("inputmode", "none")
+    expect(input_elem).not_to_have_attribute("readonly", "")
+
+    ms.scroll_into_view_if_needed()
+    input_elem.click()
+    options = app.get_by_role("option")
+    expect(options).to_have_count(4)
+    expect(options.nth(0)).to_have_text("Select all")
+
+    app.get_by_role("option", name="No", exact=True).click()
+    wait_for_app_run(app)
+    expect_text(app, "value 23: ['No']")
+
+
+# --- Query parameter binding tests ---
+
+
+def test_multiselect_query_param_seeding(page: Page, app_base_url: str):
+    """Test that multiselect value can be seeded from URL query params."""
+    page.goto(build_app_url(app_base_url, query={"bound_multi": "Red"}))
+    wait_for_app_loaded(page)
+
+    expect_text(page, "bound_multi: ['Red']")
+    expect(page).to_have_url(re.compile(r"\?bound_multi=Red"))
+    # Negative assertion: other bound widgets should not be affected
+    expect(page).not_to_have_url(re.compile(r"bound_multi_default="))
+    expect(page).not_to_have_url(re.compile(r"bound_multi_fmt="))
+
+
+def test_multiselect_query_param_seeding_multiple(page: Page, app_base_url: str):
+    """Test that multiple values can be seeded via repeated params."""
+    page.goto(build_app_url(app_base_url, query={"bound_multi": ["Red", "Blue"]}))
+    wait_for_app_loaded(page)
+
+    expect_text(page, "bound_multi: ['Red', 'Blue']")
+    expect(page).to_have_url(re.compile(r"bound_multi=Red&bound_multi=Blue"))
+
+
+def test_multiselect_query_param_updates_url(app: Page):
+    """Test that changing a bound multiselect updates the URL."""
+    select_for_multiselect(app, "Bound multiselect", "Red", True)
+    # Assert text first to confirm the rerun completed before checking the URL
+    expect_text(app, "bound_multi: ['Red']")
+    expect(app).to_have_url(re.compile(r"\?bound_multi=Red"), timeout=10_000)
+
+    # Add a second selection
+    select_for_multiselect(app, "Bound multiselect", "Blue", True)
+    expect_text(app, "bound_multi: ['Red', 'Blue']")
+    expect(app).to_have_url(
+        re.compile(r"bound_multi=Red&bound_multi=Blue"), timeout=10_000
+    )
+
+
+def test_multiselect_query_param_default_override(page: Page, app_base_url: str):
+    """Test multiselect with query param: seed then revert to default clears param."""
+    page.goto(
+        build_app_url(app_base_url, query={"bound_multi_default": ["Yellow", "Blue"]})
+    )
+    wait_for_app_loaded(page)
+
+    expect_text(page, "bound_multi_default: ['Yellow', 'Blue']")
+    expect(page).to_have_url(re.compile(r"bound_multi_default="))
+
+    # Clear and set back to default ["Red", "Green"]
+    ms_default = get_multiselect(page, "Bound multiselect with default")
+    ms_default.scroll_into_view_if_needed()
+    ms_default.locator('button[aria-label="Clear all"]').first.click()
+    wait_for_app_run(page)
+    select_for_multiselect(page, "Bound multiselect with default", "Red", True)
+    select_for_multiselect(page, "Bound multiselect with default", "Green", True)
+
+    # Default values should not appear in URL
+    expect(page).not_to_have_url(re.compile(r"bound_multi_default="))
+    expect_text(page, "bound_multi_default: ['Red', 'Green']")
+
+
+def test_multiselect_query_param_invalid_values_filtered(page: Page, app_base_url: str):
+    """Test that invalid URL values are filtered out, keeping only valid ones."""
+    page.goto(
+        build_app_url(app_base_url, query={"bound_multi": ["Red", "Invalid", "Blue"]})
+    )
+    wait_for_app_loaded(page)
+
+    # Only valid options should be seeded
+    expect_text(page, "bound_multi: ['Red', 'Blue']")
+    # URL should be auto-corrected to remove invalid value
+    expect(page).to_have_url(re.compile(r"bound_multi=Red&bound_multi=Blue"))
+    expect(page).not_to_have_url(re.compile(r"Invalid"))
+    # Negative assertion: other bound widgets should not be affected
+    expect(page).not_to_have_url(re.compile(r"bound_multi_default="))
+
+
+def test_multiselect_query_param_all_invalid_cleared(page: Page, app_base_url: str):
+    """Test that all-invalid URL values clear the URL param entirely."""
+    page.goto(
+        build_app_url(app_base_url, query={"bound_multi": ["Invalid1", "Invalid2"]})
+    )
+    wait_for_app_loaded(page)
+
+    # Widget should show default (empty)
+    expect_text(page, "bound_multi: []")
+    # URL param should be cleared
+    expect(page).not_to_have_url(re.compile(r"bound_multi="))
+
+
+def test_multiselect_query_param_format_func(page: Page, app_base_url: str):
+    """Test that formatted option strings work in URL."""
+    # The format_func is str.upper, so options in URL are "CAT", "DOG", "BIRD"
+    page.goto(build_app_url(app_base_url, query={"bound_multi_fmt": ["DOG", "BIRD"]}))
+    wait_for_app_loaded(page)
+
+    expect_text(page, "bound_multi_fmt: ['dog', 'bird']")
+    expect(page).to_have_url(re.compile(r"bound_multi_fmt=DOG&bound_multi_fmt=BIRD"))
+
+
+def test_multiselect_query_param_empty_value_clears_when_default_is_empty(
+    page: Page, app_base_url: str
+):
+    """Test that empty URL param on a widget with no default clears the URL."""
+    # bound_multi has no default, so default is []. Empty URL → [] == default → clear.
+    page.goto(build_app_url(app_base_url, query={"bound_multi": ""}))
+    wait_for_app_loaded(page)
+
+    expect_text(page, "bound_multi: []")
+    # URL param should be cleared because [] matches the default
+    expect(page).not_to_have_url(re.compile(r"bound_multi="))
+
+
+def test_multiselect_query_param_empty_value_overrides_nonempty_default(
+    page: Page, app_base_url: str
+):
+    """Test that empty URL param overrides a non-empty default to []."""
+    # bound_multi_default has default=["Red", "Green"]. Empty URL → [] != default → keep.
+    page.goto(build_app_url(app_base_url, query={"bound_multi_default": ""}))
+    wait_for_app_loaded(page)
+
+    # Widget should show [] (empty overrides the default)
+    expect_text(page, "bound_multi_default: []")
+    # URL param should persist because [] is not the default for this widget
+    expect(page).to_have_url(re.compile(r"bound_multi_default="))
+
+
+def test_multiselect_query_param_max_selections_truncates(
+    page: Page, app_base_url: str
+):
+    """Test that URL values exceeding max_selections are truncated."""
+    # max_selections=2, but we seed 3 values
+    page.goto(
+        build_app_url(
+            app_base_url,
+            query={"bound_multi_max": ["Red", "Green", "Blue"]},
+        )
+    )
+    wait_for_app_loaded(page)
+
+    # Only the first 2 should be kept
+    expect_text(page, "bound_multi_max: ['Red', 'Green']")
+    # URL should be auto-corrected to only contain the truncated values
+    expect(page).to_have_url(re.compile(r"bound_multi_max=Red&bound_multi_max=Green"))
+    expect(page).not_to_have_url(re.compile(r"bound_multi_max=Blue"))
+
+
+def test_multiselect_query_param_max_selections_within_limit(
+    page: Page, app_base_url: str
+):
+    """Test that URL values within max_selections pass through unchanged."""
+    # max_selections=2, seed exactly 2 values
+    page.goto(
+        build_app_url(
+            app_base_url,
+            query={"bound_multi_max": ["Red", "Blue"]},
+        )
+    )
+    wait_for_app_loaded(page)
+
+    expect_text(page, "bound_multi_max: ['Red', 'Blue']")
+    expect(page).to_have_url(re.compile(r"bound_multi_max=Red&bound_multi_max=Blue"))
+
+
+def test_multiselect_query_param_accept_new_options(page: Page, app_base_url: str):
+    """Test that novel URL values are accepted when accept_new_options is True."""
+    # "Purple" is not in the original options list
+    page.goto(
+        build_app_url(
+            app_base_url,
+            query={"bound_multi_new": ["Red", "Purple"]},
+        )
+    )
+    wait_for_app_loaded(page)
+
+    # Both values should be accepted (no filtering)
+    expect_text(page, "bound_multi_new: ['Red', 'Purple']")
+    expect(page).to_have_url(re.compile(r"bound_multi_new=Red&bound_multi_new=Purple"))
+
+
+def test_multiselect_query_param_duplicate_values_deduplicated(
+    page: Page, app_base_url: str
+):
+    """Test that duplicate URL values are deduplicated."""
+    page.goto(
+        build_app_url(
+            app_base_url,
+            query={"bound_multi": ["Red", "Blue", "Red"]},
+        )
+    )
+    wait_for_app_loaded(page)
+
+    # Duplicate "Red" should be removed, keeping first occurrence
+    expect_text(page, "bound_multi: ['Red', 'Blue']")
+    # URL should be auto-corrected to remove the duplicate
+    expect(page).to_have_url(re.compile(r"bound_multi=Red&bound_multi=Blue"))
+    expect(page).not_to_have_url(
+        re.compile(r"bound_multi=Red&bound_multi=Blue&bound_multi=Red")
+    )
+
+
+def test_multiselect_selected_tags_have_working_tooltips(app: Page):
+    """Test that selected tags have working native tooltips (issue #14351).
+
+    The title attribute enables the browser's native tooltip to show when hovering
+    over selected options, which is especially helpful for truncated long values.
+    This requires both the title attribute AND pointer-events: auto on the text span.
+    """
+    # Get multiselect 4 which has default selections: ["tea", "water"]
+    ms = get_multiselect(app, "multiselect 4")
+
+    # Verify tags have title attributes set to their option values
+    tea_tag = ms.locator('span[title="tea"]')
+    water_tag = ms.locator('span[title="water"]')
+
+    expect(tea_tag).to_be_visible()
+    expect(water_tag).to_be_visible()
+
+    # Verify the title attributes have correct values
+    expect(tea_tag).to_have_attribute("title", "tea")
+    expect(water_tag).to_have_attribute("title", "water")
+
+    # Verify pointer-events is "auto" so the native tooltip can appear on hover
+    # (the fix for issue #14351 re-enabled pointer-events on the text span)
+    tea_pointer_events = tea_tag.evaluate(
+        "el => window.getComputedStyle(el).pointerEvents"
+    )
+    assert tea_pointer_events == "auto", (
+        f"Expected pointer-events: auto, got: {tea_pointer_events}"
+    )
+
+    water_pointer_events = water_tag.evaluate(
+        "el => window.getComputedStyle(el).pointerEvents"
+    )
+    assert water_pointer_events == "auto", (
+        f"Expected pointer-events: auto, got: {water_pointer_events}"
     )

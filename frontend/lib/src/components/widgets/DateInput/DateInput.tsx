@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,420 +14,419 @@
  * limitations under the License.
  */
 
-import React from "react"
-import moment from "moment"
-import { withTheme } from "@emotion/react"
-import { Datepicker as UIDatePicker, DENSITY } from "baseui/datepicker"
-import { PLACEMENT } from "baseui/popover"
-import { DateInput as DateInputProto } from "@streamlit/lib/src/proto"
-import { FormClearHelper } from "@streamlit/lib/src/components/widgets/Form"
 import {
-  WidgetStateManager,
-  Source,
-} from "@streamlit/lib/src/WidgetStateManager"
-import {
-  WidgetLabel,
-  StyledWidgetLabelHelp,
-} from "@streamlit/lib/src/components/widgets/BaseWidget"
-import { EmotionTheme } from "@streamlit/lib/src/theme"
-import TooltipIcon from "@streamlit/lib/src/components/shared/TooltipIcon"
-import { Placement } from "@streamlit/lib/src/components/shared/Tooltip"
+  memo,
+  ReactElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react"
 
-import { labelVisibilityProtoValueToEnum } from "@streamlit/lib/src/util/utils"
+import { CalendarDate, getLocalTimeZone, today } from "@internationalized/date"
+
+import { DateInput as DateInputProto } from "@streamlit/protobuf"
+
+import IsSidebarContext from "~lib/components/core/IsSidebarContext"
+import { LibConfigContext } from "~lib/components/core/LibConfigContext"
+import { WidgetLabel } from "~lib/components/widgets/BaseWidget/WidgetLabel"
+import { WidgetLabelHelpIcon } from "~lib/components/widgets/BaseWidget/WidgetLabelHelpIcon"
+import {
+  useBasicWidgetState,
+  ValueWithSource,
+} from "~lib/hooks/useBasicWidgetState"
+import { isInForm, labelVisibilityProtoValueToEnum } from "~lib/util/utils"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import {
+  calendarDateToIso,
+  createDateErrorMessage,
+  DateValidationErrorType,
+  formatCalendarDate,
+  getInitialFocusedDate,
+  getMaxDate as getMaxCalendarDate,
+  getMinDate,
+  isOlderThanTwoYears,
+  isoToCalendarDate,
+  normalizeRangeOrder,
+  validateDate,
+} from "./dateInputUtils"
+import RangeDateInput from "./RangeDateInput"
+import SingleDateInput from "./SingleDateInput"
 
 export interface Props {
   disabled: boolean
   element: DateInputProto
-  theme: EmotionTheme
   widgetMgr: WidgetStateManager
-  width: number
   fragmentId?: string
 }
 
-interface State {
+function DateInput({
+  disabled,
+  element,
+  widgetMgr,
+  fragmentId,
+}: Props): ReactElement {
+  const isInSidebar = useContext(IsSidebarContext)
+  const [error, setError] = useState<string | null>(null)
+  // Incremented on form clear to signal child components to reset local
+  // display state (which may have diverged from widget state due to buffering).
+  const [formResetKey, setFormResetKey] = useState(0)
+
+  const resetError = useCallback(() => {
+    setError(null)
+  }, [])
+
+  const handleFormCleared = useCallback(() => {
+    resetError()
+    setFormResetKey(k => k + 1)
+  }, [resetError])
+
   /**
    * An array with start and end date specified by the user via the UI. If the user
    * didn't touch this widget's UI, the default value is used. End date is optional.
+   *
+   * Canonical state is the ISO 8601 wire format directly (`string[]`).
    */
-  values: Date[]
-  /**
-   * Boolean to toggle between single-date picker and range date picker.
-   */
-  isRange: boolean
-  isEmpty: boolean
-}
-
-// Date format for communication (protobuf) support
-const DATE_FORMAT = "YYYY/MM/DD"
-
-/** Convert an array of strings to an array of dates. */
-function stringsToDates(strings: string[]): Date[] {
-  return strings.map(val => new Date(val))
-}
-
-/** Convert an array of dates to an array of strings. */
-function datesToStrings(dates: Date[]): string[] {
-  if (!dates) {
-    return []
-  }
-  return dates.map((value: Date) => moment(value as Date).format(DATE_FORMAT))
-}
-
-class DateInput extends React.PureComponent<Props, State> {
-  private readonly formClearHelper = new FormClearHelper()
-
-  public state: State = {
-    values: this.initialValue,
-    isRange: this.props.element.isRange,
-    isEmpty: false,
-  }
-
-  get initialValue(): Date[] {
-    // If WidgetStateManager knew a value for this widget, initialize to that.
-    // Otherwise, use the default value from the widget protobuf.
-    const storedValue = this.props.widgetMgr.getStringArrayValue(
-      this.props.element
-    )
-    const stringArray =
-      storedValue !== undefined
-        ? storedValue
-        : this.props.element.default || []
-    return stringsToDates(stringArray)
-  }
-
-  public componentDidMount(): void {
-    if (this.props.element.setValue) {
-      this.updateFromProtobuf()
-    } else {
-      this.commitWidgetValue({ fromUi: false })
-    }
-  }
-
-  public componentDidUpdate(): void {
-    this.maybeUpdateFromProtobuf()
-  }
-
-  public componentWillUnmount(): void {
-    this.formClearHelper.disconnect()
-  }
-
-  private maybeUpdateFromProtobuf(): void {
-    const { setValue } = this.props.element
-    if (setValue) {
-      this.updateFromProtobuf()
-    }
-  }
-
-  private updateFromProtobuf(): void {
-    const { value: values } = this.props.element
-    this.props.element.setValue = false
-    const dateValues = values.map((v: string) => new Date(v))
-    this.setState(
-      {
-        values: dateValues,
-        isEmpty: !dateValues,
-      },
-      () => {
-        this.commitWidgetValue({ fromUi: false })
+  const queryParamBinding = element.queryParamKey
+    ? {
+        paramKey: element.queryParamKey,
+        valueType: "string_array_value" as const,
+        clearable: element.default.length === 0,
+        urlFormat: element.isRange ? ("repeated" as const) : undefined,
       }
-    )
-  }
+    : undefined
 
-  /** Commit state.value to the WidgetStateManager. */
-  private commitWidgetValue = (source: Source): void => {
-    const { widgetMgr, element, fragmentId } = this.props
+  const [value, setValueWithSource] = useBasicWidgetState<
+    string[],
+    DateInputProto
+  >({
+    getStateFromWidgetMgr,
+    getDefaultStateFromProto,
+    getCurrStateFromProto,
+    updateWidgetMgrState,
+    element,
+    widgetMgr,
+    fragmentId,
+    queryParamBinding,
+    formClearBehavior: "resetValueAndRunCallback",
+    onFormCleared: handleFormCleared,
+  })
+
+  const { locale } = useContext(LibConfigContext)
+
+  const minDateCalendar = useMemo(() => getMinDate(element), [element])
+  const maxDateCalendar = useMemo(() => getMaxCalendarDate(element), [element])
+
+  // Lifted here so both SingleDateInput and RangeDateInput share the same
+  // visible-month. Seeded with a concrete date so it stays controlled for
+  // the component's entire lifetime (see getInitialFocusedDate).
+  const [focusedValue, setFocusedValue] = useState<CalendarDate>(() =>
+    getInitialFocusedDate(value, minDateCalendar)
+  )
+
+  const enableQuickSelect = useMemo(() => {
+    if (!element.isRange) {
+      return false
+    }
+
+    return isOlderThanTwoYears(minDateCalendar)
+  }, [element.isRange, minDateCalendar])
+
+  const clearable = element.default.length === 0 && !disabled
+
+  const minDateString = useMemo(
+    () => formatCalendarDate(minDateCalendar, element.format),
+    [minDateCalendar, element.format]
+  )
+
+  const maxDateString = useMemo(
+    () =>
+      maxDateCalendar
+        ? formatCalendarDate(maxDateCalendar, element.format)
+        : "",
+    [maxDateCalendar, element.format]
+  )
+
+  const buildErrorMessage = useCallback(
+    (errorType: DateValidationErrorType): string | null =>
+      createDateErrorMessage(
+        errorType,
+        element.isRange,
+        minDateString,
+        maxDateString
+      ),
+    [element.isRange, minDateString, maxDateString]
+  )
+
+  // Single mode's change handler (fed by SingleDateInput's CalendarDate).
+  const handleSingleChange = useCallback(
+    (date: CalendarDate | null): void => {
+      resetError()
+
+      if (!date) {
+        setValueWithSource({ value: [], fromUi: true })
+        return
+      }
+
+      const errorType = validateDate(date, minDateCalendar, maxDateCalendar)
+      if (errorType) {
+        setError(buildErrorMessage(errorType))
+        return
+      }
+      setValueWithSource({ value: [calendarDateToIso(date)], fromUi: true })
+    },
+    [
+      buildErrorMessage,
+      maxDateCalendar,
+      minDateCalendar,
+      resetError,
+      setError,
+      setValueWithSource,
+    ]
+  )
+
+  // Real-time validation during segment editing — shows error tooltip
+  // without committing the value to widget state.
+  const handleValidate = useCallback(
+    (date: CalendarDate | null): void => {
+      resetError()
+      if (!date) return
+      const errorType = validateDate(date, minDateCalendar, maxDateCalendar)
+      if (errorType) {
+        setError(buildErrorMessage(errorType))
+      }
+    },
+    [buildErrorMessage, maxDateCalendar, minDateCalendar, resetError, setError]
+  )
+
+  // Range mode's change handler — validates each date independently.
+  const handleRangeChange = useCallback(
+    (dates: CalendarDate[]): void => {
+      resetError()
+
+      if (dates.length === 0) {
+        setValueWithSource({ value: [], fromUi: true })
+        return
+      }
+
+      let errorType: DateValidationErrorType = null
+      const newIsoDates: string[] = []
+      dates.forEach(d => {
+        const err = validateDate(d, minDateCalendar, maxDateCalendar)
+        if (err) errorType = err
+        newIsoDates.push(calendarDateToIso(d))
+      })
+
+      if (errorType) {
+        setError(buildErrorMessage(errorType))
+        return
+      }
+      setValueWithSource({
+        value: normalizeRangeOrder(newIsoDates),
+        fromUi: true,
+      })
+    },
+    [
+      buildErrorMessage,
+      maxDateCalendar,
+      minDateCalendar,
+      resetError,
+      setError,
+      setValueWithSource,
+    ]
+  )
+
+  // Revert to last committed value on close when segments still show
+  // placeholders (partially typed, or fully cleared on a non-clearable widget).
+  // The display revert is handled by SingleDateInput/RangeDateInput locally;
+  // here we only clear the validation error. No setValueWithSource needed
+  // because the committed value never changed (edits were buffered locally).
+  const handleClose = useCallback(
+    (hasPlaceholderSegments?: boolean): void => {
+      if (!hasPlaceholderSegments) {
+        return
+      }
+      resetError()
+    },
+    [resetError]
+  )
+
+  // Synchronous WidgetStateManager write for form-submit races: clicking a
+  // form's Submit button causes blur before effects fire. The child's blur
+  // handler calls onChange (async state update) + formCommit (sync WM write).
+  const inForm = isInForm({ formId: element.formId })
+  const handleFormCommit = useCallback(
+    (date: CalendarDate | null): void => {
+      if (!inForm) return
+      const isoValue = date ? [calendarDateToIso(date)] : []
+      updateWidgetMgrState(
+        element,
+        widgetMgr,
+        { value: isoValue, fromUi: true },
+        fragmentId
+      )
+    },
+    [inForm, element, widgetMgr, fragmentId]
+  )
+
+  const handleRangeFormCommit = useCallback(
+    (dates: CalendarDate[]): void => {
+      if (!inForm) return
+      updateWidgetMgrState(
+        element,
+        widgetMgr,
+        {
+          value: normalizeRangeOrder(dates.map(calendarDateToIso)),
+          fromUi: true,
+        },
+        fragmentId
+      )
+    },
+    [inForm, element, widgetMgr, fragmentId]
+  )
+
+  const singleValue = useMemo(
+    () => isoToCalendarDate(value[0] ?? "") ?? null,
+    [value]
+  )
+  const rangeStartValue = useMemo(
+    () => isoToCalendarDate(value[0] ?? "") ?? null,
+    [value]
+  )
+  const rangeEndValue = useMemo(
+    () => isoToCalendarDate(value[1] ?? "") ?? null,
+    [value]
+  )
+
+  // Sync the calendar's visible month when the committed value changes
+  // externally (session_state update, form clear, calendar click commit).
+  // During segment typing, SingleDateInput drives focusedValue directly
+  // via its onFocusChange prop without waiting for a commit.
+  useEffect(() => {
+    if (element.isRange) return
+    if (singleValue) {
+      setFocusedValue(singleValue)
+    } else {
+      // After clear: reset to today (clamped to minDate) so the calendar
+      // shows a sensible month instead of the stale previous value.
+      const now = today(getLocalTimeZone())
+      setFocusedValue(now.compare(minDateCalendar) < 0 ? minDateCalendar : now)
+    }
+  }, [element.isRange, singleValue, minDateCalendar])
+
+  useEffect(() => {
+    if (!element.isRange) return
+    if (rangeStartValue) {
+      setFocusedValue(rangeStartValue)
+    } else {
+      const now = today(getLocalTimeZone())
+      setFocusedValue(now.compare(minDateCalendar) < 0 ? minDateCalendar : now)
+    }
+  }, [element.isRange, rangeStartValue, minDateCalendar])
+
+  return (
+    <div className="stDateInput" data-testid="stDateInput">
+      <WidgetLabel
+        label={element.label}
+        disabled={disabled}
+        labelVisibility={labelVisibilityProtoValueToEnum(
+          element.labelVisibility?.value
+        )}
+      >
+        {element.help && (
+          <WidgetLabelHelpIcon content={element.help} label={element.label} />
+        )}
+      </WidgetLabel>
+      {element.isRange ? (
+        <RangeDateInput
+          startValue={rangeStartValue}
+          endValue={rangeEndValue}
+          onChange={handleRangeChange}
+          minDate={minDateCalendar}
+          maxDate={maxDateCalendar}
+          format={element.format}
+          disabled={disabled}
+          clearable={clearable}
+          label={element.label}
+          error={error}
+          locale={locale}
+          isInSidebar={isInSidebar}
+          enableQuickSelect={enableQuickSelect}
+          focusedValue={focusedValue}
+          onFocusChange={setFocusedValue}
+          onValidate={handleValidate}
+          onClose={handleClose}
+          formCommit={inForm ? handleRangeFormCommit : undefined}
+          formResetKey={formResetKey}
+        />
+      ) : (
+        <SingleDateInput
+          value={singleValue}
+          onChange={handleSingleChange}
+          minDate={minDateCalendar}
+          maxDate={maxDateCalendar}
+          format={element.format}
+          disabled={disabled}
+          clearable={clearable}
+          label={element.label}
+          error={error}
+          locale={locale}
+          isInSidebar={isInSidebar}
+          focusedValue={focusedValue}
+          onFocusChange={setFocusedValue}
+          onValidate={handleValidate}
+          onClose={handleClose}
+          formCommit={inForm ? handleFormCommit : undefined}
+          formResetKey={formResetKey}
+        />
+      )}
+    </div>
+  )
+}
+
+function getStateFromWidgetMgr(
+  widgetMgr: WidgetStateManager,
+  element: DateInputProto
+): string[] | undefined {
+  return widgetMgr.getStringArrayValue(element)
+}
+
+function getDefaultStateFromProto(element: DateInputProto): string[] {
+  return element.default ?? []
+}
+
+function getCurrStateFromProto(element: DateInputProto): string[] {
+  return element.value ?? []
+}
+
+function updateWidgetMgrState(
+  element: DateInputProto,
+  widgetMgr: WidgetStateManager,
+  vws: ValueWithSource<string[]>,
+  fragmentId: string | undefined
+): void {
+  const minDate = getMinDate(element)
+  const maxDate = getMaxCalendarDate(element)
+
+  // Guard: invalid values must never reach the backend. This catches
+  // out-of-range dates and unparsable ISO strings (e.g. malformed
+  // query-param seeds). Empty arrays are valid (cleared input).
+  const isValid = (vws.value || []).every(iso => {
+    const calendarDate = isoToCalendarDate(iso)
+    if (!calendarDate) return false
+    return !validateDate(calendarDate, minDate, maxDate)
+  })
+
+  if (isValid) {
     widgetMgr.setStringArrayValue(
       element,
-      datesToStrings(this.state.values),
-      source,
+      vws.value,
+      { fromUi: vws.fromUi },
       fragmentId
     )
   }
-
-  /**
-   * If we're part of a clear_on_submit form, this will be called when our
-   * form is submitted. Restore our default value and update the WidgetManager.
-   */
-  private onFormCleared = (): void => {
-    const defaultValue = stringsToDates(this.props.element.default)
-    this.setState(
-      {
-        values: defaultValue,
-        isEmpty: !defaultValue,
-      },
-      () => this.commitWidgetValue({ fromUi: true })
-    )
-  }
-
-  private handleChange = ({
-    date,
-  }: {
-    date: Date | (Date | null | undefined)[] | null | undefined
-  }): void => {
-    if (date === null || date === undefined) {
-      this.setState({
-        values: [],
-        isEmpty: true,
-      })
-      return
-    }
-
-    const values: Date[] = []
-    if (Array.isArray(date)) {
-      date.forEach((dt: Date | null | undefined) => {
-        if (dt) {
-          values.push(dt)
-        }
-      })
-    } else {
-      values.push(date)
-    }
-
-    this.setState(
-      {
-        values,
-        isEmpty: !values,
-      },
-      () => {
-        if (!this.state.isEmpty) this.commitWidgetValue({ fromUi: true })
-      }
-    )
-  }
-
-  private handleClose = (): void => {
-    const { isEmpty } = this.state
-    if (isEmpty) {
-      this.setState(
-        (_, prevProps) => {
-          return {
-            values: stringsToDates(prevProps.element.default),
-            isEmpty: !stringsToDates(prevProps.element.default),
-          }
-        },
-        () => {
-          this.commitWidgetValue({ fromUi: true })
-        }
-      )
-    }
-  }
-
-  private getMaxDate = (): Date | undefined => {
-    const { element } = this.props
-    const maxDate = element.max
-
-    return maxDate && maxDate.length > 0
-      ? moment(maxDate, DATE_FORMAT).toDate()
-      : undefined
-  }
-
-  public render(): React.ReactNode {
-    const { width, element, disabled, theme, widgetMgr } = this.props
-    const { values, isRange } = this.state
-    const { colors, fontSizes, lineHeights } = theme
-
-    const style = { width }
-    const minDate = moment(element.min, DATE_FORMAT).toDate()
-    const maxDate = this.getMaxDate()
-    const clearable = element.default.length === 0 && !disabled
-
-    // We need to extract the mask and format (date-fns notation) from the provided format string
-    // The user configured date format is based on the momentJS notation and is only allowed to contain
-    // one of YYYY/MM/DD, DD/MM/YYYY, or MM/DD/YYYY" and can also use a period (.) or hyphen (-) as separators.
-
-    // We need to convert the provided format into a mask supported by the Baseweb datepicker
-    // Thereby, we need to replace all letters with 9s which refers to any number.
-    const dateMask = element.format.replaceAll(/[a-zA-Z]/g, "9")
-    // The Baseweb datepicker supports the date-fns notation for date formatting which is
-    // slightly different from the momentJS notation. Therefore, we need to
-    // convert the provided format into the date-fns notation:
-    const dateFormat = element.format.replaceAll("Y", "y").replaceAll("D", "d")
-
-    // Manage our form-clear event handler.
-    this.formClearHelper.manageFormClearListener(
-      widgetMgr,
-      element.formId,
-      this.onFormCleared
-    )
-
-    return (
-      <div className="stDateInput" style={style} data-testid="stDateInput">
-        <WidgetLabel
-          label={element.label}
-          disabled={disabled}
-          labelVisibility={labelVisibilityProtoValueToEnum(
-            element.labelVisibility?.value
-          )}
-        >
-          {element.help && (
-            <StyledWidgetLabelHelp>
-              <TooltipIcon
-                content={element.help}
-                placement={Placement.TOP_RIGHT}
-              />
-            </StyledWidgetLabelHelp>
-          )}
-        </WidgetLabel>
-        <UIDatePicker
-          density={DENSITY.high}
-          formatString={dateFormat}
-          mask={isRange ? `${dateMask} – ${dateMask}` : dateMask}
-          placeholder={
-            isRange ? `${element.format} – ${element.format}` : element.format
-          }
-          disabled={disabled}
-          onChange={this.handleChange}
-          onClose={this.handleClose}
-          overrides={{
-            Popover: {
-              props: {
-                placement: PLACEMENT.bottomLeft,
-                overrides: {
-                  Body: {
-                    style: {
-                      border: `1px solid ${colors.fadedText10}`,
-                    },
-                  },
-                },
-              },
-            },
-            CalendarContainer: {
-              style: {
-                fontSize: fontSizes.sm,
-                paddingRight: theme.spacing.sm,
-                paddingLeft: theme.spacing.sm,
-                paddingBottom: theme.spacing.sm,
-                paddingTop: theme.spacing.sm,
-              },
-            },
-            Week: {
-              style: {
-                fontSize: fontSizes.sm,
-              },
-            },
-            Day: {
-              style: ({
-                // Due to a bug in BaseWeb, where the range selection defaults to mono300 and can't be changed, we need to override the background colors for all these shared props:
-                // $pseudoHighlighted: Styles the range selection when you click an initial date, and hover over the end one, but NOT click it.
-                // $pseudoSelected: Styles when a range was selected, click outide, and click the calendar again.
-                // $selected: Styles the background below the red circle from the start and end dates.
-                // $isHovered: Styles the background below the end date when hovered.
-                $pseudoHighlighted,
-                $pseudoSelected,
-                $selected,
-                $isHovered,
-              }) => ({
-                fontSize: fontSizes.sm,
-                lineHeight: lineHeights.base,
-
-                "::before": {
-                  backgroundColor:
-                    $selected ||
-                    $pseudoSelected ||
-                    $pseudoHighlighted ||
-                    $isHovered
-                      ? `${colors.secondaryBg} !important`
-                      : colors.transparent,
-                },
-
-                "::after": {
-                  borderColor: colors.transparent,
-                },
-              }),
-            },
-            PrevButton: {
-              style: () => ({
-                // Align icon to the center of the button.
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                // Remove primary-color click effect.
-                ":active": {
-                  backgroundColor: colors.transparent,
-                },
-                ":focus": {
-                  backgroundColor: colors.transparent,
-                  outline: 0,
-                },
-              }),
-            },
-            NextButton: {
-              style: {
-                // Align icon to the center of the button.
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                // Remove primary-color click effect.
-                ":active": {
-                  backgroundColor: colors.transparent,
-                },
-                ":focus": {
-                  backgroundColor: colors.transparent,
-                  outline: 0,
-                },
-              },
-            },
-            Input: {
-              props: {
-                // The default maskChar ` ` causes empty dates to display as ` / / `
-                // Clearing the maskChar so empty dates will not display
-                maskChar: null,
-
-                overrides: {
-                  Root: {
-                    style: {
-                      // Baseweb requires long-hand props, short-hand leads to weird bugs & warnings.
-                      borderLeftWidth: "1px",
-                      borderRightWidth: "1px",
-                      borderTopWidth: "1px",
-                      borderBottomWidth: "1px",
-                    },
-                  },
-                  ClearIcon: {
-                    props: {
-                      overrides: {
-                        Svg: {
-                          style: {
-                            color: theme.colors.darkGray,
-                            // Since the close icon is an SVG, and we can't control its viewbox nor its attributes,
-                            // Let's use a scale transform effect to make it bigger.
-                            // The width property only enlarges its bounding box, so it's easier to click.
-                            transform: "scale(1.41)",
-                            width: theme.spacing.twoXL,
-                            marginRight: "-8px",
-                            ":hover": {
-                              fill: theme.colors.bodyText,
-                            },
-                          },
-                        },
-                      },
-                    },
-                  },
-                  Input: {
-                    style: {
-                      // Baseweb requires long-hand props, short-hand leads to weird bugs & warnings.
-                      paddingRight: ".5rem",
-                      paddingLeft: ".5rem",
-                      paddingBottom: ".5rem",
-                      paddingTop: ".5rem",
-                      lineHeight: 1.4,
-                    },
-                    props: {
-                      "data-testid": "stDateInput-Input",
-                    },
-                  },
-                },
-              },
-            },
-          }}
-          value={values}
-          minDate={minDate}
-          maxDate={maxDate}
-          range={isRange}
-          clearable={clearable}
-        />
-      </div>
-    )
-  }
 }
 
-export default withTheme(DateInput)
+export default memo(DateInput)

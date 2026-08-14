@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,291 +14,263 @@
  * limitations under the License.
  */
 
-import React, { PureComponent, ReactNode } from "react"
-import { DeckGL } from "deck.gl"
-import JSON5 from "json5"
-import isEqual from "lodash/isEqual"
-import { MapContext, StaticMap, NavigationControl } from "react-map-gl"
-import { withTheme } from "@emotion/react"
-import {
-  hasLightBackgroundColor,
-  EmotionTheme,
-} from "@streamlit/lib/src/theme"
-// We don't have Typescript defs for these imports, which makes ESLint unhappy
-/* eslint-disable import/no-extraneous-dependencies */
-import {
-  colorBins,
-  colorCategories,
-  colorContinuous,
-  CartoLayer,
-} from "@deck.gl/carto"
-import * as layers from "@deck.gl/layers"
-import { JSONConverter } from "@deck.gl/json"
-import * as geoLayers from "@deck.gl/geo-layers"
-import * as aggregationLayers from "@deck.gl/aggregation-layers"
-import * as meshLayers from "@deck.gl/mesh-layers"
-/* eslint-enable */
+import { FC, memo, useCallback, useContext, useEffect, useState } from "react"
 
+import "./patchLumaCanvasContext"
+
+import { LayersList, PickingInfo } from "@deck.gl/core"
+import { DeckGL } from "@deck.gl/react"
+import { Close } from "@emotion-icons/material-outlined"
+import { registerLoaders } from "@loaders.gl/core"
 import { CSVLoader } from "@loaders.gl/csv"
 import { GLTFLoader } from "@loaders.gl/gltf"
-import { registerLoaders } from "@loaders.gl/core"
+import { MapContext, NavigationControl, StaticMap } from "react-map-gl"
 
-import { withFullScreenWrapper } from "@streamlit/lib/src/components/shared/FullScreenWrapper"
-import withMapboxToken from "./withMapboxToken"
+import { DeckGlJsonChart as DeckGlJsonChartProto } from "@streamlit/protobuf"
 
-import { DeckGlJsonChart as DeckGlJsonChartProto } from "@streamlit/lib/src/proto"
+import { LibConfigContext } from "~lib/components/core/LibConfigContext"
+import { ElementFullscreenContext } from "~lib/components/shared/ElementFullscreen/ElementFullscreenContext"
+import withFullScreenWrapper from "~lib/components/shared/FullScreenWrapper/withFullScreenWrapper"
+import Toolbar, { ToolbarAction } from "~lib/components/shared/Toolbar/Toolbar"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
+import { useRequiredContext } from "~lib/hooks/useRequiredContext"
+import { hasLightBackgroundColor } from "~lib/theme/getColors"
+import { assertNever } from "~lib/util/assertNever"
+
+import { MapBoxCss } from "./MapBoxCss"
 import {
   StyledDeckGlChart,
+  StyledMapContainer,
   StyledNavigationControlContainer,
 } from "./styled-components"
-
-import "mapbox-gl/dist/mapbox-gl.css"
-
-interface PickingInfo {
-  object: {
-    [key: string]: any
-  }
-}
-
-interface DeckObject {
-  initialViewState: {
-    height: number
-    width: number
-  }
-  layers: Record<string, unknown>[]
-  mapStyle?: string | Array<string>
-}
-
-const configuration = {
-  classes: {
-    ...layers,
-    ...aggregationLayers,
-    ...geoLayers,
-    ...meshLayers,
-    CartoLayer,
-  },
-  functions: {
-    colorBins,
-    colorCategories,
-    colorContinuous,
-  },
-}
+import type { DeckGlElementState, DeckGLProps } from "./types"
+import { EMPTY_STATE, useDeckGl } from "./useDeckGl"
 
 registerLoaders([CSVLoader, GLTFLoader])
 
-const jsonConverter = new JSONConverter({ configuration })
+const EMPTY_SELECTION = EMPTY_STATE.selection
 
-export interface DeckGLProps {
-  width: number
-  theme: EmotionTheme
-  mapboxToken: string
-  element: DeckGlJsonChartProto
-  isFullScreen?: boolean
-}
+const EMPTY_LAYERS: LayersList = []
 
-export interface PropsWithHeight extends DeckGLProps {
-  height?: number
-}
+export const DeckGlJsonChart: FC<DeckGLProps> = props => {
+  const {
+    disabled,
+    disableFullscreenMode,
+    element,
+    fragmentId,
+    heightConfig,
+    widgetMgr,
+    widthConfig,
+  } = props
+  const { mapboxToken: contextMapboxToken } = useContext(LibConfigContext)
+  const theme = useEmotionTheme()
+  const {
+    expanded: isFullScreen,
+    expand,
+    collapse,
+  } = useRequiredContext(ElementFullscreenContext)
 
-export interface State {
-  viewState: Record<string, unknown>
-  initialized: boolean
-  initialViewState: Record<string, unknown>
-  id: string | undefined
-  pydeckJson: any
-  isFullScreen: boolean
-  isLightTheme: boolean
-}
+  const isStretchHeight = !!heightConfig?.useStretch
 
-export const DEFAULT_DECK_GL_HEIGHT = 500
+  const {
+    createTooltip,
+    data: selection,
+    deck,
+    hasActiveSelection,
+    isSelectionModeActivated,
+    onViewStateChange,
+    selectionMode,
+    setSelection,
+    viewState,
+  } = useDeckGl({
+    element,
+    fragmentId,
+    isLightTheme: hasLightBackgroundColor(theme),
+    theme,
+    widgetMgr,
+    widthConfig,
+  })
 
-export class DeckGlJsonChart extends PureComponent<PropsWithHeight, State> {
-  readonly state = {
-    viewState: {
-      bearing: 0,
-      pitch: 0,
-      zoom: 11,
-    },
-    initialized: false,
-    initialViewState: {},
-    id: undefined,
-    pydeckJson: undefined,
-    isFullScreen: false,
-    isLightTheme: hasLightBackgroundColor(this.props.theme),
-  }
+  const mapboxToken = element.mapboxToken || contextMapboxToken
+  const usesMapbox =
+    deck.mapProvider == "mapbox" ||
+    (deck?.mapStyle && deck.mapStyle?.indexOf("mapbox") >= 0)
 
-  componentDidMount = (): void => {
+  const [isInitialized, setIsInitialized] = useState(false)
+
+  useEffect(() => {
     // HACK: Load layers a little after loading the map, to hack around a bug
     // where HexagonLayers were not drawing on first load but did load when the
     // script got re-executed.
-    this.setState({
-      initialized: true,
-    })
-  }
+    setIsInitialized(true)
+  }, [])
 
-  static getDerivedStateFromProps(
-    props: Readonly<PropsWithHeight>,
-    state: Partial<State>
-  ): Partial<State> | null {
-    const deck = DeckGlJsonChart.getDeckObject(props, state)
-
-    // If the ViewState on the server has changed, apply the diff to the current state
-    if (!isEqual(deck.initialViewState, state.initialViewState)) {
-      const diff = Object.keys(deck.initialViewState).reduce(
-        (diff, key): any => {
-          // @ts-expect-error
-          if (deck.initialViewState[key] === state.initialViewState[key]) {
-            return diff
-          }
-
-          return {
-            ...diff,
-            // @ts-expect-error
-            [key]: deck.initialViewState[key],
-          }
-        },
-        {}
-      )
-
-      return {
-        viewState: { ...state.viewState, ...diff },
-        initialViewState: deck.initialViewState,
+  const handleClick = useCallback(
+    (info: PickingInfo) => {
+      if (selectionMode === undefined) {
+        // Safety check
+        return
       }
-    }
 
-    return null
-  }
+      const { index, object } = info
 
-  static getDeckObject = (
-    props: PropsWithHeight,
-    state: Partial<State>
-  ): DeckObject => {
-    const { element, width, height, theme, isFullScreen } = props
+      const layerId = `${info.layer?.id || null}`
+      const currState = selection
+      /** true if a user clicked outside of any layer */
+      const isResetClick = index === -1
 
-    const currFullScreen = isFullScreen ?? false
-
-    // Only parse JSON when not transitioning to/from fullscreen, the element id changes, or theme changes
-    if (
-      element.id !== state.id ||
-      state.isFullScreen !== currFullScreen ||
-      state.isLightTheme !== hasLightBackgroundColor(theme)
-    ) {
-      state.pydeckJson = JSON5.parse(element.json)
-      state.id = element.id
-    }
-
-    // If unset, use either the Mapbox light or dark style based on Streamlit's theme
-    // For Mapbox styles, see https://docs.mapbox.com/api/maps/styles/#mapbox-styles
-    if (!state.pydeckJson?.mapStyle) {
-      state.pydeckJson.mapStyle = `mapbox://styles/mapbox/${
-        hasLightBackgroundColor(theme) ? "light" : "dark"
-      }-v9`
-    }
-
-    // Set width and height based on the fullscreen state
-    if (isFullScreen) {
-      Object.assign(state.pydeckJson?.initialViewState, { width, height })
-    } else {
-      if (!state.pydeckJson?.initialViewState?.height) {
-        state.pydeckJson.initialViewState.height = DEFAULT_DECK_GL_HEIGHT
-      }
-      if (element.useContainerWidth) {
-        state.pydeckJson.initialViewState.width = width
-      }
-    }
-
-    state.isFullScreen = isFullScreen
-    state.isLightTheme = hasLightBackgroundColor(theme)
-
-    delete state.pydeckJson?.views // We are not using views. This avoids a console warning.
-
-    return jsonConverter.convert(state.pydeckJson)
-  }
-
-  createTooltip = (info: PickingInfo): Record<string, unknown> | boolean => {
-    const { element } = this.props
-
-    if (!info || !info.object || !element.tooltip) {
-      return false
-    }
-
-    const tooltip = JSON5.parse(element.tooltip)
-
-    // NB: https://deckgl.readthedocs.io/en/latest/tooltip.html
-    if (tooltip.html) {
-      tooltip.html = this.interpolate(info, tooltip.html)
-    } else {
-      tooltip.text = this.interpolate(info, tooltip.text)
-    }
-
-    return tooltip
-  }
-
-  interpolate = (info: PickingInfo, body: string): string => {
-    const matchedVariables = body.match(/{(.*?)}/g)
-    if (matchedVariables) {
-      matchedVariables.forEach((match: string) => {
-        const variable = match.substring(1, match.length - 1)
-
-        if (info.object.hasOwnProperty(variable)) {
-          body = body.replace(match, info.object[variable])
-        } else if (
-          info.object.hasOwnProperty("properties") &&
-          info.object.properties.hasOwnProperty(variable)
-        ) {
-          body = body.replace(match, info.object.properties[variable])
+      const getSelection = (): DeckGlElementState["selection"] => {
+        if (isResetClick) {
+          return EMPTY_SELECTION
         }
+
+        switch (selectionMode) {
+          case DeckGlJsonChartProto.SelectionMode.SINGLE_OBJECT: {
+            if (currState.selection.indices[layerId]?.[0] === index) {
+              // Unselect the index
+              return EMPTY_SELECTION
+            }
+
+            return {
+              indices: { [`${layerId}`]: [index] },
+              objects: { [`${layerId}`]: [object] },
+            }
+          }
+          case DeckGlJsonChartProto.SelectionMode.MULTI_OBJECT: {
+            const selectionMap: Map<number, unknown> = new Map(
+              ((): [number, unknown][] => {
+                const indices = currState?.selection?.indices?.[layerId] || []
+
+                return indices.map((currIndex, i) => [
+                  currIndex,
+                  currState.selection?.objects?.[layerId]?.[i],
+                ])
+              })()
+            )
+
+            if (selectionMap.has(index)) {
+              // Unselect an existing index
+              selectionMap.delete(index)
+            } else {
+              // Add the newly selected index
+              selectionMap.set(index, object)
+            }
+
+            if (selectionMap.size === 0) {
+              // If the layer has nothing selected, remove the layer from the returned value
+              const { [layerId]: _, ...restIndices } =
+                currState.selection.indices
+              const { [layerId]: __, ...restObjects } =
+                currState.selection.objects
+
+              return {
+                indices: restIndices,
+                objects: restObjects,
+              }
+            }
+
+            return {
+              indices: {
+                ...currState.selection.indices,
+                [`${layerId}`]: Array.from(selectionMap.keys()),
+              },
+              objects: {
+                ...currState.selection.objects,
+                [`${layerId}`]: Array.from(selectionMap.values()),
+              },
+            }
+          }
+          default:
+            assertNever(selectionMode)
+            throw new Error("Invalid selection mode")
+        }
+      }
+
+      const newSelection = getSelection()
+
+      if (
+        JSON.stringify(newSelection) === JSON.stringify(currState.selection)
+      ) {
+        // If the new selection is the same as the current selection, do
+        // nothing, and do not trigger a re-run
+        return
+      }
+
+      setSelection({
+        fromUi: true,
+        value: { selection: newSelection },
       })
-    }
-    return body
-  }
+    },
+    [selectionMode, selection, setSelection]
+  )
 
-  onViewStateChange = ({ viewState }: State): void => {
-    this.setState({ viewState })
-  }
+  const handleClearSelectionClick = useCallback(() => {
+    setSelection({
+      value: { selection: EMPTY_SELECTION },
+      fromUi: true,
+    })
+  }, [setSelection])
 
-  render(): ReactNode {
-    const deck = DeckGlJsonChart.getDeckObject(this.props, this.state)
-    const { viewState } = this.state
-    return (
-      <StyledDeckGlChart
-        className="stDeckGlJsonChart"
-        width={deck.initialViewState.width}
-        height={deck.initialViewState.height}
-        data-testid="stDeckGlJsonChart"
+  return (
+    <StyledDeckGlChart
+      className="stDeckGlJsonChart"
+      data-testid="stDeckGlJsonChart"
+      isStretchHeight={isStretchHeight}
+    >
+      {usesMapbox ? <MapBoxCss /> : null}
+      <Toolbar
+        isFullScreen={isFullScreen}
+        disableFullscreenMode={disableFullscreenMode}
+        onExpand={expand}
+        onCollapse={collapse}
+        target={StyledDeckGlChart}
+        locked={hasActiveSelection && !disabled ? true : undefined}
       >
-        <DeckGL
-          viewState={viewState}
-          onViewStateChange={this.onViewStateChange}
-          height={deck.initialViewState.height}
-          width={deck.initialViewState.width}
-          layers={this.state.initialized ? deck.layers : []}
-          getTooltip={this.createTooltip}
-          ContextProvider={MapContext.Provider}
-          controller
-        >
-          <StaticMap
-            height={deck.initialViewState.height}
-            width={deck.initialViewState.width}
-            mapStyle={
-              deck.mapStyle &&
-              (typeof deck.mapStyle === "string"
-                ? deck.mapStyle
-                : deck.mapStyle[0])
-            }
-            mapboxApiAccessToken={
-              this.props.element.mapboxToken || this.props.mapboxToken
-            }
+        {hasActiveSelection && !disabled && (
+          <ToolbarAction
+            label="Clear selection"
+            onClick={handleClearSelectionClick}
+            icon={Close}
           />
-          <StyledNavigationControlContainer>
-            <NavigationControl className="zoomButton" showCompass={false} />
-          </StyledNavigationControlContainer>
-        </DeckGL>
-      </StyledDeckGlChart>
-    )
-  }
+        )}
+      </Toolbar>
+      {/* Only render the DeckGL component if the viewState is not null,
+      or else we'll get a runtime assertion error from deck.gl and the map will not render. */}
+      {viewState && (
+        <StyledMapContainer>
+          <DeckGL
+            viewState={viewState}
+            onViewStateChange={onViewStateChange}
+            layers={isInitialized ? deck.layers : EMPTY_LAYERS}
+            getTooltip={createTooltip}
+            // @ts-expect-error There is a type mismatch due to our versions of the libraries
+            ContextProvider={MapContext.Provider}
+            controller
+            onClick={
+              isSelectionModeActivated && !disabled ? handleClick : undefined
+            }
+          >
+            <StaticMap
+              mapStyle={
+                deck.mapStyle &&
+                (typeof deck.mapStyle === "string"
+                  ? deck.mapStyle
+                  : deck.mapStyle[0])
+              }
+              mapboxApiAccessToken={mapboxToken}
+            />
+            <StyledNavigationControlContainer>
+              <NavigationControl
+                data-testid="stDeckGlJsonChartZoomButton"
+                showCompass={false}
+              />
+            </StyledNavigationControlContainer>
+          </DeckGL>
+        </StyledMapContainer>
+      )}
+    </StyledDeckGlChart>
+  )
 }
 
-export default withTheme(
-  withMapboxToken("st.pydeck_chart")(withFullScreenWrapper(DeckGlJsonChart))
-)
+const DeckGlJsonChartWrapped = withFullScreenWrapper(DeckGlJsonChart)
+export default memo(DeckGlJsonChartWrapped)

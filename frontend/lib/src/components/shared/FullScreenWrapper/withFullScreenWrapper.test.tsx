@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,15 @@
  * limitations under the License.
  */
 
-import React, { PureComponent, ReactNode } from "react"
-import "@testing-library/jest-dom"
-import { fireEvent, screen } from "@testing-library/react"
-import { render } from "@streamlit/lib/src/test_util"
+import { FC, PureComponent, ReactNode } from "react"
+
+import { screen } from "@testing-library/react"
+
+import { ElementFullscreenContext } from "~lib/components/shared/ElementFullscreen/ElementFullscreenContext"
+import * as UseFullscreen from "~lib/components/shared/ElementFullscreen/useFullscreen"
+import { useRequiredContext } from "~lib/hooks/useRequiredContext"
+import * as UseResizeObserver from "~lib/hooks/useResizeObserver"
+import { render } from "~lib/test_util"
 
 import withFullScreenWrapper from "./withFullScreenWrapper"
 
@@ -31,7 +36,7 @@ interface TestProps {
 }
 
 class TestComponent extends PureComponent<TestProps> {
-  public render = (): ReactNode => (
+  public override render = (): ReactNode => (
     <>
       <div>{this.props.label}</div>
       <div>
@@ -44,15 +49,38 @@ class TestComponent extends PureComponent<TestProps> {
 const getProps = (props: Partial<TestProps> = {}): TestProps => ({
   width: 100,
   isFullScreen: false,
-  expand: jest.fn(),
-  collapse: jest.fn(),
+  expand: vi.fn(),
+  collapse: vi.fn(),
   label: "label",
   ...props,
 })
 
+// Test component that consumes the ElementFullscreenContext
+const TestContextConsumer: FC = () => {
+  const { width, height, expanded } = useRequiredContext(
+    ElementFullscreenContext
+  )
+
+  return (
+    <div data-testid="context-consumer">
+      <div data-testid="context-width">{width}</div>
+      <div data-testid="context-height">{height ?? "undefined"}</div>
+      <div data-testid="context-expanded">{expanded.toString()}</div>
+    </div>
+  )
+}
+
 const WrappedTestComponent = withFullScreenWrapper(TestComponent)
+const WrappedContextConsumer = withFullScreenWrapper(TestContextConsumer)
 
 describe("withFullScreenWrapper HOC", () => {
+  beforeEach(() => {
+    vi.spyOn(UseResizeObserver, "useResizeObserver").mockReturnValue({
+      elementRef: { current: null },
+      values: [250],
+    })
+  })
+
   it("renders without crashing", () => {
     render(<WrappedTestComponent {...getProps()} />)
 
@@ -63,21 +91,7 @@ describe("withFullScreenWrapper HOC", () => {
     const props = getProps()
     render(<WrappedTestComponent {...props} />)
 
-    expect(screen.getByTestId("stFullScreenFrame")).toHaveStyle(
-      `width: ${props.width}`
-    )
-  })
-
-  it("renders FullScreenWrapper with specified height", () => {
-    const props = getProps({ width: 123, label: "label", height: 455 })
-    render(<WrappedTestComponent {...props} />)
-
-    expect(screen.getByTestId("stFullScreenFrame")).toHaveStyle(
-      `width: ${props.width}`
-    )
-    expect(screen.getByTestId("stFullScreenFrame")).toHaveStyle(
-      `height: ${props.height}`
-    )
+    expect(screen.getByTestId("stFullScreenFrame")).toHaveStyle(`width: 100%`)
   })
 
   it("passes unrelated props to wrapped component", () => {
@@ -88,40 +102,36 @@ describe("withFullScreenWrapper HOC", () => {
     expect(screen.getByText(`${props.label}`)).toBeInTheDocument()
   })
 
-  it("passes `isFullScreen` to wrapped component", () => {
-    const props = getProps()
-    render(<WrappedTestComponent {...props} />)
-
-    // by default, isFullScreen == false
-    expect(screen.getByText("NOT isFullScreen")).toBeInTheDocument()
-
-    // zoomIn sets FullScreenWrapper.expanded == true & isFullScreen == true
-    fireEvent.click(screen.getByTestId("StyledFullScreenButton"))
-    expect(screen.getByText("isFullScreen")).toBeInTheDocument()
-  })
-
-  it("works if wrapped component does not have `isFullScreen` prop", () => {
-    // This test exists just to show that a component that does not take
-    // an "isFullScreen" property can still be wrapped with the FullScreenWrapper,
-    // and the typechecker won't complain. (The component instance will still
-    // receive "isFullScreen" in its props - but it won't "know" about it.)
-    class NoFullScreenPropComponent extends PureComponent<
-      Omit<TestProps, "isFullScreen">
-    > {
-      public render = (): ReactNode => this.props.label
-    }
-    const WrappedNoFullScreenPropComponent = withFullScreenWrapper(
-      NoFullScreenPropComponent
-    )
-
-    const props = getProps()
-    render(<WrappedNoFullScreenPropComponent {...props} />)
-    expect(screen.getByText(`${props.label}`)).toBeInTheDocument()
-  })
-
   it("defines `displayName`", () => {
     expect(WrappedTestComponent.displayName).toEqual(
       "withFullScreenWrapper(TestComponent)"
     )
+  })
+
+  it("provides correct ElementFullscreenContext values in normal mode", () => {
+    render(<WrappedContextConsumer />)
+
+    // Width comes from ResizeObserver mock
+    expect(screen.getByTestId("context-width")).toHaveTextContent("250")
+    expect(screen.getByTestId("context-height")).toHaveTextContent("undefined")
+    // Not expanded in normal mode
+    expect(screen.getByTestId("context-expanded")).toHaveTextContent("false")
+  })
+
+  it("provides correct ElementFullscreenContext values in fullscreen mode", () => {
+    // Mock fullscreen state
+    vi.spyOn(UseFullscreen, "useFullscreen").mockReturnValue({
+      expanded: true,
+      fullHeight: 800,
+      fullWidth: 1200,
+      zoomIn: vi.fn(),
+      zoomOut: vi.fn(),
+    })
+
+    render(<WrappedContextConsumer />)
+
+    expect(screen.getByTestId("context-width")).toHaveTextContent("1200")
+    expect(screen.getByTestId("context-height")).toHaveTextContent("800")
+    expect(screen.getByTestId("context-expanded")).toHaveTextContent("true")
   })
 })

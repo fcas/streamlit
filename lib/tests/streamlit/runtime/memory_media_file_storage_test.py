@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,18 +14,28 @@
 
 """Unit tests for MemoryMediaFileStorage"""
 
+from __future__ import annotations
+
 import unittest
 from unittest import mock
 from unittest.mock import MagicMock, mock_open
 
+import pytest
 from parameterized import parameterized
 
 from streamlit.runtime.media_file_storage import MediaFileKind, MediaFileStorageError
 from streamlit.runtime.memory_media_file_storage import (
+    _PARTIAL_HASH_SAMPLE_SIZE,
+    _PARTIAL_HASH_THRESHOLD,
     MemoryFile,
     MemoryMediaFileStorage,
+    _calculate_file_id,
     get_extension_for_mimetype,
 )
+from streamlit.runtime.stats import CACHE_MEMORY_FAMILY
+
+# Size used in partial hash tests: threshold + 100 KiB
+_LARGE_FILE_SIZE = _PARTIAL_HASH_THRESHOLD + 100_000
 
 
 class MemoryMediaFileStorageTest(unittest.TestCase):
@@ -45,15 +55,12 @@ class MemoryMediaFileStorageTest(unittest.TestCase):
             kind=MediaFileKind.MEDIA,
             filename="file.mp4",
         )
-        self.assertEqual(
-            MemoryFile(
-                content=b"mock_bytes",
-                mimetype="video/mp4",
-                kind=MediaFileKind.MEDIA,
-                filename="file.mp4",
-            ),
-            self.storage.get_file(file_id),
-        )
+        assert MemoryFile(
+            content=b"mock_bytes",
+            mimetype="video/mp4",
+            kind=MediaFileKind.MEDIA,
+            filename="file.mp4",
+        ) == self.storage.get_file(file_id)
 
     def test_load_with_bytes(self):
         """Adding a file with bytes creates a MemoryFile instance."""
@@ -63,15 +70,12 @@ class MemoryMediaFileStorageTest(unittest.TestCase):
             kind=MediaFileKind.MEDIA,
             filename="file.mp4",
         )
-        self.assertEqual(
-            MemoryFile(
-                content=b"mock_bytes",
-                mimetype="video/mp4",
-                kind=MediaFileKind.MEDIA,
-                filename="file.mp4",
-            ),
-            self.storage.get_file(file_id),
-        )
+        assert MemoryFile(
+            content=b"mock_bytes",
+            mimetype="video/mp4",
+            kind=MediaFileKind.MEDIA,
+            filename="file.mp4",
+        ) == self.storage.get_file(file_id)
 
     def test_identical_files_have_same_id(self):
         """Two files with the same content, mimetype, and filename should share an ID."""
@@ -88,7 +92,7 @@ class MemoryMediaFileStorageTest(unittest.TestCase):
             kind=MediaFileKind.MEDIA,
             filename="file.mp4",
         )
-        self.assertEqual(file_id1, file_id2)
+        assert file_id1 == file_id2
 
         # Change file content -> different ID
         changed_content = self.storage.load_and_get_id(
@@ -97,7 +101,7 @@ class MemoryMediaFileStorageTest(unittest.TestCase):
             kind=MediaFileKind.MEDIA,
             filename="file.mp4",
         )
-        self.assertNotEqual(file_id1, changed_content)
+        assert file_id1 != changed_content
 
         # Change mimetype -> different ID
         changed_mimetype = self.storage.load_and_get_id(
@@ -106,13 +110,13 @@ class MemoryMediaFileStorageTest(unittest.TestCase):
             kind=MediaFileKind.MEDIA,
             filename="file.mp4",
         )
-        self.assertNotEqual(file_id1, changed_mimetype)
+        assert file_id1 != changed_mimetype
 
         # Change (or omit) filename -> different ID
         changed_filename = self.storage.load_and_get_id(
             b"mock_bytes", mimetype="video/mp4", kind=MediaFileKind.MEDIA
         )
-        self.assertNotEqual(file_id1, changed_filename)
+        assert file_id1 != changed_filename
 
     @mock.patch(
         "streamlit.runtime.memory_media_file_storage.open",
@@ -120,7 +124,7 @@ class MemoryMediaFileStorageTest(unittest.TestCase):
     )
     def test_load_with_bad_path(self):
         """Adding a file by path raises a MediaFileStorageError if the file can't be read."""
-        with self.assertRaises(MediaFileStorageError):
+        with pytest.raises(MediaFileStorageError):
             self.storage.load_and_get_id(
                 "mock/file/path",
                 mimetype="video/mp4",
@@ -142,11 +146,11 @@ class MemoryMediaFileStorageTest(unittest.TestCase):
             b"mock_bytes", mimetype=mimetype, kind=MediaFileKind.MEDIA
         )
         url = self.storage.get_url(file_id)
-        self.assertEqual(f"/mock/media/{file_id}{extension}", url)
+        assert f"/mock/media/{file_id}{extension}" == url
 
     def test_get_url_invalid_fileid(self):
         """get_url raises if it gets a bad file_id."""
-        with self.assertRaises(MediaFileStorageError):
+        with pytest.raises(MediaFileStorageError):
             self.storage.get_url("not_a_file_id")
 
     def test_delete_file(self):
@@ -166,23 +170,68 @@ class MemoryMediaFileStorageTest(unittest.TestCase):
 
         # delete file 1. It should not exist, but file2 should.
         self.storage.delete_file(file_id1)
-        with self.assertRaises(Exception):
+        with pytest.raises(MediaFileStorageError):
             self.storage.get_file(file_id1)
 
-        self.assertIsNotNone(self.storage.get_file(file_id2))
+        assert self.storage.get_file(file_id2) is not None
 
         # delete file 2
         self.storage.delete_file(file_id2)
-        with self.assertRaises(Exception):
+        with pytest.raises(MediaFileStorageError):
             self.storage.get_file(file_id2)
 
     def test_delete_invalid_file_is_a_noop(self):
         """deleting a file that doesn't exist doesn't raise an error."""
         self.storage.delete_file("mock_file_id")
 
+    def test_large_files_with_colliding_fingerprint_dedupe_to_first_file(self):
+        """Large files with matching fingerprint (same length, head, middle, tail) dedupe.
+
+        This documents the storage-layer consequence of the partial hashing
+        optimization: when two distinct large files share the same length,
+        head, middle, and tail samples, they produce the same file_id and the
+        second file's bytes are dropped. Subsequent get_file() returns the
+        first file's content.
+        """
+        # Create two large files with same length, head, middle, and tail
+        # but different bytes between head/middle and middle/tail gaps.
+        # Structure: [head 64K][gap1][middle 64K][gap2][tail 64K]
+        gap_size = (_LARGE_FILE_SIZE - 3 * _PARTIAL_HASH_SAMPLE_SIZE) // 2
+        data1 = (
+            b"H" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"A" * gap_size
+            + b"M" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"A" * gap_size
+            + b"T" * _PARTIAL_HASH_SAMPLE_SIZE
+        )
+        data2 = (
+            b"H" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"B" * gap_size
+            + b"M" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"B" * gap_size
+            + b"T" * _PARTIAL_HASH_SAMPLE_SIZE
+        )
+
+        # Store first file
+        file_id1 = self.storage.load_and_get_id(
+            data1, mimetype="video/mp4", kind=MediaFileKind.MEDIA
+        )
+        # Store second file - it will get the same ID due to fingerprint collision
+        file_id2 = self.storage.load_and_get_id(
+            data2, mimetype="video/mp4", kind=MediaFileKind.MEDIA
+        )
+
+        # Both operations return the same file_id
+        assert file_id1 == file_id2
+
+        # Crucially: get_file returns the FIRST file's content, not the second
+        stored_file = self.storage.get_file(file_id1)
+        assert stored_file.content == data1
+        assert stored_file.content != data2
+
     def test_cache_stats(self):
-        """Test our CacheStatsProvider implementation."""
-        self.assertEqual(0, len(self.storage.get_stats()))
+        """Test our StatsProvider implementation."""
+        assert self.storage.get_stats() == {}
 
         # Add several files to storage. We'll unique-ify them by filename.
         mock_data = b"some random mock binary data"
@@ -195,18 +244,18 @@ class MemoryMediaFileStorageTest(unittest.TestCase):
                 filename=f"{ii}.mp4",
             )
 
-        stats = self.storage.get_stats()
-        self.assertEqual(len(stats), 1)
-        self.assertEqual("st_memory_media_file_storage", stats[0].category_name)
-        self.assertEqual(
-            len(mock_data) * num_files, sum(stat.byte_length for stat in stats)
-        )
+        stats_dict = self.storage.get_stats()
+        assert CACHE_MEMORY_FAMILY in stats_dict
+        stats = stats_dict[CACHE_MEMORY_FAMILY]
+        assert len(stats) == 1
+        assert stats[0].category_name == "st_memory_media_file_storage"
+        assert len(mock_data) * num_files == sum(stat.byte_length for stat in stats)
 
         # Remove files, and ensure our cache doesn't report they still exist
         for file_id in list(self.storage._files_by_id.keys()):
             self.storage.delete_file(file_id)
 
-        self.assertEqual(0, len(self.storage.get_stats()))
+        assert self.storage.get_stats() == {}
 
 
 class MemoryMediaFileStorageUtilTest(unittest.TestCase):
@@ -222,4 +271,129 @@ class MemoryMediaFileStorageUtilTest(unittest.TestCase):
     )
     def test_get_extension_for_mimetype(self, mimetype: str, expected_extension: str):
         result = get_extension_for_mimetype(mimetype)
-        self.assertEqual(expected_extension, result)
+        assert expected_extension == result
+
+
+class CalculateFileIdTest(unittest.TestCase):
+    """Unit tests for _calculate_file_id partial hashing optimization."""
+
+    def test_small_files_use_full_hash(self):
+        """Files below the threshold should produce a valid BLAKE2b hash."""
+        small_data = b"x" * (_PARTIAL_HASH_THRESHOLD - 1)
+        file_id = _calculate_file_id(small_data, "image/png")
+        # Verify it produces a valid BLAKE2b hex digest (32 lowercase hex chars)
+        assert len(file_id) == 32
+        int(file_id, 16)  # Raises ValueError if not valid hex
+
+    def test_files_at_threshold_hash_full_content(self):
+        """Files exactly at the threshold should hash full content."""
+        threshold_data = b"x" * _PARTIAL_HASH_THRESHOLD
+        # Verify these produce different IDs (full hash includes all bytes)
+        data_with_different_middle = (
+            b"x" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"y" * (_PARTIAL_HASH_THRESHOLD - 2 * _PARTIAL_HASH_SAMPLE_SIZE)
+            + b"x" * _PARTIAL_HASH_SAMPLE_SIZE
+        )
+        file_id1 = _calculate_file_id(threshold_data, "image/png")
+        file_id2 = _calculate_file_id(data_with_different_middle, "image/png")
+        # With full hashing (at threshold), different content = different ID
+        assert file_id1 != file_id2
+
+    def test_large_files_use_partial_hash(self):
+        """Files above threshold should use partial hashing (length + head + middle + tail)."""
+        # Create two large files with same head, middle, and tail but different gaps
+        gap_size = (_LARGE_FILE_SIZE - 3 * _PARTIAL_HASH_SAMPLE_SIZE) // 2
+        data1 = (
+            b"H" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"A" * gap_size
+            + b"M" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"A" * gap_size
+            + b"T" * _PARTIAL_HASH_SAMPLE_SIZE
+        )
+        data2 = (
+            b"H" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"B" * gap_size
+            + b"M" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"B" * gap_size
+            + b"T" * _PARTIAL_HASH_SAMPLE_SIZE
+        )
+
+        # With partial hashing, same length + head + middle + tail = same ID
+        file_id1 = _calculate_file_id(data1, "image/png")
+        file_id2 = _calculate_file_id(data2, "image/png")
+        assert file_id1 == file_id2
+
+    def test_large_files_different_middle_produce_different_ids(self):
+        """Large files with different middle samples should produce different IDs."""
+        # Create two files with same head and tail but different middle
+        gap_size = (_LARGE_FILE_SIZE - 3 * _PARTIAL_HASH_SAMPLE_SIZE) // 2
+        data1 = (
+            b"H" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"x" * gap_size
+            + b"A" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"x" * gap_size
+            + b"T" * _PARTIAL_HASH_SAMPLE_SIZE
+        )
+        data2 = (
+            b"H" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"x" * gap_size
+            + b"B" * _PARTIAL_HASH_SAMPLE_SIZE
+            + b"x" * gap_size
+            + b"T" * _PARTIAL_HASH_SAMPLE_SIZE
+        )
+
+        file_id1 = _calculate_file_id(data1, "image/png")
+        file_id2 = _calculate_file_id(data2, "image/png")
+        assert file_id1 != file_id2
+
+    def test_large_files_different_length_produce_different_ids(self):
+        """Large files with different lengths should produce different IDs."""
+        base = b"x" * _LARGE_FILE_SIZE
+        data1 = base
+        data2 = base + b"extra"
+
+        file_id1 = _calculate_file_id(data1, "image/png")
+        file_id2 = _calculate_file_id(data2, "image/png")
+        assert file_id1 != file_id2
+
+    def test_large_files_different_head_produce_different_ids(self):
+        """Large files with different first 64 KiB should produce different IDs."""
+        data1 = b"A" + b"x" * (_LARGE_FILE_SIZE - 1)
+        data2 = b"B" + b"x" * (_LARGE_FILE_SIZE - 1)
+
+        file_id1 = _calculate_file_id(data1, "image/png")
+        file_id2 = _calculate_file_id(data2, "image/png")
+        assert file_id1 != file_id2
+
+    def test_large_files_different_tail_produce_different_ids(self):
+        """Large files with different last 64 KiB should produce different IDs."""
+        data1 = b"x" * (_LARGE_FILE_SIZE - 1) + b"A"
+        data2 = b"x" * (_LARGE_FILE_SIZE - 1) + b"B"
+
+        file_id1 = _calculate_file_id(data1, "image/png")
+        file_id2 = _calculate_file_id(data2, "image/png")
+        assert file_id1 != file_id2
+
+    def test_identical_large_files_produce_same_id(self):
+        """Two identical large files should produce the same ID."""
+        large_data = b"x" * _LARGE_FILE_SIZE
+
+        file_id1 = _calculate_file_id(large_data, "video/mp4", "test.mp4")
+        file_id2 = _calculate_file_id(large_data, "video/mp4", "test.mp4")
+        assert file_id1 == file_id2
+
+    def test_mimetype_affects_large_file_id(self):
+        """Different mimetypes should produce different IDs for same large file content."""
+        large_data = b"x" * _LARGE_FILE_SIZE
+
+        file_id1 = _calculate_file_id(large_data, "image/png")
+        file_id2 = _calculate_file_id(large_data, "image/jpeg")
+        assert file_id1 != file_id2
+
+    def test_filename_affects_large_file_id(self):
+        """Different filenames should produce different IDs for same large file content."""
+        large_data = b"x" * _LARGE_FILE_SIZE
+
+        file_id1 = _calculate_file_id(large_data, "video/mp4", "video1.mp4")
+        file_id2 = _calculate_file_id(large_data, "video/mp4", "video2.mp4")
+        assert file_id1 != file_id2

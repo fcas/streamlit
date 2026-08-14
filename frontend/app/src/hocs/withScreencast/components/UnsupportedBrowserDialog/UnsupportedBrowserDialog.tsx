@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,43 +14,40 @@
  * limitations under the License.
  */
 
-import React, { PureComponent, ReactNode } from "react"
-import { Modal, ModalHeader, ModalBody } from "@streamlit/lib"
+import { memo } from "react"
+
+import { Modal, ModalBody, ModalHeader } from "@streamlit/lib"
+
 import {
   StyledScreenCastWarningDialog,
   StyledUnsupportedScreenCastExplanation,
   StyledUnsupportedScreenCastIcon,
 } from "./styled-components"
 
-export interface Props {
+interface Props {
   /** Callback to close the dialog */
   onClose: () => void
 }
 
-class UnsupportedBrowserDialog extends PureComponent<Props> {
-  public render(): ReactNode {
-    const { onClose } = this.props
-
-    return (
-      <Modal isOpen onClose={onClose}>
-        <ModalHeader>Record a screencast</ModalHeader>
-        <ModalBody>
-          <StyledScreenCastWarningDialog data-testid="stUnsupportedBrowserDialog">
-            <StyledUnsupportedScreenCastIcon>
-              <span role="img" aria-label="Alien Monster">
-                👾
-              </span>
-            </StyledUnsupportedScreenCastIcon>
-            <StyledUnsupportedScreenCastExplanation>
-              Due to limitations with some browsers, this feature is only
-              supported on recent desktop versions of Chrome, Firefox, and
-              Edge.
-            </StyledUnsupportedScreenCastExplanation>
-          </StyledScreenCastWarningDialog>
-        </ModalBody>
-      </Modal>
-    )
-  }
+const UnsupportedBrowserDialog: React.FC<Props> = ({ onClose }) => {
+  return (
+    <Modal isOpen onClose={onClose}>
+      <ModalHeader>Record a screencast</ModalHeader>
+      <ModalBody>
+        <StyledScreenCastWarningDialog data-testid="stUnsupportedBrowserDialog">
+          <StyledUnsupportedScreenCastIcon>
+            <span role="img" aria-label="Alien Monster">
+              👾
+            </span>
+          </StyledUnsupportedScreenCastIcon>
+          <StyledUnsupportedScreenCastExplanation>
+            Due to limitations with some browsers, this feature is only
+            supported on recent desktop versions of Chrome, Firefox, and Edge.
+          </StyledUnsupportedScreenCastExplanation>
+        </StyledScreenCastWarningDialog>
+      </ModalBody>
+    </Modal>
+  )
 }
 
-export default UnsupportedBrowserDialog
+export default memo(UnsupportedBrowserDialog)

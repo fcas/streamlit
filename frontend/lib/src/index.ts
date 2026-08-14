@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,119 +14,222 @@
  * limitations under the License.
  */
 
+// We add some polyfills in order to support older browsers for the exports below
+import "@streamlit/utils"
 // These imports are each exported specifically in order to minimize public apis.
+export type { LibConfig } from "@streamlit/connection"
 export {
-  IS_DEV_ENV,
-  RERUN_PROMPT_MODAL_DIALOG,
-  WEBSOCKET_PORT_DEV,
-} from "./baseconsts"
-export { default as VerticalBlock } from "./components/core/Block"
+  AppRoot,
+  BlockNode,
+  ElementNode,
+  TransientNode,
+  type AppNode,
+} from "./AppNode"
+export {
+  ContainerContentsWrapper,
+  VerticalBlock,
+} from "./components/core/Block/Block"
+export type { BlockPropsWithoutWidth } from "./components/core/Block/Block"
 export { default as ElementNodeRenderer } from "./components/core/Block/ElementNodeRenderer"
 export type { ElementNodeRendererProps } from "./components/core/Block/ElementNodeRenderer"
-export type { BlockPropsWithoutWidth } from "./components/core/Block"
-export type { StreamlitEndpoints, JWTHeader } from "./StreamlitEndpoints"
-export { SessionInfo } from "./SessionInfo"
-export { ScriptRunState } from "./ScriptRunState"
-export { WidgetStateManager, createFormsData } from "./WidgetStateManager"
-export type { FormsData } from "./WidgetStateManager"
-export { FileUploadClient } from "./FileUploadClient"
-export { ComponentRegistry } from "./components/widgets/CustomComponent"
-export { BlockNode, AppRoot, ElementNode } from "./AppNode"
-export { Quiver } from "./dataframes/Quiver"
-export type {
-  DeployedAppMetadata,
-  IGuestToHostMessage,
-  IMenuItem,
-  IHostConfigResponse,
-  IToolbarItem,
-  AppConfig,
-} from "./hostComm/types"
+export { BackendOperationContext } from "./components/core/BackendOperationContext"
+export type { BackendOperationContextProps } from "./components/core/BackendOperationContext"
+export { FormsContext } from "./components/core/FormsContext"
+export type { FormsContextProps } from "./components/core/FormsContext"
+export { default as IsDialogContext } from "./components/core/IsDialogContext"
+export { default as IsSidebarContext } from "./components/core/IsSidebarContext"
+export { LibConfigContext } from "./components/core/LibConfigContext"
+export type { LibConfigContextProps } from "./components/core/LibConfigContext"
+export { NavigationContext } from "./components/core/NavigationContext"
+export type { NavigationContextProps } from "./components/core/NavigationContext"
+export { PortalProvider } from "./components/core/Portal/PortalProvider"
 export {
-  default as Modal,
-  ModalHeader,
-  ModalBody,
-  ModalFooter,
-  ModalButton,
-} from "./components/shared/Modal"
+  INITIAL_SCRIPT_RUN_ID,
+  ScriptRunContext,
+} from "./components/core/ScriptRunContext"
+export type { ScriptRunContextProps } from "./components/core/ScriptRunContext"
+export { SidebarConfigContext } from "./components/core/SidebarConfigContext"
+export type { SidebarConfigContextProps } from "./components/core/SidebarConfigContext"
+export { ThemeContext } from "./components/core/ThemeContext"
+export type { ThemeContextProps } from "./components/core/ThemeContext"
 export { default as ThemeProvider } from "./components/core/ThemeProvider"
-export { LocalStore, localStorageAvailable } from "./util/storageUtils"
+export { ViewStateContext } from "./components/core/ViewStateContext"
+export type { ViewStateContextProps } from "./components/core/ViewStateContext"
+export { default as AlertElement } from "./components/elements/AlertElement/AlertElement"
+export { default as StreamlitErrorCodeBlock } from "./components/elements/CodeBlock/StreamlitErrorCodeBlock"
+export { handleFavicon } from "./components/elements/Favicon/Favicon"
+export { default as TextElement } from "./components/elements/TextElement/TextElement"
+export { toastQueue } from "./components/elements/Toast/toastQueue"
+export type { StreamlitToastContent } from "./components/elements/Toast/toastQueue"
+export { StreamlitToastItem } from "./components/elements/Toast/StreamlitToastItem"
 export {
-  createAutoTheme,
-  createPresetThemes,
-  CUSTOM_THEME_NAME,
-  getCachedTheme,
-  toExportedTheme,
-  AUTO_THEME_NAME,
-  getDefaultTheme,
-  globalStyles,
-  isPresetTheme,
-  removeCachedTheme,
-  setCachedTheme,
-  createTheme,
-  lightTheme,
-  darkTheme,
-  toThemeInput,
-  baseTheme,
-  hasLightBackgroundColor,
-} from "./theme"
-export { default as emotionLightTheme } from "./theme/emotionLightTheme"
-export type { ThemeConfig, EmotionTheme } from "./theme"
-export { mockWindowLocation, render } from "./test_util"
-export { logError, logMessage, logWarning, logAlways } from "./util/log"
-export { getPossibleBaseUris, buildHttpUri, buildWsUri } from "./util/UriUtil"
-export type { BaseUriParts } from "./util/UriUtil"
-export { ensureError } from "./util/ErrorHandling"
+  getToastCardStyle,
+  StyledMessageWrapper,
+  StyledToastRegion,
+  StyledToastWrapper,
+} from "./components/elements/Toast/styled-components"
+export {
+  getOverlayZIndex,
+  getPopoverContainerStyle,
+} from "./components/shared/Base/styled-components"
 export {
   default as BaseButton,
   BaseButtonKind,
-} from "./components/shared/BaseButton"
-export { PerformanceEvents } from "./profiler/PerformanceEvents"
-export { ForwardMsgCache } from "./ForwardMessageCache"
-export { default as Resolver } from "./util/Resolver"
+  BaseButtonSize,
+} from "./components/shared/BaseButton/BaseButton"
+export { default as BaseColorPicker } from "./components/shared/BaseColorPicker/BaseColorPicker"
+export { default as UISelectbox } from "./components/shared/Dropdown/Selectbox"
 export {
+  DynamicIcon,
+  isMaterialIcon,
+} from "./components/shared/Icon/DynamicIcon"
+export { EmojiIcon, default as Icon } from "./components/shared/Icon/Icon"
+export {
+  default as Modal,
+  ModalBody,
+  ModalButton,
+  ModalFooter,
+  ModalHeader,
+} from "./components/shared/Modal/Modal"
+export { CircularBuffer } from "./components/shared/Profiler/CircularBuffer"
+export { Profiler } from "./components/shared/Profiler/Profiler"
+export { default as CopyButton } from "./components/shared/CopyButton/CopyButton"
+export { default as StreamlitMarkdown } from "./components/shared/StreamlitMarkdown/StreamlitMarkdown"
+export {
+  Placement,
+  default as Tooltip,
+} from "./components/shared/Tooltip/Tooltip"
+export { WindowDimensionsContext } from "./components/shared/WindowDimensions"
+export { WindowDimensionsProvider } from "./components/shared/WindowDimensions/Provider"
+export type { WindowDimensions } from "./components/shared/WindowDimensions/useWindowDimensions"
+export { useWindowDimensionsContext } from "./components/shared/WindowDimensions/useWindowDimensionsContext"
+export { ComponentRegistry } from "./components/widgets/CustomComponent/ComponentRegistry"
+export { Quiver } from "./dataframes/Quiver"
+export { FileUploadClient } from "./FileUploadClient"
+export {
+  BackendOperationClient,
+  CONNECTION_CLOSED_MESSAGE,
+  getBackendOperationReason,
+  REQUEST_TIMED_OUT_MESSAGE,
+} from "./BackendOperationClient"
+export type { BackendOperationClientProps } from "./BackendOperationClient"
+export { useCopyToClipboard } from "./hooks/useCopyToClipboard"
+export { useCrossOriginAttribute } from "./hooks/useCrossOriginAttribute"
+export { useEmotionTheme } from "./hooks/useEmotionTheme"
+export { useExecuteWhenChanged } from "./hooks/useExecuteWhenChanged"
+export { useFloatingOverlay } from "./hooks/useFloatingOverlay"
+export { useHoverSubmenu } from "./hooks/useHoverSubmenu"
+export { useOverlayDismissal } from "./hooks/useOverlayDismissal"
+export {
+  ensureHotkeysFilterConfigured,
+  isKeyboardEventFromEditableTarget,
+} from "./hooks/useRegisterShortcut"
+export { useRequiredContext } from "./hooks/useRequiredContext"
+export {
+  measureScrollbarGutterSize,
+  useScrollbarGutterSize,
+} from "./hooks/useScrollbarGutterSize"
+export { useScrollToBottom } from "./hooks/useScrollToBottom"
+export { default as useTimeout } from "./hooks/useTimeout"
+export { default as HostCommunicationManager } from "./hostComm/HostCommunicationManager"
+export { HOST_COMM_VERSION } from "./hostComm/HostCommunicationManager"
+export type {
+  AppConfig,
+  DeployedAppMetadata,
+  IGuestToHostMessage,
+  IHostToGuestMessage,
+  IMenuItem,
+  IToolbarItem,
+} from "./hostComm/types"
+export {
+  mockEndpoints,
   mockSessionInfo,
   mockSessionInfoProps,
-  mockEndpoints,
 } from "./mocks/mocks"
-export { default as UISelectbox } from "./components/shared/Dropdown/Selectbox"
-export { default as Icon, EmojiIcon } from "./components/shared/Icon"
-export { default as StreamlitMarkdown } from "./components/shared/StreamlitMarkdown"
+export { mockTheme } from "./mocks/mockTheme"
+export { RootStyleProvider } from "./RootStyleProvider"
+export { ScriptRunState } from "./ScriptRunState"
+export { SessionInfo } from "./SessionInfo"
 export {
-  hashString,
+  AUTO_THEME_NAME,
+  convertRemToPx,
+  createAutoTheme,
+  createCustomThemes,
+  createPresetThemes,
+  createSidebarTheme,
+  createTheme,
+  CUSTOM_THEME_AUTO_NAME,
+  CUSTOM_THEME_DARK_NAME,
+  CUSTOM_THEME_LIGHT_NAME,
+  CUSTOM_THEME_NAME,
+  getCachedThemeSelection,
+  getDefaultTheme,
+  getHostSpecifiedTheme,
+  getHostSpecifiedThemeOnly,
+  getThemeSelectionFromThemeConfig,
+  getSystemThemePreference,
+  isPresetTheme,
+  getPreferredTheme,
+  mapCachedThemeSelectionToAvailableTheme,
+  removeCachedTheme,
+  setCachedThemeSelection,
+  sortThemeInputKeys,
+  toExportedTheme,
+  toThemeInput,
+} from "./theme/utils"
+export {
+  baseTheme,
+  customTheme,
+  darkTheme,
+  lightTheme,
+} from "./theme/themeConfigs"
+export { globalStyles } from "./theme/globalStyles"
+export { hasLightBackgroundColor } from "./theme/getColors"
+export type {
+  CachedTheme,
+  EmotionTheme,
+  IconSize,
+  PresetThemeName,
+  ThemeSelection,
+  ThemeConfig,
+} from "./theme/types"
+export { default as emotionLightTheme } from "./theme/emotionLightTheme"
+export { fonts } from "./theme/primitives/typography"
+export { spacing } from "./theme/primitives/spacing"
+export { ensureError } from "./util/ErrorHandling"
+export { useIsOverflowing } from "./util/Hooks"
+export { isMobile } from "./util/isMobile"
+export { mark, measure } from "./util/performance/fns"
+export type {
+  StPerformanceMark,
+  StPerformanceMetric,
+} from "./util/performance/types"
+export { LocalStore } from "./util/storageUtils"
+export { getCrossOriginAttribute } from "./util/UriUtil"
+export {
+  extractPageNameFromPathName,
   generateUID,
-  getElementWidgetID,
+  getElementId,
   getEmbeddingIdClassName,
   getIFrameEnclosingApp,
-  isColoredLineDisplayed,
-  isDarkTheme,
+  getLocaleLanguage,
+  getQueryString,
+  getScreencastTimestamp,
+  getTimezone,
+  getTimezoneOffset,
+  getUrl,
+  hashString,
+  isDarkThemeInQueryParams,
   isEmbed,
   isInChildFrame,
-  isLightTheme,
+  isLightThemeInQueryParams,
   isPaddingDisplayed,
   isScrollingHidden,
   isToolbarDisplayed,
-  notUndefined,
-  setCookie,
-  extractPageNameFromPathName,
   makeElementWithInfoText,
-  getCookie,
+  notUndefined,
+  preserveEmbedQueryParams,
+  setCookie,
 } from "./util/utils"
-export { useIsOverflowing } from "./util/Hooks"
-export { LibContext } from "./components/core/LibContext"
-export type { LibContextProps, LibConfig } from "./components/core/LibContext"
-export { handleFavicon } from "./components/elements/Favicon"
-export { default as HostCommunicationManager } from "./hostComm"
-export { HOST_COMM_VERSION } from "./hostComm/HostCommunicationManager"
-export { default as IsDialogContext } from "./components/core/IsDialogContext"
-export { default as IsSidebarContext } from "./components/core/IsSidebarContext"
-export { default as Tooltip, Placement } from "./components/shared/Tooltip"
-export { default as BaseColorPicker } from "./components/shared/BaseColorPicker"
-export { Timer } from "./util/Timer"
-export { Small } from "./components/shared/TextElements"
-export { spacing, fonts } from "./theme/primitives"
-export { mockTheme } from "./mocks/mockTheme"
-export { default as AlertElement } from "./components/elements/AlertElement"
-export { default as TextElement } from "./components/elements/TextElement"
-export { default as useScrollToBottom } from "./hooks/useScrollToBottom"
-export { RootStyleProvider } from "./RootStyleProvider"
-export * from "./proto"
+export { createFormsData, WidgetStateManager } from "./WidgetStateManager"
+export type { FormsData } from "./WidgetStateManager"

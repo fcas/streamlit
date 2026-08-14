@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,15 +14,28 @@
 
 """time_input unit test."""
 
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
+from unittest.mock import MagicMock, patch
 
+import pytest
 from parameterized import parameterized
 
 import streamlit as st
-from streamlit.errors import StreamlitAPIException
-from streamlit.proto.LabelVisibilityMessage_pb2 import LabelVisibilityMessage
+from streamlit.elements.widgets.time_widgets import (
+    TimeInputSerde,
+    _convert_datelike_to_date,
+    _convert_timelike_to_time,
+    _parse_date_value,
+)
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitInvalidWidthError,
+    StreamlitValueError,
+)
+from streamlit.proto.LabelVisibility_pb2 import LabelVisibility
 from streamlit.testing.v1.app_test import AppTest
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+from tests.streamlit.elements.layout_test_utils import WidthConfigFields
 
 
 class TimeInputTest(DeltaGeneratorTestCase):
@@ -33,49 +46,52 @@ class TimeInputTest(DeltaGeneratorTestCase):
         st.time_input("the label")
 
         c = self.get_delta_from_queue().new_element.time_input
-        self.assertEqual(c.label, "the label")
-        self.assertEqual(
-            c.label_visibility.value,
-            LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE,
+        assert c.label == "the label"
+        assert (
+            c.label_visibility.value == LabelVisibility.LabelVisibilityOptions.VISIBLE
         )
-        self.assertLessEqual(
-            datetime.strptime(c.default, "%H:%M").time(), datetime.now().time()
-        )
-        self.assertEqual(c.HasField("default"), True)
-        self.assertEqual(c.disabled, False)
+        assert datetime.strptime(c.default, "%H:%M").time() <= datetime.now().time()
+        assert c.HasField("default")
+        assert not c.disabled
 
     def test_just_disabled(self):
         """Test that it can be called with disabled param."""
         st.time_input("the label", disabled=True)
 
         c = self.get_delta_from_queue().new_element.time_input
-        self.assertEqual(c.disabled, True)
+        assert c.disabled
 
     def test_none_value(self):
         """Test that it can be called with None as initial value."""
         st.time_input("the label", value=None)
 
         c = self.get_delta_from_queue().new_element.time_input
-        self.assertEqual(c.label, "the label")
+        assert c.label == "the label"
         # If a proto property is null is not determined by this value,
         # but by the check via the HasField method:
-        self.assertEqual(c.default, "")
-        self.assertEqual(c.HasField("default"), False)
+        assert c.default == ""
+        assert not c.HasField("default")
 
     @parameterized.expand(
-        [(time(8, 45), "08:45"), (datetime(2019, 7, 6, 21, 15), "21:15")]
+        [
+            (time(8, 45), "08:45"),
+            (datetime(2019, 7, 6, 21, 15), "21:15"),
+            ("21:15:00", "21:15"),
+            ("21:15:10.123", "21:15"),
+            ("2019-07-06 21:15:10.123", "21:15"),
+        ]
     )
     def test_value_types(self, arg_value, proto_value):
         """Test that it supports different types of values."""
         st.time_input("the label", arg_value)
 
         c = self.get_delta_from_queue().new_element.time_input
-        self.assertEqual(c.label, "the label")
-        self.assertEqual(c.default, proto_value)
+        assert c.label == "the label"
+        assert c.default == proto_value
 
     def test_inside_column(self):
         """Test that it works correctly inside of a column."""
-        col1, col2 = st.columns([3, 2])
+        col1, _ = st.columns([3, 2])
 
         with col1:
             st.time_input("foo")
@@ -83,16 +99,16 @@ class TimeInputTest(DeltaGeneratorTestCase):
         all_deltas = self.get_all_deltas_from_queue()
 
         # 4 elements will be created: 1 horizontal block, 2 columns, 1 widget
-        self.assertEqual(len(all_deltas), 4)
+        assert len(all_deltas) == 4
         time_input_proto = self.get_delta_from_queue().new_element.time_input
 
-        self.assertEqual(time_input_proto.label, "foo")
+        assert time_input_proto.label == "foo"
 
     @parameterized.expand(
         [
-            ("visible", LabelVisibilityMessage.LabelVisibilityOptions.VISIBLE),
-            ("hidden", LabelVisibilityMessage.LabelVisibilityOptions.HIDDEN),
-            ("collapsed", LabelVisibilityMessage.LabelVisibilityOptions.COLLAPSED),
+            ("visible", LabelVisibility.LabelVisibilityOptions.VISIBLE),
+            ("hidden", LabelVisibility.LabelVisibilityOptions.HIDDEN),
+            ("collapsed", LabelVisibility.LabelVisibilityOptions.COLLAPSED),
         ]
     )
     def test_label_visibility(self, label_visibility_value, proto_value):
@@ -100,15 +116,14 @@ class TimeInputTest(DeltaGeneratorTestCase):
         st.time_input("the label", label_visibility=label_visibility_value)
 
         c = self.get_delta_from_queue().new_element.time_input
-        self.assertEqual(c.label_visibility.value, proto_value)
+        assert c.label_visibility.value == proto_value
 
     def test_label_visibility_wrong_value(self):
-        with self.assertRaises(StreamlitAPIException) as e:
+        with pytest.raises(StreamlitValueError) as e:
             st.time_input("the label", label_visibility="wrong_value")
-        self.assertEqual(
-            str(e.exception),
-            "Unsupported label_visibility option 'wrong_value'. Valid values are "
-            "'visible', 'hidden' or 'collapsed'.",
+        assert (
+            str(e.value)
+            == "Invalid `label_visibility` value. Supported values: 'visible', 'hidden', 'collapsed'."
         )
 
     def test_st_time_input(self):
@@ -117,8 +132,8 @@ class TimeInputTest(DeltaGeneratorTestCase):
         st.time_input("Set an alarm for", value)
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.time_input.default, "08:45")
-        self.assertEqual(el.time_input.step, timedelta(minutes=15).seconds)
+        assert el.time_input.default == "08:45"
+        assert el.time_input.step == timedelta(minutes=15).seconds
 
     def test_st_time_input_with_step(self):
         """Test st.time_input with step."""
@@ -126,33 +141,153 @@ class TimeInputTest(DeltaGeneratorTestCase):
         st.time_input("Set an alarm for", value, step=timedelta(minutes=5))
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.time_input.default, "09:00")
-        self.assertEqual(el.time_input.step, timedelta(minutes=5).seconds)
+        assert el.time_input.default == "09:00"
+        assert el.time_input.step == timedelta(minutes=5).seconds
 
     def test_st_time_input_exceptions(self):
         """Test st.time_input exceptions."""
         value = time(9, 00)
-        with self.assertRaises(StreamlitAPIException):
+        with pytest.raises(StreamlitAPIException):
             st.time_input("Set an alarm for", value, step=True)
-        with self.assertRaises(StreamlitAPIException):
+        with pytest.raises(StreamlitAPIException):
             st.time_input("Set an alarm for", value, step=(90, 0))
-        with self.assertRaises(StreamlitAPIException):
-            st.time_input("Set an alarm for", value, step=1)
-        with self.assertRaises(StreamlitAPIException):
-            st.time_input("Set an alarm for", value, step=59)
-        with self.assertRaises(StreamlitAPIException):
+        with pytest.raises(StreamlitAPIException):
+            st.time_input("Set an alarm for", value, step=0)
+        with pytest.raises(StreamlitAPIException):
             st.time_input("Set an alarm for", value, step=timedelta(hours=24))
-        with self.assertRaises(StreamlitAPIException):
+        with pytest.raises(StreamlitAPIException):
             st.time_input("Set an alarm for", value, step=timedelta(days=1))
+        # step=1 and step=59 are now valid (sub-minute steps unlocked)
+        st.time_input("Set an alarm for", value, step=1)
+        st.time_input("Set an alarm for", value, step=59)
 
     def test_shows_cached_widget_replay_warning(self):
         """Test that a warning is shown when this widget is used inside a cached function."""
         st.cache_data(lambda: st.time_input("the label"))()
 
         # The widget itself is still created, so we need to go back one element more:
-        el = self.get_delta_from_queue(-2).new_element.exception
-        self.assertEqual(el.type, "CachedWidgetWarning")
-        self.assertTrue(el.is_warning)
+        el = self.get_delta_from_queue(-3).new_element.exception
+        assert el.type == "CachedWidgetWarning"
+        assert el.is_warning
+
+    def test_width_config_default(self):
+        """Test that default width is 'stretch'."""
+        st.time_input("the label")
+
+        c = self.get_delta_from_queue().new_element
+        assert (
+            c.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert c.width_config.use_stretch
+
+    def test_width_config_pixel(self):
+        """Test that pixel width works properly."""
+        st.time_input("the label", width=200)
+
+        c = self.get_delta_from_queue().new_element
+        assert (
+            c.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.PIXEL_WIDTH.value
+        )
+        assert c.width_config.pixel_width == 200
+
+    def test_width_config_stretch(self):
+        """Test that 'stretch' width works properly."""
+        st.time_input("the label", width="stretch")
+
+        c = self.get_delta_from_queue().new_element
+        assert (
+            c.width_config.WhichOneof("width_spec")
+            == WidthConfigFields.USE_STRETCH.value
+        )
+        assert c.width_config.use_stretch
+
+    @parameterized.expand(
+        [
+            "invalid",
+            -100,
+            0,
+            100.5,
+            None,
+        ]
+    )
+    def test_invalid_width(self, width):
+        """Test that invalid width values raise exceptions."""
+        with pytest.raises(StreamlitInvalidWidthError):
+            st.time_input("the label", width=width)
+
+    def test_stable_id_with_key(self):
+        """Test that the widget ID is stable when a stable key is provided."""
+        with patch(
+            "streamlit.elements.lib.utils._register_element_id",
+            return_value=MagicMock(),
+        ):
+            # First render with certain params (keep whitelisted kwargs stable)
+            st.time_input(
+                label="Label 1",
+                key="time_input_key",
+                value=time(8, 45),
+                help="Help 1",
+                disabled=False,
+                width="stretch",
+                on_change=lambda: None,
+                args=("arg1", "arg2"),
+                kwargs={"kwarg1": "kwarg1"},
+                label_visibility="visible",
+                # Whitelisted kwargs:
+                step=timedelta(minutes=15),
+            )
+            c1 = self.get_delta_from_queue().new_element.time_input
+            id1 = c1.id
+
+            # Second render with different non-whitelisted params but same key
+            st.time_input(
+                label="Label 2",
+                key="time_input_key",
+                value=time(9, 0),
+                help="Help 2",
+                disabled=True,
+                width=200,
+                on_change=lambda: None,
+                args=("arg_1", "arg_2"),
+                kwargs={"kwarg_1": "kwarg_1"},
+                label_visibility="hidden",
+                # Keep whitelisted the same to ensure ID stability
+                step=timedelta(minutes=15),
+            )
+            c2 = self.get_delta_from_queue().new_element.time_input
+            id2 = c2.id
+            assert id1 == id2
+
+    @parameterized.expand(
+        [
+            ("step", timedelta(minutes=15), timedelta(minutes=5)),
+        ]
+    )
+    def test_whitelisted_stable_key_kwargs(self, kwarg_name, value1, value2):
+        """Test that the widget ID changes when a whitelisted kwarg changes even when the key is provided."""
+        with patch(
+            "streamlit.elements.lib.utils._register_element_id",
+            return_value=MagicMock(),
+        ):
+            base_kwargs = {
+                "label": "Label",
+                "key": "time_input_key",
+                # keep other params stable
+                "value": time(8, 45),
+                "step": value1,
+            }
+
+            st.time_input(**base_kwargs)
+            c1 = self.get_delta_from_queue().new_element.time_input
+            id1 = c1.id
+
+            base_kwargs[kwarg_name] = value2
+            st.time_input(**base_kwargs)
+            c2 = self.get_delta_from_queue().new_element.time_input
+            id2 = c2.id
+            assert id1 != id2
 
 
 def test_time_input_interaction():
@@ -178,6 +313,25 @@ def test_time_input_interaction():
     assert time_input.value is None
 
 
+def test_time_input_interaction_with_seconds():
+    """Test AppTest round-trip with sub-minute step preserves seconds."""
+
+    def script():
+        from datetime import time
+
+        import streamlit as st
+
+        st.time_input("seconds", value=time(10, 0, 0), step=30)
+
+    at = AppTest.from_function(script).run()
+    ti = at.time_input[0]
+    assert ti.value == time(10, 0, 0)
+
+    at = ti.set_value(time(14, 30, 45)).run()
+    ti = at.time_input[0]
+    assert ti.value == time(14, 30, 45)
+
+
 def test_None_session_state_value_retained():
     def script():
         import streamlit as st
@@ -191,3 +345,304 @@ def test_None_session_state_value_retained():
     at = AppTest.from_function(script).run()
     at = at.button[0].click().run()
     assert at.time_input[0].value is None
+
+
+class TimeInputBindQueryParamsTest(DeltaGeneratorTestCase):
+    """Test query param binding for st.time_input."""
+
+    def test_bind_query_params_sets_query_param_key(self):
+        """Test that bind='query-params' sets query_param_key."""
+        st.time_input("the label", key="my_key", bind="query-params")
+
+        c = self.get_delta_from_queue().new_element.time_input
+        assert c.query_param_key == "my_key"
+
+    def test_no_bind_does_not_set_query_param_key(self):
+        """Test that query_param_key is empty without bind."""
+        st.time_input("the label", key="my_key")
+
+        c = self.get_delta_from_queue().new_element.time_input
+        assert c.query_param_key == ""
+
+    def test_bind_requires_key(self):
+        """Test that bind without key raises StreamlitAPIException."""
+        with pytest.raises(StreamlitAPIException):
+            st.time_input("the label", bind="query-params")
+
+    def test_invalid_bind_value_raises_exception(self):
+        """Test that an invalid bind value raises StreamlitValueError."""
+        with pytest.raises(StreamlitValueError, match=r"Invalid `bind` value"):
+            st.time_input("the label", key="my_key", bind="invalid-value")
+
+    def test_bind_query_params_with_explicit_value(self):
+        """Test that bind works when value is explicitly set."""
+        st.time_input(
+            "the label",
+            value=time(14, 30),
+            key="my_key",
+            bind="query-params",
+        )
+
+        c = self.get_delta_from_queue().new_element.time_input
+        assert c.query_param_key == "my_key"
+        assert c.default == "14:30"
+
+    def test_bind_query_params_with_none_value(self):
+        """Test that bind works with value=None (clearable)."""
+        st.time_input("the label", value=None, key="my_key", bind="query-params")
+
+        c = self.get_delta_from_queue().new_element.time_input
+        assert c.query_param_key == "my_key"
+        assert not c.HasField("default")
+
+
+class TestTimeInputSerdeDeserialization:
+    """Tests for TimeInputSerde deserialization."""
+
+    def test_deserialize_returns_default_on_none(self):
+        """Test that None ui_value returns the default value."""
+        serde = TimeInputSerde(value=time(8, 45))
+        result = serde.deserialize(None)
+        assert result == time(8, 45)
+
+    def test_deserialize_parses_hh_mm(self):
+        """Test that HH:MM format is correctly parsed."""
+        serde = TimeInputSerde(value=time(8, 45))
+        result = serde.deserialize("14:30")
+        assert result == time(14, 30)
+
+    def test_deserialize_returns_parsed_time_without_snapping(self):
+        """Test that deserialize returns the parsed time as-is."""
+        serde = TimeInputSerde(value=time(9, 0), step=1800)
+        result = serde.deserialize("09:10")
+        assert result == time(9, 10)
+
+    def test_deserialize_invalid_format_reverts_to_default(self):
+        """Test that unparseable strings revert to the default value."""
+        serde = TimeInputSerde(value=time(8, 45))
+        result = serde.deserialize("not-a-time")
+        assert result == time(8, 45)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("12:30", time(12, 30)),
+        ("12:30:45", time(12, 30, 45)),
+        ("12:30:45.123456", time(12, 30, 45)),  # microseconds stripped
+        ("2020-01-01T12:30:45.123", time(12, 30, 45)),
+        (datetime(2020, 1, 1, 9, 5, 33), time(9, 5, 33)),
+    ],
+    ids=[
+        "iso_time_hh_mm",
+        "iso_time_hh_mm_ss",
+        "iso_time_strips_microseconds",
+        "iso_datetime_preserves_seconds",
+        "datetime_object",
+    ],
+)
+def test_convert_timelike_to_time_parses_value(
+    value: str | datetime, expected: time
+) -> None:
+    """``_convert_timelike_to_time`` parses ISO strings and datetimes to a time."""
+    assert _convert_timelike_to_time(value) == expected
+
+
+def test_convert_timelike_to_time_returns_same_instance_for_time() -> None:
+    """A ``time`` instance is returned unchanged (identity-preserving)."""
+    t = time(7, 15)
+    assert _convert_timelike_to_time(t) is t
+
+
+@pytest.mark.parametrize(
+    ("invalid_input", "match"),
+    [("not-a-time", "datetime, time"), (42, None)],
+    ids=["invalid_string", "invalid_type"],
+)
+def test_convert_timelike_to_time_invalid_raises(
+    invalid_input: object, match: str | None
+) -> None:
+    """Unparseable strings or wrong types raise StreamlitAPIException."""
+    with pytest.raises(StreamlitAPIException, match=match):
+        _convert_timelike_to_time(invalid_input)  # type: ignore[arg-type]
+
+
+def test_convert_timelike_to_time_now_preserves_seconds() -> None:
+    """The 'now' keyword preserves seconds but strips microseconds."""
+    frozen_now = datetime(2026, 6, 11, 14, 30, 45, 123456)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+            return frozen_now
+
+    with patch("streamlit.elements.widgets.time_widgets.datetime", _FrozenDatetime):
+        result = _convert_timelike_to_time("now")
+        assert result == time(14, 30, 45)
+        assert result.microsecond == 0
+
+
+def test_convert_datelike_to_date_today_keyword() -> None:
+    """The string ``"today"`` resolves to today's date."""
+    # Freeze time so the comparison cannot flake across a midnight boundary.
+    # A datetime subclass is used (instead of a plain mock) so the function's
+    # internal isinstance(..., datetime) checks keep working.
+    frozen_now = datetime(2026, 6, 11, 12, 0, 0)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz: object = None) -> datetime:  # type: ignore[override]
+            return frozen_now
+
+    with patch("streamlit.elements.widgets.time_widgets.datetime", _FrozenDatetime):
+        assert _convert_datelike_to_date("today") == frozen_now.date()
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("2020-01-15", date(2020, 1, 15)),
+        ("2020-01-15T10:00:00", date(2020, 1, 15)),
+    ],
+    ids=["iso_date", "iso_datetime"],
+)
+def test_convert_datelike_to_date_parses_iso_strings(
+    value: str, expected: date
+) -> None:
+    """``_convert_datelike_to_date`` parses ISO date and datetime strings."""
+    assert _convert_datelike_to_date(value) == expected
+
+
+@pytest.mark.parametrize(
+    ("invalid_input", "match"),
+    [("not-a-date", "ISO string"), (42, None)],
+    ids=["invalid_string", "invalid_type"],
+)
+def test_convert_datelike_to_date_invalid_raises(
+    invalid_input: object, match: str | None
+) -> None:
+    """Unparseable strings or wrong types raise StreamlitAPIException."""
+    with pytest.raises(StreamlitAPIException, match=match):
+        _convert_datelike_to_date(invalid_input)  # type: ignore[arg-type]
+
+
+def test_parse_date_value_none_is_not_range() -> None:
+    """A ``None`` value yields ``(None, False)``."""
+    assert _parse_date_value(None) == (None, False)
+
+
+def test_parse_date_value_too_many_dates_raises() -> None:
+    """A range of more than 2 dates raises StreamlitAPIException."""
+    with pytest.raises(StreamlitAPIException, match="0 - 2 date"):
+        _parse_date_value([date(2020, 1, 1), date(2020, 1, 2), date(2020, 1, 3)])
+
+
+@pytest.mark.parametrize(
+    ("value", "expected_dates", "expected_is_range"),
+    [
+        (date(2020, 1, 1), [date(2020, 1, 1)], False),
+        (
+            [date(2020, 1, 1), date(2020, 1, 2)],
+            [date(2020, 1, 1), date(2020, 1, 2)],
+            True,
+        ),
+    ],
+    ids=["single_date", "date_range"],
+)
+def test_parse_date_value_returns_dates_and_range_flag(
+    value: date | list[date],
+    expected_dates: list[date],
+    expected_is_range: bool,
+) -> None:
+    """Single dates are wrapped in a list; lists are treated as ranges."""
+    assert _parse_date_value(value) == (expected_dates, expected_is_range)
+
+
+# ---------------------------------------------------------------------------
+# New tests for step validation, serde, and format proto field
+# ---------------------------------------------------------------------------
+
+
+class TestStepUnlocksSecondsGranularity(DeltaGeneratorTestCase):
+    """Tests that sub-minute step enables seconds and correct proto field."""
+
+    def test_step_30_sets_proto_step(self):
+        """step=30 writes step=30 to the proto."""
+        st.time_input("label", time(8, 45, 30), step=30)
+        el = self.get_delta_from_queue().new_element
+        assert el.time_input.step == 30
+
+    def test_step_normalization_strips_seconds_for_minute_granularity(self):
+        """value seconds are stripped when step is minute-granular."""
+        st.time_input("label", time(9, 5, 33), step=900)
+        el = self.get_delta_from_queue().new_element
+        assert el.time_input.default == "09:05"
+
+    def test_step_preserves_seconds_in_default_for_sub_minute_step(self):
+        """value seconds are kept when step < 60."""
+        st.time_input("label", time(8, 45, 30), step=30)
+        el = self.get_delta_from_queue().new_element
+        assert el.time_input.default == "08:45:30"
+
+
+class TestTimeInputSerdeNew(DeltaGeneratorTestCase):
+    """Tests for new TimeInputSerde behaviour."""
+
+    def test_serde_seconds_serialize(self):
+        """Serialize includes seconds when step is sub-minute."""
+        serde = TimeInputSerde(value=time(8, 45, 30), step=30)
+        assert serde.serialize(time(8, 45, 30)) == "08:45:30"
+
+    def test_serde_minutes_serialize(self):
+        """Serialize omits seconds when step is minute-granular."""
+        serde = TimeInputSerde(value=time(8, 45, 0), step=60)
+        assert serde.serialize(time(8, 45, 0)) == "08:45"
+
+    def test_serde_deserialize_hh_mm_ss(self):
+        """HH:MM:SS is parsed correctly."""
+        serde = TimeInputSerde(value=time(0, 0), step=30)
+        assert serde.deserialize("14:30:45") == time(14, 30, 45)
+
+    def test_serde_deserialize_hh_mm_still_works(self):
+        """HH:MM still parses correctly (backward compatibility)."""
+        serde = TimeInputSerde(value=time(0, 0), step=900)
+        assert serde.deserialize("14:30") == time(14, 30)
+
+    def test_serde_deserialize_strips_seconds_for_minute_step(self):
+        """HH:MM:SS input has seconds stripped when step is minute-granular."""
+        serde = TimeInputSerde(value=time(0, 0), step=900)
+        assert serde.deserialize("14:30:45") == time(14, 30, 0)
+
+    def test_serde_deserialize_preserves_seconds_for_sub_minute_step(self):
+        """HH:MM:SS input preserves seconds when step < 60."""
+        serde = TimeInputSerde(value=time(0, 0), step=30)
+        assert serde.deserialize("14:30:45") == time(14, 30, 45)
+
+
+class TestFormatProtoField(DeltaGeneratorTestCase):
+    """Tests that format is correctly written to the proto."""
+
+    def test_format_12h_sets_proto(self):
+        """format='12h' writes '12h' to proto."""
+        st.time_input("label", time(8, 45), format="12h")
+        el = self.get_delta_from_queue().new_element
+        assert el.time_input.format == "12h"
+
+    def test_format_24h_sets_proto(self):
+        """format='24h' (default) writes '24h' to proto."""
+        st.time_input("label", time(8, 45), format="24h")
+        el = self.get_delta_from_queue().new_element
+        assert el.time_input.format == "24h"
+
+    def test_format_localized_sets_proto(self):
+        """format='localized' writes 'localized' to proto."""
+        st.time_input("label", time(8, 45), format="localized")
+        el = self.get_delta_from_queue().new_element
+        assert el.time_input.format == "localized"
+
+    def test_invalid_format_raises(self):
+        """Invalid format values raise StreamlitValueError."""
+        with pytest.raises(StreamlitValueError, match=r"Invalid `format` value"):
+            st.time_input("label", time(8, 45), format="6h", key="fmt_6h")  # type: ignore[arg-type]
+        with pytest.raises(StreamlitValueError, match=r"Invalid `format` value"):
+            st.time_input("label", time(8, 45), format="auto", key="fmt_auto")  # type: ignore[arg-type]

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,126 +14,49 @@
  * limitations under the License.
  */
 
-import take from "lodash/take"
+// Remove once support for URLPattern is added to all major browsers
+// https://caniuse.com/mdn-api_urlpattern
+import "urlpattern-polyfill"
 
-import { IS_DEV_ENV, WEBSOCKET_PORT_DEV } from "@streamlit/lib/src/baseconsts"
-
-/**
- * host:port tuple
- */
-export interface BaseUriParts {
-  host: string
-  port: number
-  basePath: string
-}
-
-const FINAL_SLASH_RE = /\/+$/
-const INITIAL_SLASH_RE = /^\/+/
+import { StreamlitConfig } from "@streamlit/utils"
 
 /**
- * Return the BaseUriParts for the global window
+ * URI returned for blocked links. We use "#" instead of "" to prevent
+ * navigation: an empty href combined with target="_blank" would open the
+ * current page in a new tab.
  */
-export function getWindowBaseUriParts(): BaseUriParts {
-  // If dev, always connect to 8501, since window.location.port is the Node
-  // server's port 3000.
-  // If changed, also change config.py
-  const host = window.location.hostname
+export const BLOCKED_LINK_URI = "#"
 
-  let port
-  if (IS_DEV_ENV) {
-    port = WEBSOCKET_PORT_DEV
-  } else if (window.location.port) {
-    port = Number(window.location.port)
-  } else {
-    port = isHttps() ? 443 : 80
-  }
+/** Dangerous URL schemes that can execute arbitrary code when clicked. */
+const DANGEROUS_URL_SCHEMES = ["javascript:", "vbscript:"]
 
-  const basePath = window.location.pathname
-    .replace(FINAL_SLASH_RE, "")
-    .replace(INITIAL_SLASH_RE, "")
-
-  return { host, port, basePath }
-}
-
-// NOTE: In the multipage apps world, there is some ambiguity around whether a
-// path like "foo/bar" means
-//   * the page "/" at baseUrlPath "foo/bar", or
-//   * the page "/bar" at baseUrlPath "foo".
-// To resolve this, we just try both possibilities for now, but this leads to
-// the unfortunate consequence of the initial page load when navigating directly
-// to a non-main page of an app being slower than navigating to the main page
-// (as the first attempt at connecting to the server fails the healthcheck).
-//
-// We'll want to improve this situation in the near future, but figuring out
-// the best path forward may be tricky as I wasn't able to come up with an
-// easy solution covering every deployment scenario.
-export function getPossibleBaseUris(): Array<BaseUriParts> {
-  const baseUriParts = getWindowBaseUriParts()
-  const { basePath } = baseUriParts
-
-  if (!basePath) {
-    return [baseUriParts]
-  }
-
-  const parts = basePath.split("/")
-  const possibleBaseUris: Array<BaseUriParts> = []
-
-  while (parts.length > 0) {
-    possibleBaseUris.push({
-      ...baseUriParts,
-      basePath: parts.join("/"),
-    })
-    parts.pop()
-  }
-
-  possibleBaseUris.push({
-    ...baseUriParts,
-    basePath: "",
-  })
-
-  return take(possibleBaseUris, 2)
-}
+// C0 control characters (U+0000-U+001F) that browsers silently strip from URLs
+// per the WHATWG URL spec. These must be removed before checking schemes to
+// prevent bypass attacks like "\x01javascript:alert(1)".
+// eslint-disable-next-line no-control-regex
+const C0_CONTROL_CHARS_REGEX = /[\x00-\x1F]/g
 
 /**
- * Create a ws:// or wss:// URI for the given path.
+ * Returns true if the given URI uses a dangerous scheme (javascript:,
+ * vbscript:) that can execute arbitrary code when clicked.
+ *
+ * We use a blocklist approach instead of an allowlist to preserve compatibility
+ * with data: URLs and other custom schemes that Streamlit users rely on (e.g.,
+ * inline images, PDFs). Note that data:text/html URLs can execute JavaScript
+ * but run in a sandboxed null-origin context, making them less dangerous than
+ * javascript: URLs.
+ *
+ * C0 control characters and surrounding whitespace are stripped before matching
+ * so that obfuscated values like "\x01javascript:" or "java\nscript:" (which
+ * browsers normalize before interpreting the scheme) are still detected.
  */
-export function buildWsUri(
-  { host, port, basePath }: BaseUriParts,
-  path: string
-): string {
-  const protocol = isHttps() ? "wss" : "ws"
-  const fullPath = makePath(basePath, path)
-  return `${protocol}://${host}:${port}/${fullPath}`
-}
+export function isDangerousLinkUri(uri: string): boolean {
+  const normalizedUri = uri
+    .replace(C0_CONTROL_CHARS_REGEX, "")
+    .toLowerCase()
+    .trim()
 
-/**
- * Create an HTTP URI for the given path.
- */
-export function buildHttpUri(
-  { host, port, basePath }: BaseUriParts,
-  path: string
-): string {
-  const protocol = isHttps() ? "https" : "http"
-  const fullPath = makePath(basePath, path)
-  return `${protocol}://${host}:${port}/${fullPath}`
-}
-
-function makePath(basePath: string, subPath: string): string {
-  basePath = basePath.replace(FINAL_SLASH_RE, "").replace(INITIAL_SLASH_RE, "")
-  subPath = subPath.replace(FINAL_SLASH_RE, "").replace(INITIAL_SLASH_RE, "")
-
-  if (basePath.length === 0) {
-    return subPath
-  }
-
-  return `${basePath}/${subPath}`
-}
-
-/**
- * True if we're connected to the host via HTTPS.
- */
-function isHttps(): boolean {
-  return window.location.href.startsWith("https://")
+  return DANGEROUS_URL_SCHEMES.some(scheme => normalizedUri.startsWith(scheme))
 }
 
 /**
@@ -147,48 +70,69 @@ function isHttps(): boolean {
  * ignored.
  */
 export function isValidOrigin(
-  allowedOrigin: string,
+  allowedOriginPattern: string,
   testOrigin: string
 ): boolean {
-  let allowedUrl: URL
+  let allowedUrlPattern: URLPattern
+  let allowedPortLessPattern: URLPattern
   let testUrl: URL
 
   try {
-    allowedUrl = new URL(allowedOrigin)
+    allowedUrlPattern = new URLPattern(allowedOriginPattern)
+    allowedPortLessPattern = new URLPattern({
+      protocol: allowedUrlPattern.protocol,
+      hostname: allowedUrlPattern.hostname,
+    })
     testUrl = new URL(testOrigin)
   } catch {
     return false
   }
 
   // Allow localhost w/ any port for testing of host <-> guest communication
-  // using hostframe.html (facilitates manual & Cypress e2e testing)
+  // using hostframe.html (facilitates manual & e2e testing)
   if (
-    allowedUrl.protocol !== testUrl.protocol ||
-    (allowedUrl.port !== testUrl.port && testUrl.hostname !== "localhost")
+    testUrl.hostname === "localhost" &&
+    allowedPortLessPattern.test(testUrl)
   ) {
-    return false
+    return true
   }
 
-  const { hostname: pattern } = allowedUrl
-  const { hostname } = testUrl
+  return allowedUrlPattern.test(testUrl)
+}
 
-  if (pattern === hostname) return true
+/**
+ * Return the crossorigin attribute value for the given resourceCrossOriginMode and given url.
+ */
+export function getCrossOriginAttribute(
+  resourceCrossOriginMode: undefined | "anonymous" | "use-credentials",
+  url?: string
+): undefined | "anonymous" | "use-credentials" {
+  if (!url) {
+    return undefined
+  }
 
-  // Web browsers will encode the wildcard character in the pattern being
-  // tested into %2A when parsing allowedOrigin into a URL, so we either have
-  // to convert it back here or test against "%2A" below. There's unfortunately
-  // no great way to write a unit test for this because the behavior differs
-  // between nodejs test environments and a real browser :(
-  const splitPattern = pattern.replace(/%2A/g, "*").split(".")
-  const splitHostname = hostname.split(".")
+  try {
+    const parsedUrl = new URL(url)
 
-  if (splitPattern.length !== splitHostname.length) return false
-
-  return splitPattern.every((el, index) => {
-    if (el === "*") {
-      return true
+    // The passed URL is absolute and it's pointing to the same origin as the backend server,
+    // so we should use the configured resourceCrossOriginMode. We don't check for requests going to the same
+    // origin as window.location.origin because that's a same-origin request where the crossorigin attribute is ignored anyways.
+    if (
+      StreamlitConfig.BACKEND_BASE_URL &&
+      parsedUrl.origin === new URL(StreamlitConfig.BACKEND_BASE_URL).origin
+    ) {
+      return resourceCrossOriginMode
     }
 
-    return el === splitHostname[index]
-  })
+    return undefined
+  } catch {
+    // If the URL is not a full URL, it likely is a relative URL.
+    // If StreamlitConfig.BACKEND_BASE_URL is set, return the resourceCrossOriginMode.
+    // If it is not set, the request would go against the window's origin and is a same-origin request.
+    // The browser would ignore the crossorigin attribute in this case, but to make it more explicit, we return undefined.
+    // Note that www.example.com/some-image.png would also return the resourceCrossOriginMode as it is not a valid URL without the scheme.
+    return StreamlitConfig.BACKEND_BASE_URL
+      ? resourceCrossOriginMode
+      : undefined
+  }
 }

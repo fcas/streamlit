@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -38,7 +38,7 @@ st.caption(
 st.caption("This is a caption with a help tooltip", help="This is some help tooltip!")
 
 st.caption(
-    """This is a caption that contains a bunch of interesting markdown:
+    """:material/chevron_right:  This is a caption that contains a bunch of interesting markdown:
 
 # heading 1
 

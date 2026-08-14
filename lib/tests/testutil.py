@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,38 +14,40 @@
 
 """Utility functions to use in our tests."""
 
-import json
+from __future__ import annotations
+
+import os
 from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from streamlit import config
 from streamlit.runtime.fragment import MemoryFragmentStorage
 from streamlit.runtime.memory_uploaded_file_manager import MemoryUploadedFileManager
+from streamlit.runtime.pages_manager import PagesManager
 from streamlit.runtime.scriptrunner import ScriptRunContext
+from streamlit.runtime.scriptrunner_utils.script_run_context import ThreadState
 from streamlit.runtime.state import SafeSessionState, SessionState
-from tests.constants import SNOWFLAKE_CREDENTIAL_FILE
+
+# Reexport functions that were moved to main codebase
+from streamlit.testing.v1.util import (
+    build_mock_config_get_option as build_mock_config_get_option,  # noqa: PLC0414
+)
+from streamlit.testing.v1.util import (
+    patch_config_options as patch_config_options,  # noqa: PLC0414
+)
 
 if TYPE_CHECKING:
     from snowflake.snowpark import Session
 
-# Reexport functions that were moved to main codebase
-from streamlit.testing.v1.util import (
-    build_mock_config_get_option as build_mock_config_get_option,
-)
-from streamlit.testing.v1.util import patch_config_options as patch_config_options
-
-
-def should_skip_pydantic_tests() -> bool:
-    try:
-        import pydantic
-
-        return not pydantic.__version__.startswith("1.")
-    except ImportError:
-        return True
-
 
 def create_mock_script_run_ctx() -> ScriptRunContext:
-    """Create a ScriptRunContext for use in tests."""
+    """Create a ScriptRunContext for use in tests.
+
+    Also initializes FragmentThreadState on the current thread's ContextVar,
+    mirroring what reset() does in production. This ensures any code path that
+    calls ThreadState.get() will find an initialized binding.
+    """
+    ThreadState.initialize()
     return ScriptRunContext(
         session_id="mock_session_id",
         _enqueue=lambda msg: None,
@@ -53,9 +55,9 @@ def create_mock_script_run_ctx() -> ScriptRunContext:
         session_state=SafeSessionState(SessionState(), lambda: None),
         uploaded_file_mgr=MemoryUploadedFileManager("/mock/upload"),
         main_script_path="",
-        page_script_hash="mock_page_script_hash",
-        user_info={"email": "mock@test.com"},
+        user_info={"email": "mock@example.com"},
         fragment_storage=MemoryFragmentStorage(),
+        pages_manager=PagesManager(""),
     )
 
 
@@ -105,12 +107,81 @@ def normalize_md(txt: str) -> str:
 
 
 @contextmanager
-def create_snowpark_session() -> "Session":
+def create_snowpark_session() -> Session:
     from snowflake.snowpark import Session
 
-    credential = json.loads(SNOWFLAKE_CREDENTIAL_FILE.read_text())
-    session = Session.builder.configs(credential).create()
+    session = Session.builder.configs(
+        {
+            "account": os.environ.get("SNOWFLAKE_ACCOUNT"),
+            "user": "test_streamlit",
+            "password": os.environ.get("SNOWFLAKE_PASSWORD"),
+            "role": "testrole_streamlit",
+            "warehouse": "testwh_streamlit",
+            "database": "testdb_streamlit",
+            "schema": "testschema_streamlit",
+        }
+    ).create()
     try:
         yield session
     finally:
         session.close()
+
+
+def create_pep649_function(
+    base_func: object, string_annotations: dict[str, str]
+) -> object:
+    """Create a function with PEP 649-style annotations that raise NameError.
+
+    This helper creates a function with a custom __annotate__ that simulates
+    PEP 649 deferred annotation behavior: raises NameError when annotations
+    are evaluated in VALUE format (like types imported under TYPE_CHECKING).
+
+    Parameters
+    ----------
+    base_func
+        The base function to copy. Its code, globals, name, defaults, and
+        closure will be preserved.
+    string_annotations
+        A dict mapping parameter/return names to their string representations.
+        E.g., {"items": "UndefinedType", "return": "None"}
+
+    Returns
+    -------
+    object
+        A new function with a custom __annotate__ that:
+        - Raises NameError("name 'UndefinedType' is not defined") for VALUE format
+        - Returns string_annotations for STRING format
+        - Returns ForwardRef-wrapped values for FORWARDREF format
+
+    Examples
+    --------
+    >>> def my_func(items: object) -> None:
+    ...     pass
+    >>> pep649_func = create_pep649_function(
+    ...     my_func, {"items": "UndefinedType", "return": "None"}
+    ... )
+    >>> import inspect
+    >>> inspect.signature(pep649_func)  # Raises NameError
+    """
+    import types
+
+    from annotationlib import Format, ForwardRef
+
+    def annotate_raises(format: Format) -> dict[str, object]:
+        """Annotate function that raises NameError like PEP 649 with undefined types."""
+        if format == Format.VALUE:
+            raise NameError("name 'UndefinedType' is not defined")
+        if format == Format.STRING:
+            return string_annotations
+        # FORWARDREF format
+        return {k: ForwardRef(v) for k, v in string_annotations.items()}
+
+    func = types.FunctionType(
+        base_func.__code__,  # type: ignore[union-attr]
+        base_func.__globals__,  # type: ignore[union-attr]
+        base_func.__name__,  # type: ignore[union-attr]
+        base_func.__defaults__,  # type: ignore[union-attr]
+        base_func.__closure__,  # type: ignore[union-attr]
+    )
+    func.__annotate__ = annotate_raises  # type: ignore[attr-defined]
+    return func

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,21 +14,23 @@
  * limitations under the License.
  */
 
-import React, { FC, memo } from "react"
+import { FC, memo } from "react"
 
 /*
  * IMPORTANT: If you change the asset imports below, make sure they still work if Streamlit is
  * served from a subpath.
  */
-import Balloon0 from "@streamlit/lib/src/assets/img/balloons/balloon-0.png"
-import Balloon1 from "@streamlit/lib/src/assets/img/balloons/balloon-1.png"
-import Balloon2 from "@streamlit/lib/src/assets/img/balloons/balloon-2.png"
-import Balloon3 from "@streamlit/lib/src/assets/img/balloons/balloon-3.png"
-import Balloon4 from "@streamlit/lib/src/assets/img/balloons/balloon-4.png"
-import Balloon5 from "@streamlit/lib/src/assets/img/balloons/balloon-5.png"
-
-import Particles from "@streamlit/lib/src/components/elements/Particles"
-import { ParticleProps } from "@streamlit/lib/src/components/elements/Particles/Particles"
+import Balloon0 from "~lib/assets/img/balloons/balloon-0.png"
+import Balloon1 from "~lib/assets/img/balloons/balloon-1.png"
+import Balloon2 from "~lib/assets/img/balloons/balloon-2.png"
+import Balloon3 from "~lib/assets/img/balloons/balloon-3.png"
+import Balloon4 from "~lib/assets/img/balloons/balloon-4.png"
+import Balloon5 from "~lib/assets/img/balloons/balloon-5.png"
+import { RenderInPortalIfExists } from "~lib/components/core/Portal/RenderInPortalIfExists"
+import Particles, {
+  ParticleProps,
+} from "~lib/components/elements/Particles/Particles"
+import { getCrossOriginAttribute } from "~lib/util/UriUtil"
 
 import { StyledBalloon } from "./styled-components"
 
@@ -45,24 +47,36 @@ const BALLOON_IMAGES: string[] = [
 
 const NUM_BALLOON_TYPES = BALLOON_IMAGES.length
 
-export interface Props {
+interface Props {
   scriptRunId: string
 }
 
 const Balloon: FC<React.PropsWithChildren<ParticleProps>> = ({
   particleType,
-}) => <StyledBalloon src={BALLOON_IMAGES[particleType]} />
+  resourceCrossOriginMode,
+}) => {
+  const src = BALLOON_IMAGES[particleType]
+  return (
+    <StyledBalloon
+      src={src}
+      crossOrigin={getCrossOriginAttribute(resourceCrossOriginMode, src)}
+    />
+  )
+}
 
 const Balloons: FC<React.PropsWithChildren<Props>> = ({ scriptRunId }) => (
   // Keys should be unique each time, so React replaces the images in the DOM and their animations
   // actually rerun.
-  <Particles
-    className="balloons"
-    scriptRunId={scriptRunId}
-    numParticleTypes={NUM_BALLOON_TYPES}
-    numParticles={NUM_BALLOONS}
-    ParticleComponent={Balloon}
-  />
+  <RenderInPortalIfExists>
+    <Particles
+      className="stBalloons"
+      data-testid="stBalloons"
+      scriptRunId={scriptRunId}
+      numParticleTypes={NUM_BALLOON_TYPES}
+      numParticles={NUM_BALLOONS}
+      ParticleComponent={Balloon}
+    />
+  </RenderInPortalIfExists>
 )
 
 export default memo(Balloons)

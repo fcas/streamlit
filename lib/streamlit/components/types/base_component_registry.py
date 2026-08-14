@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,9 +15,10 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
-from streamlit.components.types.base_custom_component import BaseCustomComponent
+if TYPE_CHECKING:
+    from streamlit.components.types.base_custom_component import BaseCustomComponent
 
 
 class BaseComponentRegistry(Protocol):
@@ -32,7 +33,7 @@ class BaseComponentRegistry(Protocol):
         component : CustomComponent
             The component to register.
         """
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover - abstract
 
     @abstractmethod
     def get_component_path(self, name: str) -> str | None:
@@ -50,7 +51,7 @@ class BaseComponentRegistry(Protocol):
         str or None
             The name of the specified component or None if no component with the given name has been registered.
         """
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover - abstract
 
     @abstractmethod
     def get_module_name(self, name: str) -> str | None:
@@ -67,7 +68,7 @@ class BaseComponentRegistry(Protocol):
         str or None
             The module_name of the specified component or None if no component with the given name has been registered.
         """
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover - abstract
 
     @abstractmethod
     def get_component(self, name: str) -> BaseCustomComponent | None:
@@ -84,7 +85,7 @@ class BaseComponentRegistry(Protocol):
         component or None
             The component with the provided name or None if component with the given name has been registered.
         """
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover - abstract
 
     @abstractmethod
     def get_components(self) -> list[BaseCustomComponent]:
@@ -95,4 +96,4 @@ class BaseComponentRegistry(Protocol):
         list[CustomComponents]
             A list of registered custom components.
         """
-        raise NotImplementedError
+        raise NotImplementedError  # pragma: no cover - abstract

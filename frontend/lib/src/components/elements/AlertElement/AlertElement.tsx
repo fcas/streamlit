@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,71 +14,92 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
+import { memo, ReactElement } from "react"
 
-import { Alert as AlertProto } from "@streamlit/lib/src/proto"
-import StreamlitMarkdown from "@streamlit/lib/src/components/shared/StreamlitMarkdown"
-import { DynamicIcon } from "@streamlit/lib/src/components/shared/Icon"
 import AlertContainer, {
   Kind,
-} from "@streamlit/lib/src/components/shared/AlertContainer"
-import { StyledAlertContent } from "./styled-components"
+} from "~lib/components/shared/AlertContainer/AlertContainer"
+import { DynamicIcon } from "~lib/components/shared/Icon/DynamicIcon"
+import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown/StreamlitMarkdown"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
 
-export function getAlertElementKind(format: AlertProto.Format): Kind {
-  switch (format) {
-    case AlertProto.Format.ERROR:
-      return Kind.ERROR
-    case AlertProto.Format.INFO:
-      return Kind.INFO
-    case AlertProto.Format.SUCCESS:
-      return Kind.SUCCESS
-    case AlertProto.Format.WARNING:
-      return Kind.WARNING
-    default:
-      throw new Error(`Unexpected alert type: ${format}`)
-  }
-}
+import {
+  StyledAlertBody,
+  StyledAlertContent,
+  StyledAlertHeader,
+  StyledAlertIcon,
+  StyledAlertTitle,
+} from "./styled-components"
 
 export interface AlertElementProps {
   body: string
   icon?: string
+  title?: string
   kind: Kind
-  width: number
 }
 
 /**
  * Display an (error|warning|info|success) box with a Markdown-formatted body.
  */
-export default function AlertElement({
+function AlertElement({
   icon,
   body,
+  title,
   kind,
-  width,
-}: AlertElementProps): ReactElement {
-  const markdownWidth = {
-    // Fix issue #6394 - Need to account for 1.25rem padding + 0.5rem gap when icon present
-    width: icon ? `calc(100% - 1.75rem)` : "100%",
-  }
+}: Readonly<AlertElementProps>): ReactElement {
+  const theme = useEmotionTheme()
 
+  // Fix issue #6394 - Need to account for icon size (iconSizes.lg) + gap when icon present.
+  // Only needed for the no-title layout where icon and body are side by side in a flex row.
+  // In the title layout, StyledAlertTitle already constrains width via flexbox.
+  const markdownWidth = icon
+    ? { width: `calc(100% - (${theme.iconSizes.lg} + ${theme.spacing.sm}))` }
+    : undefined
+
+  // Extract icon element to avoid duplication between title and no-title layouts.
+  const iconElement = icon ? (
+    <StyledAlertIcon>
+      <DynamicIcon iconValue={icon} size="lg" testid="stAlertDynamicIcon" />
+    </StyledAlertIcon>
+  ) : null
+
+  // When there's a title: icon+title in header row, body below (column layout).
+  // When no title: icon and body side by side (row layout).
   return (
     <div className="stAlert" data-testid="stAlert">
-      <AlertContainer width={width} kind={kind}>
-        <StyledAlertContent>
-          {icon && (
-            <DynamicIcon
-              iconValue={icon}
-              size="lg"
-              testid="stAlertDynamicIcon"
-            />
+      <AlertContainer kind={kind}>
+        <StyledAlertContent $hasTitle={!!title}>
+          {title ? (
+            <>
+              <StyledAlertHeader>
+                {iconElement}
+                <StyledAlertTitle data-testid="stAlertTitle">
+                  <StreamlitMarkdown
+                    source={title}
+                    allowHTML={false}
+                    isLabel
+                    inheritFont
+                  />
+                </StyledAlertTitle>
+              </StyledAlertHeader>
+              <StyledAlertBody>
+                <StreamlitMarkdown source={body} allowHTML={false} />
+              </StyledAlertBody>
+            </>
+          ) : (
+            <>
+              {iconElement}
+              <StreamlitMarkdown
+                source={body}
+                allowHTML={false}
+                style={markdownWidth}
+              />
+            </>
           )}
-
-          <StreamlitMarkdown
-            source={body}
-            allowHTML={false}
-            style={markdownWidth}
-          />
         </StyledAlertContent>
       </AlertContainer>
     </div>
   )
 }
+
+export default memo(AlertElement)

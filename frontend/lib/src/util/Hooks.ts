@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,7 @@
  * limitations under the License.
  */
 
-import { MutableRefObject, useRef, useEffect, useState } from "react"
-
-export const usePrevious = (value: any): any => {
-  const ref = useRef()
-
-  useEffect(() => {
-    ref.current = value
-  }, [value])
-
-  return ref.current
-}
+import { MutableRefObject, useCallback, useEffect, useState } from "react"
 
 export const useIsOverflowing = (
   ref: MutableRefObject<HTMLElement | null>,
@@ -32,14 +22,33 @@ export const useIsOverflowing = (
 ): boolean => {
   const { current } = ref
   const [isOverflowing, setIsOverflowing] = useState(false)
-
-  useEffect(() => {
+  const checkOverflowing = useCallback(() => {
     if (current) {
+      // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
       const { scrollHeight, clientHeight } = current
 
       setIsOverflowing(scrollHeight > clientHeight)
     }
-  }, [setIsOverflowing, expanded, current, current?.clientHeight])
+  }, [current])
+
+  // We want to double check if the element is overflowing
+  // when the expanded state changes or the height of the
+  // element changes
+  useEffect(() => {
+    checkOverflowing()
+    // TODO: Update to match React best practices
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded, current?.clientHeight]) // eslint-disable-line streamlit-custom/no-force-reflow-access -- Existing usage
+
+  // Window resizing can also affect the overflow state
+  // so we need to check it as well
+  useEffect(() => {
+    window.addEventListener("resize", checkOverflowing)
+
+    return () => {
+      window.removeEventListener("resize", checkOverflowing)
+    }
+  }, [checkOverflowing])
 
   return isOverflowing
 }

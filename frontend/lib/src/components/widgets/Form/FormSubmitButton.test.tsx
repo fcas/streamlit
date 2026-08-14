@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -13,24 +13,35 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-import React from "react"
-import "@testing-library/jest-dom"
-import { screen, fireEvent } from "@testing-library/react"
-import { render } from "@streamlit/lib/src/test_util"
 
-import { enableAllPlugins } from "immer"
+import { screen } from "@testing-library/react"
+import { userEvent } from "@testing-library/user-event"
+import { enableMapSet, enablePatches } from "immer"
+import { vi } from "vitest"
 
-import { Button as ButtonProto } from "@streamlit/lib/src/proto"
+import { Button as ButtonProto } from "@streamlit/protobuf"
 
+import { useRegisterShortcut } from "~lib/hooks/useRegisterShortcut"
+import { renderWithContexts } from "~lib/test_util"
 import {
   createFormsData,
   FormsData,
   WidgetStateManager,
-} from "@streamlit/lib/src/WidgetStateManager"
+} from "~lib/WidgetStateManager"
+
 import { FormSubmitButton, Props } from "./FormSubmitButton"
 
+vi.mock("~lib/hooks/useRegisterShortcut", () => ({
+  useRegisterShortcut: vi.fn(),
+  formatShortcutForDisplay: vi.fn(
+    (shortcut: string | null | undefined) =>
+      shortcut?.replace(/\+/g, " + ") || undefined
+  ),
+}))
+
 // Required by ImmerJS
-enableAllPlugins()
+enablePatches()
+enableMapSet()
 
 describe("FormSubmitButton", () => {
   let formsData: FormsData
@@ -39,53 +50,51 @@ describe("FormSubmitButton", () => {
   beforeEach(() => {
     formsData = createFormsData()
     widgetMgr = new WidgetStateManager({
-      sendRerunBackMsg: jest.fn(),
-      formsDataChanged: jest.fn(newData => {
+      sendRerunBackMsg: vi.fn(),
+      formsDataChanged: vi.fn(newData => {
         formsData = newData
       }),
     })
+    vi.clearAllMocks()
   })
 
   function getProps(
     props: Partial<Props> = {},
-    useContainerWidth = false,
-    helpText = "mockHelpText"
+    elementProps: Partial<ButtonProto> = {}
   ): Props {
     return {
       element: ButtonProto.create({
         id: "1",
         label: "Submit",
         formId: "mockFormId",
-        help: helpText,
-        useContainerWidth,
+        help: "mockHelpText",
+        ...elementProps,
       }),
       disabled: false,
-      hasInProgressUpload: false,
-      width: 250,
       widgetMgr,
       ...props,
     }
   }
 
   it("renders without crashing", () => {
-    render(<FormSubmitButton {...getProps()} />)
+    // render with renderWithContexts necessary as FormsContext required
+    // second arg is empty object as overrides for LibContextProps are not needed
+    renderWithContexts(<FormSubmitButton {...getProps()} />)
     expect(screen.getByRole("button")).toBeInTheDocument()
   })
 
-  it("has correct className and style", () => {
+  it("has correct className", () => {
     const props = getProps()
-    render(<FormSubmitButton {...props} />)
+    renderWithContexts(<FormSubmitButton {...props} />)
 
     const formSubmitButton = screen.getByTestId("stFormSubmitButton")
 
-    expect(formSubmitButton).toHaveClass("row-widget")
-    expect(formSubmitButton).toHaveClass("stButton")
-    expect(formSubmitButton).toHaveStyle(`width: ${props.width}px`)
+    expect(formSubmitButton).toHaveClass("stFormSubmitButton")
   })
 
-  it("renders a label", () => {
+  it("renders a label within the button", () => {
     const props = getProps()
-    render(<FormSubmitButton {...props} />)
+    renderWithContexts(<FormSubmitButton {...props} />)
 
     const formSubmitButton = screen.getByRole("button", {
       name: `${props.element.label}`,
@@ -94,39 +103,70 @@ describe("FormSubmitButton", () => {
     expect(formSubmitButton).toBeInTheDocument()
   })
 
+  it("renders with help properly", async () => {
+    const user = userEvent.setup()
+    renderWithContexts(
+      <FormSubmitButton {...getProps({}, { help: "mockHelpText" })} />
+    )
+
+    // Ensure both the button and the tooltip target have the correct width.
+    // These will be 100% and the ElementContainer will have styles to determine
+    // the button width.
+    const formSubmitButton = screen.getByRole("button")
+    expect(formSubmitButton).toHaveStyle("width: 100%")
+    const tooltipTarget = screen.getByTestId("stTooltipHoverTarget")
+    expect(tooltipTarget).toHaveStyle("width: 100%")
+
+    await user.hover(tooltipTarget)
+
+    const tooltipContent = await screen.findByTestId("stTooltipContent")
+    expect(tooltipContent).toHaveTextContent("mockHelpText")
+  })
+
   it("calls submitForm when clicked", async () => {
+    const user = userEvent.setup()
     const props = getProps()
-    jest.spyOn(props.widgetMgr, "submitForm")
-    render(<FormSubmitButton {...props} />)
+    vi.spyOn(props.widgetMgr, "submitForm")
+    renderWithContexts(<FormSubmitButton {...props} />)
 
     const formSubmitButton = screen.getByRole("button")
 
-    fireEvent.click(formSubmitButton)
+    await user.click(formSubmitButton)
     expect(props.widgetMgr.submitForm).toHaveBeenCalledWith(
       props.element.formId,
-      props.element,
-      undefined
+      undefined,
+      props.element
     )
   })
 
   it("can pass fragmentId to submitForm", async () => {
+    const user = userEvent.setup()
     const props = getProps({ fragmentId: "myFragmentId" })
-    jest.spyOn(props.widgetMgr, "submitForm")
-    render(<FormSubmitButton {...props} />)
+    vi.spyOn(props.widgetMgr, "submitForm")
+    renderWithContexts(<FormSubmitButton {...props} />)
 
     const formSubmitButton = screen.getByRole("button")
 
-    fireEvent.click(formSubmitButton)
+    await user.click(formSubmitButton)
     expect(props.widgetMgr.submitForm).toHaveBeenCalledWith(
       props.element.formId,
-      props.element,
-      "myFragmentId"
+      "myFragmentId",
+      props.element
     )
   })
 
   it("is disabled when form has pending upload", () => {
-    const props = getProps({ hasInProgressUpload: true })
-    render(<FormSubmitButton {...props} />)
+    // Override the formsData to include the form in the formsWithUploads set
+    const formsDataOverride = {
+      ...createFormsData(),
+      formsWithUploads: new Set(["mockFormId"]),
+    }
+
+    renderWithContexts(<FormSubmitButton {...getProps()} />, {
+      formsContext: {
+        formsData: formsDataOverride,
+      },
+    })
 
     const formSubmitButton = screen.getByRole("button")
     expect(formSubmitButton).toBeDisabled()
@@ -145,13 +185,17 @@ describe("FormSubmitButton", () => {
       }),
     })
 
-    const { unmount: unmountView1 } = render(<FormSubmitButton {...props} />)
+    const { unmount: unmountView1 } = renderWithContexts(
+      <FormSubmitButton {...props} />
+    )
 
     expect(formsData.submitButtons.get("mockFormId")?.length).toBe(1)
     // @ts-expect-error
     expect(formsData.submitButtons.get("mockFormId")[0]).toEqual(props.element)
 
-    const { unmount: unmountView2 } = render(<FormSubmitButton {...props2} />)
+    const { unmount: unmountView2 } = renderWithContexts(
+      <FormSubmitButton {...props2} />
+    )
 
     expect(formsData.submitButtons.get("mockFormId")?.length).toBe(2)
     // @ts-expect-error
@@ -172,24 +216,57 @@ describe("FormSubmitButton", () => {
     expect(formsData.submitButtons.get("mockFormId")?.length).toBe(0)
   })
 
-  it("does not use container width by default", () => {
-    render(<FormSubmitButton {...getProps()} />)
+  it("renders shortcut label when provided", () => {
+    renderWithContexts(
+      <FormSubmitButton {...getProps({}, { shortcut: "Ctrl+Enter" })} />
+    )
 
-    const formSubmitButton = screen.getByRole("button")
-    expect(formSubmitButton).toHaveStyle("width: auto")
+    const shortcuts = screen.getAllByText("Ctrl + Enter")
+    expect(shortcuts.length).toBeGreaterThan(0)
+    expect(shortcuts[0]).toBeVisible()
   })
 
-  it("passes useContainerWidth property with help correctly", () => {
-    render(<FormSubmitButton {...getProps({}, true)} />)
+  it("submits the form when shortcut is activated", () => {
+    const props = getProps({}, { shortcut: "Ctrl+Enter" })
+    const submitSpy = vi.spyOn(props.widgetMgr, "submitForm")
+    const useRegisterShortcutMock = vi.mocked(useRegisterShortcut)
 
-    const formSubmitButton = screen.getByRole("button")
-    expect(formSubmitButton).toHaveStyle(`width: ${250}px`)
+    renderWithContexts(<FormSubmitButton {...props} />)
+
+    const { onActivate } = useRegisterShortcutMock.mock.calls[0][0]
+    onActivate()
+
+    expect(submitSpy).toHaveBeenCalledWith(
+      props.element.formId,
+      props.fragmentId,
+      props.element
+    )
   })
 
-  it("passes useContainerWidth property without help correctly", () => {
-    render(<FormSubmitButton {...getProps({}, true, "")} />)
+  it.each([
+    ["primary", "stBaseButton-primaryFormSubmit"],
+    ["tertiary", "stBaseButton-tertiaryFormSubmit"],
+    ["secondary", "stBaseButton-secondaryFormSubmit"],
+  ])(
+    "applies the correct button kind for the %s type",
+    (type, expectedTestId) => {
+      renderWithContexts(<FormSubmitButton {...getProps({}, { type })} />)
+      const matches = screen.getAllByTestId(expectedTestId)
+      expect(matches.length).toBeGreaterThan(0)
+      expect(matches[0]).toBeVisible()
+    }
+  )
 
-    const formSubmitButton = screen.getByRole("button")
-    expect(formSubmitButton).toHaveStyle("width: 100%")
+  it("does not submit when the shortcut fires while disabled", () => {
+    const props = getProps({ disabled: true }, { shortcut: "Ctrl+Enter" })
+    const submitSpy = vi.spyOn(props.widgetMgr, "submitForm")
+    const useRegisterShortcutMock = vi.mocked(useRegisterShortcut)
+
+    renderWithContexts(<FormSubmitButton {...props} />)
+
+    const { onActivate } = useRegisterShortcutMock.mock.calls[0][0]
+    onActivate()
+
+    expect(submitSpy).not.toHaveBeenCalled()
   })
 })

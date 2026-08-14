@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,417 +14,850 @@
  * limitations under the License.
  */
 
-import React from "react"
-import { isMobile } from "react-device-detect"
-import without from "lodash/without"
-import { withTheme } from "@emotion/react"
-import { FormClearHelper } from "@streamlit/lib/src/components/widgets/Form"
 import {
-  WidgetStateManager,
-  Source,
-} from "@streamlit/lib/src/WidgetStateManager"
-import { MultiSelect as MultiSelectProto } from "@streamlit/lib/src/proto"
-import { ChevronDown } from "baseui/icon"
+  FC,
+  memo,
+  type ReactElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react"
+
+import { KeyboardArrowDown } from "@emotion-icons/material-outlined"
+import { Cancel } from "@emotion-icons/material-rounded"
 import {
-  TYPE,
-  Select as UISelect,
-  Option,
-  OnChangeParams,
-} from "baseui/select"
+  ComboBox,
+  ComboBoxStateContext,
+  I18nProvider,
+  type Key,
+  ListLayout,
+  Virtualizer,
+} from "react-aria-components"
+
 import {
-  WidgetLabel,
-  StyledWidgetLabelHelp,
-} from "@streamlit/lib/src/components/widgets/BaseWidget"
-import { StyledUISelect } from "@streamlit/lib/src/components/widgets/Multiselect/styled-components"
-import TooltipIcon from "@streamlit/lib/src/components/shared/TooltipIcon"
-import { Placement } from "@streamlit/lib/src/components/shared/Tooltip"
-import { VirtualDropdown } from "@streamlit/lib/src/components/shared/Dropdown"
-import { fuzzyFilterSelectOptions } from "@streamlit/lib/src/components/shared/Dropdown/Selectbox"
-import { labelVisibilityProtoValueToEnum } from "@streamlit/lib/src/util/utils"
-import { EmotionTheme } from "@streamlit/lib/src/theme"
+  MultiSelect as MultiSelectProto,
+  streamlit,
+} from "@streamlit/protobuf"
+import { notNullOrUndefined } from "@streamlit/utils"
+
+import IsSidebarContext from "~lib/components/core/IsSidebarContext"
+import { WidgetLabel } from "~lib/components/widgets/BaseWidget/WidgetLabel"
+import { WidgetLabelHelpIcon } from "~lib/components/widgets/BaseWidget/WidgetLabelHelpIcon"
+import {
+  useBasicWidgetState,
+  ValueWithSource,
+} from "~lib/hooks/useBasicWidgetState"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
+import { useExecuteWhenChanged } from "~lib/hooks/useExecuteWhenChanged"
+import {
+  SHIFT_VIEWPORT_PADDING,
+  useFloatingOverlay,
+} from "~lib/hooks/useFloatingOverlay"
+import {
+  CREATABLE_ID,
+  type MultiselectOption,
+  SELECT_ALL_ID,
+  SELECT_MATCHES_ID,
+  useMultiselectFiltering,
+} from "~lib/hooks/useMultiselectFiltering"
+import { useScrollbarGutterSize } from "~lib/hooks/useScrollbarGutterSize"
+import { convertRemToPx } from "~lib/theme/utils"
+import { isMobile } from "~lib/util/isMobile"
+import {
+  getSelectPlaceholder,
+  labelVisibilityProtoValueToEnum,
+} from "~lib/util/utils"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import {
+  StyledClearButton,
+  StyledEmptyState,
+  StyledFilterInput,
+  StyledItemHighlight,
+  StyledListBox,
+  StyledListBoxItem,
+  StyledOpenButton,
+  StyledPopover,
+  StyledTag,
+  StyledTagGroup,
+  StyledTagRemoveButton,
+  StyledTagsContainer,
+  StyledTagText,
+  StyledTrigger,
+} from "./styled-components"
 
 export interface Props {
   disabled: boolean
   element: MultiSelectProto
-  theme: EmotionTheme
   widgetMgr: WidgetStateManager
-  width: number
   fragmentId?: string
 }
 
-interface State {
-  /**
-   * The value specified by the user via the UI.
-   */
-  value: number[]
+type MultiselectValue = string[]
+
+const getStateFromWidgetMgr = (
+  widgetMgr: WidgetStateManager,
+  element: MultiSelectProto
+): MultiselectValue | undefined => {
+  return widgetMgr.getStringArrayValue(element)
 }
 
-interface MultiselectOption {
-  label: string
-  value: string
+const getDefaultStateFromProto = (
+  element: MultiSelectProto
+): MultiselectValue => {
+  return element.default.map(i => element.options[i])
 }
 
-class Multiselect extends React.PureComponent<Props, State> {
-  private readonly formClearHelper = new FormClearHelper()
+const getCurrStateFromProto = (
+  element: MultiSelectProto
+): MultiselectValue => {
+  return element.rawValues ?? []
+}
 
-  public state: State = {
-    value: this.initialValue,
-  }
+const updateWidgetMgrState = (
+  element: MultiSelectProto,
+  widgetMgr: WidgetStateManager,
+  valueWithSource: ValueWithSource<MultiselectValue>,
+  fragmentId: string | undefined
+): void => {
+  widgetMgr.setStringArrayValue(
+    element,
+    valueWithSource.value,
+    { fromUi: valueWithSource.fromUi },
+    fragmentId
+  )
+}
 
-  private overMaxSelections(): boolean {
-    return (
-      this.props.element.maxSelections > 0 &&
-      this.state.value.length >= this.props.element.maxSelections
-    )
-  }
+/**
+ * Null-render component mounted inside <ComboBox> to expose RAC's internal
+ * open/close methods and focusedKey via refs. Same pattern as the Selectbox widget.
+ */
+const DropdownController = memo<{
+  openRef: React.MutableRefObject<
+    ((focusStrategy?: "first" | "last" | null) => void) | null
+  >
+  focusedKeyRef: React.MutableRefObject<Key | null>
+}>(({ openRef, focusedKeyRef }) => {
+  const state = useContext(ComboBoxStateContext)
+  useEffect(() => {
+    if (state) {
+      openRef.current = (focusStrategy = null) =>
+        state.open(focusStrategy, "manual")
+    }
+    return () => {
+      openRef.current = null
+    }
+  }, [state, openRef])
+  // Read synchronously — an effect would leave a stale-read window for keydown handlers
+  focusedKeyRef.current = state?.selectionManager.focusedKey ?? null
+  return null
+})
+DropdownController.displayName = "DropdownController"
 
-  private getNoResultsMsg(): string {
-    const { maxSelections } = this.props.element
-    const { value } = this.state
+const TagRemoveIcon: FC = () => (
+  <svg
+    aria-hidden="true"
+    height="0.5em"
+    width="0.5em"
+    viewBox="0 0 10 10"
+    xmlns="http://www.w3.org/2000/svg"
+  >
+    <path
+      d="M9 1L5 5M1 9L5 5M5 5L1 1M5 5L9 9"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeWidth="2"
+    />
+  </svg>
+)
 
-    if (maxSelections === 0) {
-      return "No results"
-    } else if (value.length === maxSelections) {
-      const option = maxSelections !== 1 ? "options" : "option"
-      return `You can only select up to ${maxSelections} ${option}. Remove an option first.`
+/** Render a single option. Cast required: styled(ListBox) erases the generic item type. */
+const renderOption = (item: unknown): ReactElement => {
+  const option = item as MultiselectOption
+  return (
+    <StyledListBoxItem
+      id={option.id}
+      textValue={option.label}
+      $isCreatable={option.isCreatable}
+      $isBulkAction={option.isBulkAction}
+    >
+      <StyledItemHighlight data-item-hl="">{option.label}</StyledItemHighlight>
+    </StyledListBoxItem>
+  )
+}
+
+/**
+ * Pass-through filter for RAC's <ComboBox defaultFilter>. Our own
+ * `filterSelectOptions` runs upstream in useMultiselectFiltering, so RAC
+ * must not re-filter — otherwise its built-in "contains" strategy drops
+ * fuzzy matches and pseudo-options like "Select X matches". See #16003.
+ */
+const PASS_THROUGH_FILTER = (): boolean => true
+
+const preventInputEvent = (e: React.SyntheticEvent): void => {
+  e.preventDefault()
+}
+
+const Multiselect: FC<Props> = props => {
+  const { element, widgetMgr, fragmentId } = props
+
+  const theme = useEmotionTheme()
+  const isInSidebar = useContext(IsSidebarContext)
+  const scrollbarGutterSize = useScrollbarGutterSize()
+  const tagsContainerRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+  const scrollTopRef = useRef(0)
+  const scrollLockRef = useRef(false)
+  const focusedTagIndexRef = useRef(0)
+
+  const queryParamBinding = element.queryParamKey
+    ? {
+        paramKey: element.queryParamKey,
+        valueType: "string_array_value" as const,
+        clearable: true,
+        urlFormat: "repeated" as const,
+      }
+    : undefined
+
+  const [value, setValueWithSource] = useBasicWidgetState<
+    MultiselectValue,
+    MultiSelectProto
+  >({
+    getStateFromWidgetMgr,
+    getDefaultStateFromProto,
+    getCurrStateFromProto,
+    updateWidgetMgrState,
+    element,
+    widgetMgr,
+    fragmentId,
+    formClearBehavior: "resetValueOnly",
+    queryParamBinding,
+  })
+
+  // Local filter state — filterActive is derived from inputValue to avoid sync issues
+  const [inputValue, setInputValue] = useState("")
+  const filterActive = inputValue !== ""
+  const filterActiveRef = useRef(false)
+  filterActiveRef.current = filterActive
+  const inputValueRef = useRef("")
+  inputValueRef.current = inputValue
+
+  // Clear stale filter when value changes externally (rerun, session state, etc.)
+  useExecuteWhenChanged(() => setInputValue(""), [value])
+
+  const isOpenRef = useRef(false)
+  const openDropdownRef = useRef<
+    ((focusStrategy?: "first" | "last" | null) => void) | null
+  >(null)
+  const focusedKeyRef = useRef<Key | null>(null)
+
+  // In the sidebar, flip/shift are bounded by the viewport so the dropdown can
+  // flip up when near the bottom, rather than overflowing (see #16181).
+  const sidebarBoundary = isInSidebar
+    ? { boundary: document.documentElement }
+    : undefined
+
+  const { refs, floatingStyles } = useFloatingOverlay({
+    open: true,
+    placement: "bottom-start",
+    offsetPx: convertRemToPx(theme.spacing.twoXS),
+    flipOptions: sidebarBoundary,
+    shiftOptions: sidebarBoundary && {
+      ...sidebarBoundary,
+      padding: SHIFT_VIEWPORT_PADDING,
+    },
+    matchTriggerWidth: true,
+  })
+
+  const { displayOptions, resolvedFilterMode } = useMultiselectFiltering({
+    options: element.options,
+    selectedValues: value,
+    inputValue,
+    filterActive,
+    filterMode: element.filterMode,
+    acceptNewOptions: element.acceptNewOptions ?? false,
+    maxSelections: element.maxSelections,
+  })
+
+  const displayOptionsRef = useRef(displayOptions)
+  displayOptionsRef.current = displayOptions
+  const valueRef = useRef(value)
+  valueRef.current = value
+
+  const isFilterNone =
+    resolvedFilterMode === streamlit.SelectWidgetFilterMode.FILTER_MODE_NONE
+
+  const { placeholder, shouldDisable: placeholderDisable } = useMemo(
+    () =>
+      getSelectPlaceholder(
+        element.placeholder,
+        element.options,
+        element.acceptNewOptions ?? false,
+        true
+      ),
+    [element.placeholder, element.options, element.acceptNewOptions]
+  )
+
+  const disabled = props.disabled || placeholderDisable
+
+  // Max height: cut through 5th tag row
+  const maxHeight = useMemo(() => {
+    const rowHeight = `calc(${theme.sizes.elementHighlightHeight} + ${theme.sizes.tagMarginInsideBorder})`
+    return `calc(4.5 * ${rowHeight} + ${theme.sizes.tagMarginInsideBorder} + 2 * ${theme.sizes.borderWidth})`
+  }, [
+    theme.sizes.elementHighlightHeight,
+    theme.sizes.tagMarginInsideBorder,
+    theme.sizes.borderWidth,
+  ])
+
+  const virtualizerLayoutOptions = useMemo(
+    () => ({
+      rowSize: convertRemToPx(theme.sizes.dropdownItemHeight),
+    }),
+    [theme.sizes.dropdownItemHeight]
+  )
+
+  // maxSelections === 0 means "no limit"
+  const noResultsMsg = useMemo(() => {
+    if (element.maxSelections === 0) return "No results"
+    if (value.length >= element.maxSelections) {
+      const option = element.maxSelections !== 1 ? "options" : "option"
+      return `You can only select up to ${element.maxSelections} ${option}. Remove an option first.`
     }
     return "No results"
-  }
+  }, [element.maxSelections, value.length])
 
-  get initialValue(): number[] {
-    // If WidgetStateManager knew a value for this widget, initialize to that.
-    // Otherwise, use the default value from the widget protobuf.
-    const storedValue = this.props.widgetMgr.getIntArrayValue(
-      this.props.element
-    )
-    return storedValue !== undefined ? storedValue : this.props.element.default
-  }
-
-  public componentDidMount(): void {
-    if (this.props.element.setValue) {
-      this.updateFromProtobuf()
-    } else {
-      this.commitWidgetValue({ fromUi: false })
-    }
-  }
-
-  public componentDidUpdate(): void {
-    this.maybeUpdateFromProtobuf()
-  }
-
-  public componentWillUnmount(): void {
-    this.formClearHelper.disconnect()
-  }
-
-  private maybeUpdateFromProtobuf(): void {
-    const { setValue } = this.props.element
-    if (setValue) {
-      this.updateFromProtobuf()
-    }
-  }
-
-  private updateFromProtobuf(): void {
-    const { value } = this.props.element
-    this.props.element.setValue = false
-    this.setState({ value }, () => {
-      this.commitWidgetValue({ fromUi: false })
+  // Preserve scroll position when tags are removed via UI interaction.
+  useLayoutEffect(() => {
+    if (!scrollLockRef.current) return
+    const savedScroll = scrollTopRef.current
+    scrollLockRef.current = false
+    const container = tagsContainerRef.current
+    if (!container) return
+    requestAnimationFrame(() => {
+      container.scrollTop = savedScroll
+      scrollTopRef.current = savedScroll
     })
-  }
+  }, [value])
 
-  /** Commit state.value to the WidgetStateManager. */
-  private commitWidgetValue = (source: Source): void => {
-    const { widgetMgr, element, fragmentId } = this.props
-    widgetMgr.setIntArrayValue(element, this.state.value, source, fragmentId)
-  }
+  const handleTagsScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    if (scrollLockRef.current) return
+    // eslint-disable-next-line streamlit-custom/no-force-reflow-access
+    scrollTopRef.current = e.currentTarget.scrollTop
+  }, [])
 
-  /**
-   * If we're part of a clear_on_submit form, this will be called when our
-   * form is submitted. Restore our default value and update the WidgetManager.
-   */
-  private onFormCleared = (): void => {
-    this.setState(
-      (_, prevProps) => {
-        return { value: prevProps.element.default }
-      },
-      () => this.commitWidgetValue({ fromUi: true })
-    )
-  }
+  const handleChange = useCallback(
+    (keys: Key[]): void => {
+      if (!isOpenRef.current) return
 
-  private get valueFromState(): MultiselectOption[] {
-    return this.state.value.map(i => {
-      const label = this.props.element.options[i]
-      return { value: i.toString(), label }
-    })
-  }
+      const selectedKeys = keys.map(String)
 
-  private generateNewState(data: OnChangeParams): State {
-    const getIndex = (): number => {
-      const valueId = data.option?.value
-      return parseInt(valueId, 10)
+      // Check for bulk action keys
+      const bulkActionKey = selectedKeys.find(
+        k => k === SELECT_ALL_ID || k === SELECT_MATCHES_ID
+      )
+
+      if (bulkActionKey) {
+        // Bulk select: add all currently displayed (non-special) options
+        const options = displayOptionsRef.current
+        const optionsToAdd = options
+          .filter(o => !o.isBulkAction && !o.isCreatable)
+          .map(o => o.value)
+
+        let newValue: string[]
+        if (element.maxSelections > 0) {
+          const remainingSlots = element.maxSelections - value.length
+          newValue = [...value, ...optionsToAdd.slice(0, remainingSlots)]
+        } else {
+          newValue = [...value, ...optionsToAdd]
+        }
+
+        setValueWithSource({ value: newValue, fromUi: true })
+        setInputValue("")
+        return
+      }
+
+      // Check for creatable key — use ref to avoid stale closure
+      if (selectedKeys.includes(CREATABLE_ID)) {
+        if (
+          element.maxSelections > 0 &&
+          value.length >= element.maxSelections
+        ) {
+          return
+        }
+        if (value.includes(inputValueRef.current)) {
+          setInputValue("")
+          return
+        }
+        const newValue = [...value, inputValueRef.current]
+        setValueWithSource({ value: newValue, fromUi: true })
+        setInputValue("")
+        return
+      }
+
+      // Normal toggle: compute the diff
+      // selectedKeys from RAC contains the full new selection set (option IDs)
+      // We need to map IDs back to values. Bulk-action and creatable keys are
+      // already handled by early returns above, so only filter undefined here.
+      const optionById = new Map(
+        displayOptionsRef.current
+          .filter(o => !o.isBulkAction && !o.isCreatable)
+          .map(o => [o.id, o.value])
+      )
+      const newValues = selectedKeys
+        .map(id => optionById.get(id))
+        .filter((v): v is string => v !== undefined)
+
+      // Merge with existing values that aren't in the current display
+      // (already-selected items not shown in the filtered list)
+      const displayedValues = new Set(optionById.values())
+      const preservedValues = value.filter(v => !displayedValues.has(v))
+      const finalValue = [...preservedValues, ...newValues]
+
+      if (
+        element.maxSelections > 0 &&
+        finalValue.length > element.maxSelections
+      ) {
+        return
+      }
+
+      setValueWithSource({ value: finalValue, fromUi: true })
+      setInputValue("")
+    },
+    [element.maxSelections, setValueWithSource, value]
+  )
+
+  const handleInputChange = useCallback((text: string): void => {
+    // RAC can echo the previous filter text via onInputChange when the menu
+    // closes. Unlike the single-select Selectbox (which displays a committed
+    // label when closed), the multiselect input should be empty when closed.
+    // Ignore echoes entirely so they don't overwrite the clear from
+    // handleOpenChange or trigger a reopen.
+    if (text === inputValueRef.current) return
+
+    setInputValue(text)
+    if (text !== "" && !isOpenRef.current) {
+      openDropdownRef.current?.()
     }
+  }, [])
 
-    switch (data.type) {
-      case "remove": {
-        return {
-          value: without(this.state.value, getIndex()),
+  const handleOpenChange = useCallback((open: boolean): void => {
+    isOpenRef.current = open
+    if (!open) {
+      setInputValue("")
+    }
+  }, [])
+
+  const handleTagGroupRemove = useCallback(
+    (keys: Set<Key>): void => {
+      scrollLockRef.current = true
+      if (tagsContainerRef.current) {
+        // eslint-disable-next-line streamlit-custom/no-force-reflow-access
+        scrollTopRef.current = tagsContainerRef.current.scrollTop
+      }
+      const keysToRemove = new Set([...keys].map(String))
+      const newValue = valueRef.current.filter(v => !keysToRemove.has(v))
+      valueRef.current = newValue
+      setValueWithSource({ value: newValue, fromUi: true })
+    },
+    [setValueWithSource]
+  )
+
+  const handleTagKeyDown = useCallback(
+    (e: React.KeyboardEvent<HTMLSpanElement>): void => {
+      const tag = e.currentTarget
+      const container = tag.parentElement
+      if (!container) return
+
+      const tags = Array.from(
+        container.querySelectorAll<HTMLElement>("[data-tag]")
+      )
+      const idx = tags.indexOf(tag)
+
+      if (e.key === "ArrowLeft" || e.key === "ArrowUp") {
+        e.preventDefault()
+        const prev = tags[idx - 1]
+        if (prev) {
+          tag.tabIndex = -1
+          prev.tabIndex = 0
+          prev.focus()
+          focusedTagIndexRef.current = idx - 1
+        }
+      } else if (e.key === "ArrowRight" || e.key === "ArrowDown") {
+        e.preventDefault()
+        const next = tags[idx + 1]
+        if (next) {
+          tag.tabIndex = -1
+          next.tabIndex = 0
+          next.focus()
+          focusedTagIndexRef.current = idx + 1
+        } else {
+          tag.tabIndex = -1
+          const first = tags[0]
+          if (first) first.tabIndex = 0
+          focusedTagIndexRef.current = 0
+          inputRef.current?.focus()
+        }
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        e.preventDefault()
+        const tagValue = value[idx]
+        if (tagValue !== undefined) {
+          const nextFocus = tags[idx + 1] ?? tags[idx - 1]
+          handleTagGroupRemove(new Set([tagValue]))
+          if (nextFocus && nextFocus !== tag) {
+            // After removal, right neighbor slides to idx; left stays at idx-1
+            focusedTagIndexRef.current =
+              nextFocus === tags[idx + 1] ? idx : idx - 1
+            nextFocus.tabIndex = 0
+            nextFocus.focus({ preventScroll: true })
+          } else {
+            focusedTagIndexRef.current = 0
+            inputRef.current?.focus({ preventScroll: true })
+          }
+        }
+      } else if (e.key === "Home") {
+        e.preventDefault()
+        const first = tags[0]
+        if (first && first !== tag) {
+          tag.tabIndex = -1
+          first.tabIndex = 0
+          first.focus()
+          focusedTagIndexRef.current = 0
+        }
+      } else if (e.key === "End") {
+        e.preventDefault()
+        const last = tags[tags.length - 1]
+        if (last && last !== tag) {
+          tag.tabIndex = -1
+          last.tabIndex = 0
+          last.focus()
+          focusedTagIndexRef.current = tags.length - 1
+        }
+      } else if (e.key === " ") {
+        e.preventDefault()
+      }
+    },
+    [handleTagGroupRemove, value]
+  )
+
+  const handleTagPointerDown = useCallback(
+    (e: React.PointerEvent<HTMLSpanElement>): void => {
+      const clicked = e.currentTarget
+      const container = clicked.parentElement
+      if (!container) return
+      const tags = container.querySelectorAll<HTMLElement>("[data-tag]")
+      tags.forEach(t => {
+        t.tabIndex = t === clicked ? 0 : -1
+      })
+      const idx = Number(clicked.dataset.tagIndex)
+      focusedTagIndexRef.current = idx
+    },
+    []
+  )
+
+  const handleClearAll = useCallback((): void => {
+    setValueWithSource({ value: [], fromUi: true })
+  }, [setValueWithSource])
+
+  const handleContainerClick = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>): void => {
+      if (disabled) return
+      const target = e.target as HTMLElement
+      // Ignore clicks on buttons and tags — only empty space triggers focus/open
+      if (target.closest("button") || target.closest("[data-tag]")) return
+      inputRef.current?.focus()
+      openDropdownRef.current?.()
+    },
+    [disabled]
+  )
+
+  const handleInputPointerDown = useCallback((): void => {
+    if (disabled) return
+    openDropdownRef.current?.()
+  }, [disabled])
+
+  const handleInputKeyDownCapture = useCallback(
+    (e: React.KeyboardEvent<HTMLInputElement>): void => {
+      if (disabled) return
+
+      // Block character input for FILTER_MODE_NONE, but allow Backspace
+      // through when input is empty so the tag-removal handler can process it.
+      if (isFilterNone && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        const isTagRemoval =
+          e.key === "Backspace" && !e.currentTarget.value && value.length > 0
+        if (
+          !isTagRemoval &&
+          (e.key.length === 1 || e.key === "Backspace" || e.key === "Delete")
+        ) {
+          e.preventDefault()
+          return
         }
       }
-      case "clear": {
-        return { value: [] }
+
+      if (
+        (e.key === "ArrowDown" || e.key === "ArrowUp") &&
+        !isOpenRef.current
+      ) {
+        openDropdownRef.current?.()
       }
-      case "select": {
-        return {
-          value: this.state.value.concat([getIndex()]),
+
+      if (e.key === "Escape") {
+        if (filterActiveRef.current) {
+          // Layered: first Escape clears filter (keeps dropdown open),
+          // RAC handles the next Escape to close the dropdown.
+          e.preventDefault()
+          e.stopPropagation()
+          setInputValue("")
+          return
         }
       }
-      default: {
-        throw new Error(`State transition is unknown: ${data.type}`)
-      }
-    }
-  }
 
-  private onChange = (params: OnChangeParams): void => {
-    if (
-      this.props.element.maxSelections &&
-      params.type === "select" &&
-      this.state.value.length >= this.props.element.maxSelections
-    ) {
-      return
-    }
-    this.setState(this.generateNewState(params), () => {
-      this.commitWidgetValue({ fromUi: true })
-    })
-  }
+      // Creatable Enter: commit typed text as a new option.
+      // Only create when no item is focused or CREATABLE_ID is focused.
+      // If focus is on a real option or bulk action, let RAC handle it.
+      if (
+        e.key === "Enter" &&
+        !e.nativeEvent.isComposing &&
+        (element.acceptNewOptions ?? false)
+      ) {
+        const currentInput = inputValueRef.current
+        if (currentInput) {
+          const focused = focusedKeyRef.current
+          const shouldCreate =
+            !notNullOrUndefined(focused) || String(focused) === CREATABLE_ID
 
-  private filterOptions = (
-    options: readonly Option[],
-    filterValue: string
-  ): readonly Option[] => {
-    if (this.overMaxSelections()) {
-      return []
-    }
-    // We need to manually filter for previously selected options here
-    const unselectedOptions = options.filter(
-      option => !this.state.value.includes(Number(option.value))
-    )
-
-    return fuzzyFilterSelectOptions(
-      unselectedOptions as MultiselectOption[],
-      filterValue
-    )
-  }
-
-  public render(): React.ReactNode {
-    const { element, theme, width, widgetMgr } = this.props
-    const style = { width }
-    const { options } = element
-    const disabled = options.length === 0 ? true : this.props.disabled
-    const placeholder =
-      options.length === 0 ? "No options to select." : element.placeholder
-    const selectOptions: MultiselectOption[] = options.map(
-      (option: string, idx: number) => {
-        return {
-          label: option,
-          value: idx.toString(),
+          if (shouldCreate) {
+            const alreadyExists =
+              element.options.some(o => o === currentInput) ||
+              value.includes(currentInput)
+            if (!alreadyExists) {
+              if (
+                element.maxSelections > 0 &&
+                value.length >= element.maxSelections
+              ) {
+                e.preventDefault()
+                e.stopPropagation()
+                return
+              }
+              e.preventDefault()
+              e.stopPropagation()
+              const newValue = [...value, currentInput]
+              setValueWithSource({ value: newValue, fromUi: true })
+              setInputValue("")
+              return
+            }
+          }
         }
       }
-    )
 
-    // Manage our form-clear event handler.
-    this.formClearHelper.manageFormClearListener(
-      widgetMgr,
-      element.formId,
-      this.onFormCleared
-    )
+      // Backspace on empty input removes last tag
+      if (
+        e.key === "Backspace" &&
+        !e.currentTarget.value &&
+        value.length > 0
+      ) {
+        e.preventDefault()
+        scrollLockRef.current = true
+        if (tagsContainerRef.current) {
+          // eslint-disable-next-line streamlit-custom/no-force-reflow-access
+          scrollTopRef.current = tagsContainerRef.current.scrollTop
+        }
+        const newValue = valueRef.current.slice(0, -1)
+        valueRef.current = newValue
+        setValueWithSource({ value: newValue, fromUi: true })
+      }
+    },
+    [
+      disabled,
+      element.acceptNewOptions,
+      element.maxSelections,
+      element.options,
+      isFilterNone,
+      setValueWithSource,
+      value,
+    ]
+  )
 
-    // Check if we have more than 10 options in the selectbox.
-    // If that's true, we show the keyboard on mobile. If not, we hide it.
-    const showKeyboardOnMobile = options.length > 10
+  // Map selected values to option IDs for the ComboBox selection prop
+  const optionIndexMap = useMemo(
+    () => new Map(element.options.map((opt, idx) => [opt, idx])),
+    [element.options]
+  )
+  const selectedKeys = useMemo((): Set<Key> => {
+    const keys = new Set<Key>()
+    for (const v of value) {
+      const idx = optionIndexMap.get(v)
+      if (idx !== undefined) {
+        keys.add(String(idx))
+      }
+    }
+    return keys
+  }, [value, optionIndexMap])
 
-    return (
-      <div
-        className="row-widget stMultiSelect"
-        data-testid="stMultiSelect"
-        style={style}
+  const selectedKeysArray = useMemo(() => [...selectedKeys], [selectedKeys])
+
+  // Only use readOnly for mobile small-list case. Never for isFilterNone —
+  // readOnly breaks RAC keyboard navigation (Arrow/Enter). isFilterNone uses
+  // inputMode="none" + character blocking in the capture handler instead.
+  const inputReadOnly =
+    !isFilterNone &&
+    isMobile() &&
+    element.options.length <= 10 &&
+    !(element.acceptNewOptions ?? false)
+
+  // Derive clamped tag index for render — don't mutate ref during render
+  const clampedTagIndex = Math.min(
+    focusedTagIndexRef.current,
+    Math.max(0, value.length - 1)
+  )
+
+  return (
+    <div className="stMultiSelect" data-testid="stMultiSelect">
+      <WidgetLabel
+        label={element.label}
+        disabled={disabled}
+        labelVisibility={labelVisibilityProtoValueToEnum(
+          element.labelVisibility?.value
+        )}
       >
-        <WidgetLabel
-          label={element.label}
-          disabled={disabled}
-          labelVisibility={labelVisibilityProtoValueToEnum(
-            element.labelVisibility?.value
-          )}
+        {element.help && (
+          <WidgetLabelHelpIcon content={element.help} label={element.label} />
+        )}
+      </WidgetLabel>
+      <I18nProvider locale="en-US">
+        <ComboBox
+          selectionMode="multiple"
+          value={selectedKeysArray}
+          inputValue={inputValue}
+          onChange={handleChange}
+          onInputChange={handleInputChange}
+          onOpenChange={handleOpenChange}
+          isDisabled={disabled}
+          allowsCustomValue={element.acceptNewOptions ?? false}
+          allowsEmptyCollection
+          menuTrigger="manual"
+          defaultFilter={PASS_THROUGH_FILTER}
+          aria-label={element.label || "Multiselect"}
         >
-          {element.help && (
-            <StyledWidgetLabelHelp>
-              <TooltipIcon
-                content={element.help}
-                placement={Placement.TOP_RIGHT}
-              />
-            </StyledWidgetLabelHelp>
-          )}
-        </WidgetLabel>
-        <StyledUISelect>
-          <UISelect
-            options={selectOptions}
-            labelKey="label"
-            valueKey="value"
-            aria-label={element.label}
-            placeholder={placeholder}
-            type={TYPE.select}
-            multi
-            onChange={this.onChange}
-            value={this.valueFromState}
-            disabled={disabled}
-            size={"compact"}
-            noResultsMsg={this.getNoResultsMsg()}
-            filterOptions={this.filterOptions}
-            closeOnSelect={false}
-            overrides={{
-              SelectArrow: {
-                component: ChevronDown,
-
-                props: {
-                  overrides: {
-                    Svg: {
-                      style: () => ({
-                        width: theme.iconSizes.xl,
-                        height: theme.iconSizes.xl,
-                      }),
-                    },
-                  },
-                },
-              },
-
-              IconsContainer: {
-                style: () => ({
-                  paddingRight: theme.spacing.sm,
-                }),
-              },
-              ControlContainer: {
-                style: {
-                  // Baseweb requires long-hand props, short-hand leads to weird bugs & warnings.
-                  borderLeftWidth: "1px",
-                  borderRightWidth: "1px",
-                  borderTopWidth: "1px",
-                  borderBottomWidth: "1px",
-                },
-              },
-              Placeholder: {
-                style: () => ({
-                  flex: "inherit",
-                }),
-              },
-              ValueContainer: {
-                style: () => ({
-                  /*
-                    This minHeight is needed to fix a bug from BaseWeb in which the
-                    div that contains the options changes their height from 40px to 44px.
-
-                    You could check this behavior in their documentation as well:
-                    https://v8-17-1.baseweb.design/components/select/#select-as-multi-pick-search
-
-                    Issue related: https://github.com/streamlit/streamlit/issues/590
-                  */
-                  minHeight: "38.4px",
-                  paddingLeft: theme.spacing.sm,
-                  paddingTop: 0,
-                  paddingBottom: 0,
-                  paddingRight: 0,
-                }),
-              },
-              ClearIcon: {
-                props: {
-                  overrides: {
-                    Svg: {
-                      style: {
-                        color: theme.colors.darkGray,
-                        // Since the close icon is an SVG, and we can't control its viewbox nor its attributes,
-                        // Let's use a scale transform effect to make it bigger.
-                        // The width property only enlarges its bounding box, so it's easier to click.
-                        transform: "scale(1.5)",
-                        width: theme.spacing.twoXL,
-
-                        ":hover": {
-                          fill: theme.colors.bodyText,
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-              SearchIcon: {
-                style: {
-                  color: theme.colors.darkGray,
-                },
-              },
-              Tag: {
-                props: {
-                  overrides: {
-                    Root: {
-                      style: {
-                        borderTopLeftRadius: theme.radii.md,
-                        borderTopRightRadius: theme.radii.md,
-                        borderBottomRightRadius: theme.radii.md,
-                        borderBottomLeftRadius: theme.radii.md,
-                        fontSize: theme.fontSizes.sm,
-                        paddingLeft: theme.spacing.sm,
-                        marginLeft: 0,
-                        marginRight: theme.spacing.sm,
-                        height: "28px",
-                      },
-                    },
-                    Action: {
-                      style: {
-                        paddingLeft: 0,
-                      },
-                    },
-                    ActionIcon: {
-                      props: {
-                        overrides: {
-                          Svg: {
-                            style: {
-                              width: "10px",
-                              height: "10px",
-                            },
-                          },
-                        },
-                      },
-                    },
-                    Text: {
-                      style: {
-                        fontSize: theme.fontSizes.md,
-                      },
-                    },
-                  },
-                },
-              },
-              MultiValue: {
-                props: {
-                  overrides: {
-                    Root: {
-                      style: {
-                        fontSize: theme.fontSizes.sm,
-                      },
-                    },
-                  },
-                },
-              },
-              Input: {
-                props: {
-                  // Change the 'readonly' prop to hide the mobile keyboard if options < 10
-                  readOnly:
-                    isMobile && showKeyboardOnMobile === false
-                      ? "readonly"
-                      : null,
-                },
-              },
-              Dropdown: { component: VirtualDropdown },
-            }}
+          <DropdownController
+            openRef={openDropdownRef}
+            focusedKeyRef={focusedKeyRef}
           />
-        </StyledUISelect>
-      </div>
-    )
-  }
+          <StyledTrigger
+            ref={refs.setReference}
+            $maxHeight={maxHeight}
+            onClick={handleContainerClick}
+          >
+            <StyledTagsContainer
+              ref={tagsContainerRef}
+              onScroll={handleTagsScroll}
+              data-testid="stMultiSelectTagsContainer"
+            >
+              {value.length > 0 && (
+                <StyledTagGroup role="group" aria-label="Selected values">
+                  {value.map((v, idx) => (
+                    <StyledTag
+                      key={v}
+                      tabIndex={!disabled && idx === clampedTagIndex ? 0 : -1}
+                      aria-label={v}
+                      $disabled={disabled}
+                      data-tag=""
+                      data-tag-index={idx}
+                      onKeyDown={disabled ? undefined : handleTagKeyDown}
+                      onPointerDown={
+                        disabled ? undefined : handleTagPointerDown
+                      }
+                    >
+                      <StyledTagText title={v}>{v}</StyledTagText>
+                      {!disabled && (
+                        <StyledTagRemoveButton
+                          aria-label={`Remove ${v}`}
+                          tabIndex={-1}
+                          onClick={e => {
+                            e.stopPropagation()
+                            handleTagGroupRemove(new Set([v]))
+                            inputRef.current?.focus({ preventScroll: true })
+                          }}
+                        >
+                          <TagRemoveIcon />
+                        </StyledTagRemoveButton>
+                      )}
+                    </StyledTag>
+                  ))}
+                </StyledTagGroup>
+              )}
+              <StyledFilterInput
+                ref={inputRef}
+                placeholder={value.length === 0 ? placeholder : ""}
+                readOnly={inputReadOnly}
+                inputMode={isFilterNone ? "none" : undefined}
+                $typingDisabled={isFilterNone}
+                $hasValues={value.length > 0}
+                onPointerDown={handleInputPointerDown}
+                onKeyDownCapture={handleInputKeyDownCapture}
+                onPaste={isFilterNone ? preventInputEvent : undefined}
+                onCompositionStart={
+                  isFilterNone ? preventInputEvent : undefined
+                }
+              />
+            </StyledTagsContainer>
+            {value.length > 0 && !disabled && (
+              <StyledClearButton
+                aria-label="Clear all"
+                slot={null}
+                onPress={handleClearAll}
+              >
+                <Cancel size={theme.iconSizes.base} aria-hidden="true" />
+              </StyledClearButton>
+            )}
+            <StyledOpenButton
+              aria-label="Open"
+              excludeFromTabOrder
+              onPress={() => openDropdownRef.current?.()}
+            >
+              <KeyboardArrowDown
+                size={theme.iconSizes.lg}
+                aria-hidden="true"
+              />
+            </StyledOpenButton>
+          </StyledTrigger>
+          <StyledPopover
+            ref={refs.setFloating}
+            data-testid="stMultiSelectDropdown"
+            placement="bottom left"
+            isNonModal
+            $isInSidebar={isInSidebar}
+            offset={0}
+            style={
+              {
+                ...floatingStyles,
+                "--scrollbar-gutter-size": `${scrollbarGutterSize}px`,
+              } as React.CSSProperties
+            }
+          >
+            <Virtualizer
+              layout={ListLayout}
+              layoutOptions={virtualizerLayoutOptions}
+            >
+              <StyledListBox
+                aria-label={element.label || "Multiselect options"}
+                items={displayOptions}
+                renderEmptyState={() => (
+                  <StyledEmptyState>{noResultsMsg}</StyledEmptyState>
+                )}
+              >
+                {renderOption}
+              </StyledListBox>
+            </Virtualizer>
+          </StyledPopover>
+        </ComboBox>
+      </I18nProvider>
+    </div>
+  )
 }
 
-export default withTheme(Multiselect)
+export default memo(Multiselect)

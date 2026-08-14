@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,17 @@
  * limitations under the License.
  */
 
-import React from "react"
-import "@testing-library/jest-dom"
 import { screen } from "@testing-library/react"
-import { render } from "@streamlit/lib/src/test_util"
+
+import { render } from "~lib/test_util"
+
 import CameraInputButton, { CameraInputButtonProps } from "./CameraInputButton"
 
 const getProps = (
   props: Partial<CameraInputButtonProps> = {}
 ): CameraInputButtonProps => {
   return {
-    onClick: jest.fn(),
+    onClick: vi.fn(),
     disabled: false,
     progress: 0,
     ...props,
@@ -45,5 +45,15 @@ describe("Testing Camera Input Button", () => {
 
     const progress = screen.getByRole("progressbar")
     expect(progress).toHaveAttribute("aria-valuenow", "50")
+  })
+
+  it("renders disabled button properly", () => {
+    const props = getProps({ disabled: true })
+
+    render(<CameraInputButton {...props} />)
+
+    const button = screen.getByTestId("stCameraInputButton")
+    expect(button).toBeDisabled()
+    expect(button).toHaveStyle("cursor: not-allowed")
   })
 })

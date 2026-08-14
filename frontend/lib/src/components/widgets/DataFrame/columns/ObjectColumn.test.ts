@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,9 @@
  */
 
 import { GridCellKind, TextCell } from "@glideapps/glide-data-grid"
+import { Field, Utf8 } from "apache-arrow"
+
+import { DataFrameCellType } from "~lib/dataframes/arrowTypeUtils"
 
 import ObjectColumn from "./ObjectColumn"
 
@@ -26,12 +29,18 @@ const MOCK_OBJECT_COLUMN_PROPS = {
   isEditable: false,
   isHidden: false,
   isIndex: false,
+  isPinned: false,
   isStretched: false,
   arrowType: {
-    // The arrow type of the underlying data is
-    // not used for anything inside the column.
-    pandas_type: "object",
-    numpy_type: "object",
+    type: DataFrameCellType.DATA,
+    arrowField: new Field("object_column", new Utf8(), true),
+    pandasType: {
+      field_name: "object_column",
+      name: "object_column",
+      pandas_type: "object",
+      numpy_type: "object",
+      metadata: null,
+    },
   },
 }
 
@@ -83,7 +92,7 @@ describe("ObjectColumn", () => {
     [undefined, null],
   ])(
     "supports string-compatible value (%p parsed as %p)",
-    (input: any, value: string | null) => {
+    (input: unknown, value: string | null) => {
       const mockColumn = ObjectColumn(MOCK_OBJECT_COLUMN_PROPS)
       const cell = mockColumn.getCell(input)
       expect(mockColumn.getCellValue(cell)).toEqual(value)

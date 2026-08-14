@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,38 +14,73 @@
  * limitations under the License.
  */
 
-/* eslint-disable @typescript-eslint/no-unused-vars */
+import { PureComponent, ReactElement } from "react"
 
-import React, { PureComponent, ReactElement } from "react"
-import "@testing-library/jest-dom"
-import { screen, waitFor } from "@testing-library/react"
+import { act, screen, waitFor } from "@testing-library/react"
+
+import {
+  AppConfig as ConnectionAppConfig,
+  LibConfig as ConnectionLibConfig,
+  StreamlitEndpoints,
+} from "@streamlit/connection"
 import {
   AppRoot,
-  VerticalBlock,
   ComponentRegistry,
+  ContainerContentsWrapper,
+  createFormsData,
   FileUploadClient,
+  FormsData,
+  LibConfigContextProps,
   ScriptRunState,
   SessionInfo,
-  StreamlitEndpoints,
-  createFormsData,
-  FormsData,
   WidgetStateManager,
+} from "@streamlit/lib"
+import { render } from "@streamlit/lib/testing"
+import {
   Delta as DeltaProto,
   Element as ElementProto,
   ForwardMsgMetadata as ForwardMsgMetadataProto,
   Text as TextProto,
-  render,
-} from "@streamlit/lib"
+} from "@streamlit/protobuf"
 
 /**
  * Example StreamlitEndpoints implementation.
  */
 class Endpoints implements StreamlitEndpoints {
-  public buildComponentURL(): string {
+  public setStaticConfigUrl(_url: string | null): void {
     throw new Error("Unimplemented")
   }
 
+  public sendClientErrorToHost(
+    _component: string,
+    _error: string | number,
+    _message: string,
+    _source: string,
+    _customComponentName?: string
+  ): void {
+    throw new Error("Unimplemented")
+  }
+
+  public checkSourceUrlResponse(
+    _sourceUrl: string,
+    _componentName?: string
+  ): Promise<void> {
+    return Promise.reject(new Error("Unimplemented"))
+  }
+
+  public buildComponentURL(_componentName: string, path: string): string {
+    return path
+  }
+
+  public buildBidiComponentURL(_componentName: string, path: string): string {
+    return path
+  }
+
   public buildMediaURL(url: string): string {
+    return url
+  }
+
+  public buildDownloadUrl(url: string): string {
     return url
   }
 
@@ -64,12 +99,9 @@ class Endpoints implements StreamlitEndpoints {
   public deleteFileAtURL(): Promise<void> {
     return Promise.reject(new Error("Unimplemented"))
   }
-
-  public fetchCachedForwardMsg(): Promise<Uint8Array> {
-    return Promise.reject(new Error("Unimplemented"))
-  }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-empty-object-type
 interface Props {}
 
 interface State {
@@ -95,11 +127,11 @@ class StreamlitLibExample extends PureComponent<Props, State> {
 
   private readonly endpoints = new Endpoints()
 
-  private readonly componentRegistry = new ComponentRegistry(this.endpoints)
-
   private readonly widgetMgr: WidgetStateManager
 
   private readonly uploadClient: FileUploadClient
+
+  private readonly componentRegistry: ComponentRegistry
 
   public constructor(props: Props) {
     super(props)
@@ -110,6 +142,8 @@ class StreamlitLibExample extends PureComponent<Props, State> {
       formsDataChanged: formsData => this.setState({ formsData }),
     })
 
+    this.componentRegistry = new ComponentRegistry(this.endpoints)
+
     this.uploadClient = new FileUploadClient({
       sessionInfo: this.sessionInfo,
       endpoints: this.endpoints,
@@ -118,8 +152,8 @@ class StreamlitLibExample extends PureComponent<Props, State> {
       // to a FileUploadClient callback. The FormSubmitButton element
       // reads the state.
       formsWithPendingRequestsChanged: formIds =>
-        this.widgetMgr.setFormsWithUploads(formIds),
-      requestFileURLs: jest.fn(),
+        this.widgetMgr.setFormsWithUploadsInProgress(formIds),
+      requestFileURLs: vi.fn(),
     })
 
     this.sessionInfo.setCurrent({
@@ -134,15 +168,19 @@ class StreamlitLibExample extends PureComponent<Props, State> {
       appId: "",
       streamlitVersion: "",
       pythonVersion: "",
+      serverOS: "",
+      hasDisplay: true,
       installationId: "",
       installationIdV3: "",
+      installationIdV4: "",
       commandLine: "",
       isHello: false,
+      isConnected: true,
     })
 
     // Initialize React state
     this.state = {
-      elements: AppRoot.empty(),
+      elements: AppRoot.empty(""),
       formsData: createFormsData(),
       scriptRunState: ScriptRunState.NOT_RUNNING,
       // ScriptRunID should get a new unique ID every time the
@@ -190,28 +228,25 @@ class StreamlitLibExample extends PureComponent<Props, State> {
     }))
   }
 
-  public render = (): ReactElement => {
+  public override render = (): ReactElement => {
     // This example doesn't involve a sidebar, so our only root blockNode
     // is `elements.main`.
     const blockNode = this.state.elements.main
 
     return (
-      <VerticalBlock
+      <ContainerContentsWrapper
         node={blockNode}
         endpoints={this.endpoints}
-        sessionInfo={this.sessionInfo}
-        scriptRunId={this.state.scriptRunId}
-        scriptRunState={this.state.scriptRunState}
         widgetMgr={this.widgetMgr}
         uploadClient={this.uploadClient}
         widgetsDisabled={false}
         componentRegistry={this.componentRegistry}
-        formsData={this.state.formsData}
+        height="auto"
       />
     )
   }
 
-  private sendRerunBackMsg = (): void => {}
+  private readonly sendRerunBackMsg = (): void => {}
 }
 
 describe("StreamlitLibExample", () => {
@@ -225,9 +260,9 @@ describe("StreamlitLibExample", () => {
     )
   })
 
-  it("handles Delta messages", () => {
+  it("handles Delta messages", async () => {
     // there's nothing within the app ui to cycle through script run messages so we need a reference
-    let streamlitLibInstance: any
+    let streamlitLibInstance: StreamlitLibExample | null = null
     render(
       <StreamlitLibExample
         ref={ref => {
@@ -248,16 +283,46 @@ describe("StreamlitLibExample", () => {
       deltaPath: [0, 0], // main container, first element
     })
 
-    // Send the delta to our app
-    streamlitLibInstance.beginScriptRun("newScriptRun")
-    streamlitLibInstance.handleDeltaMsg(delta, metadata)
-    streamlitLibInstance.endScriptRun()
+    expect(streamlitLibInstance).not.toBeNull()
+    // The ref callback has set the instance by this point
+    const instance = streamlitLibInstance as unknown as StreamlitLibExample
+
+    // Send the delta to our app (wrap in act() because these cause state updates)
+    act(() => {
+      instance.beginScriptRun("newScriptRun")
+      instance.handleDeltaMsg(delta, metadata)
+      instance.endScriptRun()
+    })
 
     // our "Please wait..." alert should be gone, because it
     // belonged to a previous "script run"
     expect(screen.queryByText("Please wait...")).not.toBeInTheDocument()
 
     // And we should have the single Text element we created
-    expect(screen.getByText("Hello, world!")).toBeInTheDocument()
+    expect(await screen.findByText("Hello, world!")).toBeInTheDocument()
+  })
+
+  it("sees config types as compatible structures", () => {
+    // Verify AppConfig is structurally identical between packages
+    const appConfig: ConnectionAppConfig = {}
+
+    // Verify LibConfig (from connection) is compatible with LibContextProps (from lib)
+    // LibContextProps extends LibConfig, so this verifies the inheritance is valid
+    const libConfigCheck: Partial<LibConfigContextProps> = {
+      mapboxToken: "test",
+      disableFullscreenMode: false,
+      enforceDownloadInNewTab: true,
+      resourceCrossOriginMode: "anonymous",
+    } as ConnectionLibConfig
+
+    // This test passes if TypeScript compilation succeeds
+    // Just do some basic checks to mark the variables as used:
+    expect(appConfig).toEqual({})
+    expect(libConfigCheck).toEqual({
+      mapboxToken: "test",
+      disableFullscreenMode: false,
+      enforceDownloadInNewTab: true,
+      resourceCrossOriginMode: "anonymous",
+    })
   })
 })

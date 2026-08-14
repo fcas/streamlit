@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,53 +14,54 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
+import { forwardRef, memo, ReactElement } from "react"
+
 import {
-  BaseLinkButtonProps as BaseLinkButtonPropsT,
   BaseButtonKind,
   BaseButtonSize,
+  BaseLinkButtonProps as BaseLinkButtonPropsT,
   StyledPrimaryLinkButton,
   StyledSecondaryLinkButton,
+  StyledTertiaryLinkButton,
 } from "./styled-components"
 
 // We define separate BaseLinkButton, and not use BaseButton for st.link_button,
 // because link behavior requires tag <a> instead of <button>.
-function BaseLinkButton({
-  kind,
-  size,
-  disabled,
-  fluidWidth,
-  children,
-  autoFocus,
-  href,
-  rel,
-  target,
-  onClick,
-}: BaseLinkButtonPropsT): ReactElement {
+const BaseLinkButton = forwardRef<
+  HTMLAnchorElement,
+  Readonly<BaseLinkButtonPropsT>
+>(function BaseLinkButtonWithRef(
+  { kind, size, disabled, children, autoFocus, href, rel, target, onClick },
+  ref
+): ReactElement {
   let ComponentType = StyledPrimaryLinkButton
 
   if (kind === BaseButtonKind.SECONDARY) {
     ComponentType = StyledSecondaryLinkButton
+  } else if (kind === BaseButtonKind.TERTIARY) {
+    ComponentType = StyledTertiaryLinkButton
   }
 
   return (
     <ComponentType
+      ref={ref}
       kind={kind}
       size={size || BaseButtonSize.MEDIUM}
-      fluidWidth={fluidWidth || false}
+      containerWidth={true}
       disabled={disabled || false}
       autoFocus={autoFocus || false}
-      data-testid={`baseLinkButton-${kind}`}
       href={href}
       target={target}
       rel={rel}
       onClick={onClick}
       tabIndex={disabled ? -1 : 0}
+      data-testid={`stBaseLinkButton-${kind}`}
     >
       {children}
     </ComponentType>
   )
-}
-export type BaseButtonProps = BaseLinkButtonPropsT
-export { BaseButtonKind, BaseButtonSize }
-export default BaseLinkButton
+})
+
+BaseLinkButton.displayName = "BaseLinkButton"
+
+export default memo(BaseLinkButton)

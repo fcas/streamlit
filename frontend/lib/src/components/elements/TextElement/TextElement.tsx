@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,31 +14,35 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
-import { Text as TextProto } from "@streamlit/lib/src/proto"
-import {
-  InlineTooltipIcon,
-  StyledLabelHelpWrapper,
-} from "@streamlit/lib/src/components/shared/TooltipIcon"
-import { StyledText } from "./styled-components"
+import { memo, ReactElement } from "react"
+
+import { Text as TextProto } from "@streamlit/protobuf"
+
+import { StyledLabelHelpWrapper } from "~lib/components/shared/TooltipIcon/styled-components"
+import { InlineTooltipIcon } from "~lib/components/shared/TooltipIcon/TooltipIcon"
+
+import { StyledInlineHelpIcon, StyledText } from "./styled-components"
 
 export interface TextProps {
-  width: number
   element: TextProto
 }
 
 /**
  * Functional element representing preformatted (plain) text.
  */
-export default function TextElement({
-  width,
-  element,
-}: TextProps): ReactElement {
-  const styleProp = { width }
+function TextElement({ element }: Readonly<TextProps>): ReactElement {
   return (
-    <StyledLabelHelpWrapper style={styleProp} data-testid="stText">
-      <StyledText>{element.body}</StyledText>
-      {element.help && <InlineTooltipIcon content={element.help} />}
+    <StyledLabelHelpWrapper className="stText" data-testid="stText">
+      <StyledText>
+        {element.body}
+        {element.help && (
+          <StyledInlineHelpIcon>
+            <InlineTooltipIcon content={element.help} />
+          </StyledInlineHelpIcon>
+        )}
+      </StyledText>
     </StyledLabelHelpWrapper>
   )
 }
+
+export default memo(TextElement)

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,6 +33,13 @@ const ANIMATION_STYLES = {
   animationTimingFunction: "ease-in",
   animationDirection: "normal",
   animationIterationCount: "infinite",
+  // Respect the user's reduced-motion preference by disabling the pulse
+  // animation. The skeleton remains visible as a static placeholder. We only
+  // reset `animationName` (not the `animation` shorthand) to avoid clobbering
+  // the other animation longhands defined above.
+  "@media (prefers-reduced-motion: reduce)": {
+    animationName: "none",
+  },
 }
 
 export const StyledSkeleton = styled.div(({ theme }) => ({
@@ -43,21 +50,20 @@ export const StyledSkeleton = styled.div(({ theme }) => ({
 
 export const TitleSkeleton = styled.div(({ theme }) => ({
   height: theme.fontSizes.fourXL,
-  width: "17rem", // Picked because it looks good.
+  width: `calc(${theme.sizes.contentMaxWidth} * 0.37)`, // Picked because it looks good.
   maxWidth: "75%", // Picked because it looks good.
-  background:
-    theme.colors.skeletonBackgroundColor || theme.colors.darkenedBgMix15,
-  borderRadius: theme.radii.lg,
+  background: theme.colors.darkenedBgMix15,
+  borderRadius: theme.radii.default,
   ...ANIMATION_STYLES,
 }))
 
-export const ParagraphSkeleton = styled.div(() => ({
+export const ParagraphSkeleton = styled.div(({ theme }) => ({
   display: "flex",
   flexDirection: "column",
-  gap: "0.5rem", // Picked because it looks good.
+  gap: theme.spacing.sm, // Picked because it looks good.
 }))
 
-export interface TextLineSkeletonProps {
+interface TextLineSkeletonProps {
   width: string
 }
 
@@ -65,25 +71,25 @@ export const TextLineSkeleton = styled.div<TextLineSkeletonProps>(
   ({ theme, width }) => ({
     height: theme.fontSizes.md,
     width,
-    background:
-      theme.colors.skeletonBackgroundColor || theme.colors.darkenedBgMix15,
-    borderRadius: theme.radii.lg,
+    background: theme.colors.darkenedBgMix15,
+    borderRadius: theme.radii.default,
     ...ANIMATION_STYLES,
   })
 )
 
-export interface SquareSkeletonProps {
+interface SquareSkeletonProps {
   height?: string
   width?: string
 }
 
 export const SquareSkeleton = styled.div<SquareSkeletonProps>(
   ({ theme, height, width }) => ({
-    height: height ?? theme.fontSizes.fourXL,
+    // Default to the standard widget height (used as the placeholder height for
+    // most other elements) when no explicit height is provided.
+    height: height ?? theme.sizes.minElementHeight,
     width: width ?? "100%",
-    background:
-      theme.colors.skeletonBackgroundColor || theme.colors.darkenedBgMix15,
-    borderRadius: theme.radii.lg,
+    background: theme.colors.darkenedBgMix15,
+    borderRadius: theme.radii.default,
     ...ANIMATION_STYLES,
   })
 )

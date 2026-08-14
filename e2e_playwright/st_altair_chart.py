@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,40 +15,11 @@
 import altair as alt
 import numpy as np
 import pandas as pd
+from vega_datasets import data
 
 import streamlit as st
 
 np.random.seed(0)
-
-data = np.random.randn(200, 3)
-df = pd.DataFrame(data, columns=["a", "b", "c"])
-chart = alt.Chart(df).mark_circle().encode(x="a", y="b", size="c", color="c")
-
-st.write("Show default vega lite theme:")
-st.altair_chart(chart, theme=None)
-
-st.write("Show streamlit theme:")
-st.altair_chart(chart, theme="streamlit")
-
-st.write("Overwrite theme config:")
-chart = (
-    alt.Chart(df, usermeta={"embedOptions": {"theme": None}})
-    .mark_circle()
-    .encode(x="a", y="b", size="c", color="c")
-)
-st.altair_chart(chart, theme="streamlit")
-
-data = pd.DataFrame(
-    {
-        "a": ["A", "B", "C", "D", "E", "F", "G", "H", "I"],
-        "b": [28, 55, 43, 91, 81, 53, 19, 87, 52],
-    }
-)
-
-chart = alt.Chart(data).mark_bar().encode(x="a", y="b")
-
-st.write("Bar chart with overwritten theme props:")
-st.altair_chart(chart.configure_mark(color="black"), theme="streamlit")
 
 # mark_arc was added in 4.2, but we have to support altair 4.0-4.1, so we
 # have to skip this part of the test when testing min versions.
@@ -68,7 +39,37 @@ if not (major == "4" and minor < "2"):
     )
 
     st.write("Pie Chart with more than 4 Legend items")
-    st.altair_chart(chart, theme="streamlit")
+    st.altair_chart(chart, theme="streamlit", width="content")
+
+
+df1 = pd.DataFrame(np.random.randn(200, 3), columns=["a", "b", "c"])
+chart = alt.Chart(df1).mark_circle().encode(x="a", y="b", size="c", color="c")
+
+st.write("Show default vega lite theme:")
+st.altair_chart(chart, theme=None)
+
+st.write("Show streamlit theme:")
+st.altair_chart(chart, theme="streamlit")
+
+st.write("Overwrite theme config:")
+chart = (
+    alt.Chart(df1, usermeta={"embedOptions": {"theme": None}})
+    .mark_circle()
+    .encode(x="a", y="b", size="c", color="c")
+)
+st.altair_chart(chart, theme="streamlit")
+
+df2 = pd.DataFrame(
+    {
+        "a": ["A", "B", "C", "D", "E", "F", "G", "H", "I"],
+        "b": [28, 55, 43, 91, 81, 53, 19, 87, 52],
+    }
+)
+
+chart = alt.Chart(df2).mark_bar().encode(x="a", y="b")
+
+st.write("Bar chart with overwritten theme props:")
+st.altair_chart(chart.configure_mark(color="black"), theme="streamlit")
 
 # taken from vega_datasets barley example
 barley = alt.UrlData(
@@ -81,14 +82,16 @@ barley_chart = (
     .encode(x="year:O", y="sum(yield):Q", color="year:N", column="site:N")
 )
 
-st.write("Grouped Bar Chart with default theme:")
-st.altair_chart(barley_chart, theme=None)
+# TODO(lukasmasuch): This chart causes some flickering in webkit & chromium.
+# This points to an actual bug or issue that needs more investigation.
+# st.write("Grouped Bar Chart with default theme:")  # noqa: ERA001
+# st.altair_chart(barley_chart, theme=None)  # noqa: ERA001
 
-st.write("Grouped Bar Chart with streamlit theme:")
-st.altair_chart(barley_chart, theme="streamlit")
+# st.write("Grouped Bar Chart with streamlit theme:")  # noqa: ERA001
+# st.altair_chart(barley_chart, theme="streamlit")  # noqa: ERA001
 
-st.write("Chart with use_container_width used")
-st.altair_chart(barley_chart, theme=None, use_container_width=True)
+# st.write( "Grouped Bar Chart with use_container_width=True (note that this doesn't work well)")  # noqa: ERA001
+# st.altair_chart(barley_chart, theme=None, use_container_width=True)  # noqa: ERA001
 
 st.write("Layered chart")
 # Taken from vega_datasets
@@ -109,27 +112,148 @@ x = np.linspace(10, 100, 10)
 y1 = 5 * x
 y2 = 1 / x
 
-df1 = pd.DataFrame.from_dict({"x": x, "y1": y1, "y2": y2})
+df3 = pd.DataFrame.from_dict({"x": x, "y1": y1, "y2": y2})
 
-c1 = alt.Chart(df1).mark_line().encode(alt.X("x"), alt.Y("y1"))
+c1 = alt.Chart(df3).mark_line().encode(alt.X("x"), alt.Y("y1"))
 
-c2 = alt.Chart(df1).mark_line().encode(alt.X("x"), alt.Y("y2"))
+c2 = alt.Chart(df3).mark_line().encode(alt.X("x"), alt.Y("y2"))
 
-st.altair_chart(c1 & c2, use_container_width=True)
+st.altair_chart(c1 & c2)
 
-from altair.expr import datum
+# Issue #9339: legend.title=None shouldn't cut chart off
+df_cut_off_issue = pd.DataFrame(
+    {
+        "x": [1, 2, 3, 4],
+        "y": [10, 20, 30, 40],
+        "category": ["A", "B", "C", "D"],
+    }
+)
 
-results = [
-    [2016, 11525, 3],
-    [2017, 11517, 2],
-    [2018, 11521, 2],
-    [2019, 11519, 4],
-]
+cut_off_chart = (
+    alt.Chart(df_cut_off_issue)
+    .mark_line(point=True)
+    .encode(
+        x=alt.X("x", title="Date"),
+        y=alt.Y("y:Q", title="Value"),
+        color=alt.Color("category:N").legend(orient="bottom", title=None),
+    )
+)
 
-dataframe = pd.DataFrame(results, columns=["Job Number", "Test Count", "Test Failures"])
+st.write("Altair chart cut off if legend title is None (Issue #9339)")
+st.altair_chart(cut_off_chart)
 
-base = alt.Chart(dataframe).encode(alt.X("Job Number:O"))
-chart_test_count = base.mark_line().encode(alt.Y("Test Count:N"))
-chart_test_failures = base.mark_line().encode(alt.Y("Test Failures:N"))
+# Issue #13410: Scatter plot with marginal histograms (nested vconcat+hconcat)
+st.write("Scatter plot with marginal histograms")
 
-st.altair_chart((chart_test_count + chart_test_failures).resolve_scale(y="independent"))
+# Create a scatter plot with marginal histograms using the pattern: top_hist & (points | right_hist)
+# This creates a vconcat containing hconcat, which was broken in v1.42+
+source = data.iris()
+base = alt.Chart(source)
+
+xscale = alt.Scale(domain=(4.0, 8.0))
+yscale = alt.Scale(domain=(1.9, 4.55))
+
+bar_args = {"opacity": 0.3, "binSpacing": 0}
+
+points = base.mark_circle().encode(
+    alt.X("sepalLength", scale=xscale),
+    alt.Y("sepalWidth", scale=yscale),
+    color="species",
+)
+
+top_hist = (
+    base.mark_bar(**bar_args)  # type: ignore[arg-type]
+    .encode(
+        alt.X(
+            "sepalLength:Q",
+            bin=alt.Bin(maxbins=20, extent=xscale.domain),
+            stack=None,
+            title="",
+        ),
+        alt.Y("count()", stack=None, title=""),
+        alt.Color("species:N"),
+    )
+    .properties(height=60)
+)
+
+right_hist = (
+    base.mark_bar(**bar_args)  # type: ignore[arg-type]
+    .encode(
+        alt.Y(
+            "sepalWidth:Q",
+            bin=alt.Bin(maxbins=20, extent=yscale.domain),
+            stack=None,
+            title="",
+        ),
+        alt.X("count()", stack=None, title=""),
+        alt.Color("species:N"),
+    )
+    .properties(width=60)
+)
+
+marginal_hist_chart = top_hist & (points | right_hist)
+st.altair_chart(marginal_hist_chart, theme="streamlit")
+
+# Regression scenario for https://github.com/streamlit/streamlit/issues/13974:
+# layered child inside vconcat with explicit autosize=fit-x and width=stretch.
+st.write("Regression: Layered vconcat chart with autosize=fit-x and width=stretch")
+df_regression = pd.DataFrame(
+    np.random.default_rng(0).standard_normal((60, 2)), columns=["a", "b"]
+)
+base_regression = (
+    alt.Chart(df_regression)
+    .mark_circle()
+    .encode(x="a", y="b")
+    .properties(width=400, height=200)
+)
+text_regression = base_regression.mark_text(dy=-10).encode(
+    text=alt.Text("b:Q", format=".1f")
+)
+regression_chart = (base_regression + text_regression) & base_regression
+regression_chart = regression_chart.properties(autosize="fit-x")
+st.altair_chart(regression_chart, width="stretch")
+
+# Regression scenario for https://github.com/streamlit/streamlit/issues/14050:
+# vconcat of layered + faceted children with width=stretch should render.
+st.write("Regression: vconcat of layered faceted charts with width=stretch")
+df_issue_14050 = pd.DataFrame(
+    {
+        "group": ["x", "x", "x", "y", "y", "y", "z", "z", "z"],
+        "bin": [1, 2, 3, 1, 2, 3, 1, 2, 3],
+        "xval": [10, 20, 30, 12, 22, 32, 14, 24, 34],
+        "y1": [4, 6, 8, 5, 7, 9, 6, 8, 10],
+        "y2": [2, 3, 5, 2.5, 3.5, 5.5, 3, 4, 6],
+        "selected": [False, True, False, False, True, False, False, True, False],
+    }
+)
+
+
+def _faceted_layer(metric: str, title: str) -> alt.FacetChart:
+    base_layer = (
+        alt.Chart(df_issue_14050)
+        .mark_line(point=True)
+        .encode(
+            x=alt.X("xval:Q", axis=alt.Axis(title="xval")),
+            y=alt.Y(f"{metric}:Q", axis=alt.Axis(title=title)),
+            color=alt.Color("group:N", legend=alt.Legend(title="Group")),
+            tooltip=["group", "bin", "xval", metric],
+        )
+    )
+    selected_layer = (
+        alt.Chart(df_issue_14050)
+        .mark_point(shape="diamond", color="purple", filled=True, size=90)
+        .encode(x=alt.X("xval:Q"), y=alt.Y(f"{metric}:Q"))
+        .transform_filter(alt.datum.selected)
+    )
+    return alt.layer(base_layer, selected_layer).facet(column=alt.Column("bin:O"))
+
+
+issue_14050_chart = (
+    alt.vconcat(
+        _faceted_layer("y1", "y1"),
+        _faceted_layer("y2", "y2"),
+    )
+    .resolve_scale(x="independent", y="independent")
+    .properties(title="Issue #14050 regression chart")
+)
+st.altair_chart(issue_14050_chart, width="stretch")

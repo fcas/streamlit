@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,7 +15,8 @@
 from __future__ import annotations
 
 import unittest
-from typing import Any, Tuple
+from typing import Any
+from unittest.mock import patch
 
 from parameterized import parameterized
 
@@ -38,6 +39,12 @@ GITHUB_URLS = [
         "https://github.com/mekarpeles/math.mx/blob/master/README.md",
         "https://github.com/mekarpeles/math.mx/raw/master/README.md",
     ),
+]
+
+# Raw URLs that should be returned unchanged
+GITHUB_RAW_URLS = [
+    "https://github.com/streamlit/streamlit/raw/develop/e2e_playwright/st_video.py",
+    "https://github.com/aritropaul/streamlit/raw/b72adbcf00c91775db14e739e2ea33d6df9079c3/lib/streamlit/cli.py",
 ]
 
 GIST_URLS = [
@@ -79,6 +86,11 @@ class GitHubUrlTest(unittest.TestCase):
         for url in INVALID_URLS:
             assert url == url_util.process_gitblob_url(url)
 
+    def test_raw_github_url_is_unchanged(self):
+        """Test that GitHub raw URLs are returned unchanged."""
+        for url in GITHUB_RAW_URLS:
+            assert url_util.process_gitblob_url(url) == url
+
 
 class UrlUtilTest(unittest.TestCase):
     @parameterized.expand(
@@ -103,8 +115,8 @@ class UrlUtilTest(unittest.TestCase):
     )
     def test_is_url(self, url: Any, expected_value: bool):
         """Test the is_url utility function."""
-        self.assertEqual(
-            url_util.is_url(url, ("http", "https", "data", "mailto")), expected_value
+        assert (
+            url_util.is_url(url, ("http", "https", "data", "mailto")) == expected_value
         )
 
     @parameterized.expand(
@@ -126,12 +138,45 @@ class UrlUtilTest(unittest.TestCase):
     def test_is_url_limits_schema(
         self,
         url: str,
-        allowed_schemas: Tuple[url_util.UrlSchema, ...] | None,
+        allowed_schemas: tuple[url_util.UrlSchema, ...] | None,
         expected_value: bool,
     ):
         """Test that is_ur applies the allowed schema parameter."""
 
         if allowed_schemas is None:
-            self.assertEqual(url_util.is_url(url), expected_value)
+            assert url_util.is_url(url) == expected_value
         else:
-            self.assertEqual(url_util.is_url(url, allowed_schemas), expected_value)
+            assert url_util.is_url(url, allowed_schemas) == expected_value
+
+    @parameterized.expand(
+        [
+            # Valid static URLs:
+            ("/app/static/image.png", True),
+            ("/app/static/subdir/image.png", True),
+            ("/app/static/", True),
+            ("/app/static/video.mp4", True),
+            # Invalid static URLs:
+            ("/app/stati/image.png", False),  # Wrong path
+            ("app/static/image.png", False),  # Missing leading slash
+            ("/media/image.png", False),  # Different endpoint
+            ("https://example.com/app/static/image.png", False),  # Full URL
+            ("/app/staticfile.png", False),  # Missing trailing slash in endpoint
+            ("", False),  # Empty string
+        ]
+    )
+    def test_is_relative_static_url(self, url: str, expected_value: bool):
+        """Test is_relative_static_url function for detecting /app/static/ URLs."""
+        assert url_util.is_relative_static_url(url) == expected_value
+
+    def test_is_url_returns_false_when_urlparse_raises_value_error(self):
+        """ValueError from urlparse is caught and treated as an invalid URL."""
+        with patch.object(url_util, "urlparse", side_effect=ValueError("bad url")):
+            assert url_util.is_url("http://example.com") is False
+
+    def test_is_url_returns_false_for_allowed_but_unknown_scheme(self):
+        """Defensive fallback: allowed_schemas may include schemes outside the
+        known handling set; such URLs are rejected rather than silently allowed."""
+        # "ftp" is outside UrlSchema's known set ({http, https, mailto, data}),
+        # so even when explicitly listed in allowed_schemas it falls through to
+        # the trailing `return False`.
+        assert url_util.is_url("ftp://example.com", ("ftp",)) is False  # type: ignore[arg-type]

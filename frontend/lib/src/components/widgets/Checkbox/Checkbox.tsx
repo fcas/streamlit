@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,289 +14,179 @@
  * limitations under the License.
  */
 
-import React from "react"
-import { withTheme } from "@emotion/react"
-import { labelVisibilityProtoValueToEnum } from "@streamlit/lib/src/util/utils"
-import {
-  Checkbox as UICheckbox,
-  STYLE_TYPE,
-  LABEL_PLACEMENT,
-} from "baseui/checkbox"
-import { Checkbox as CheckboxProto } from "@streamlit/lib/src/proto"
-import { transparentize } from "color2k"
-import { FormClearHelper } from "@streamlit/lib/src/components/widgets/Form"
-import {
-  WidgetStateManager,
-  Source,
-} from "@streamlit/lib/src/WidgetStateManager"
-import {
-  EmotionTheme,
-  hasLightBackgroundColor,
-} from "@streamlit/lib/src/theme"
-import TooltipIcon from "@streamlit/lib/src/components/shared/TooltipIcon"
-import { Placement } from "@streamlit/lib/src/components/shared/Tooltip"
-import { StyledWidgetLabelHelpInline } from "@streamlit/lib/src/components/widgets/BaseWidget"
-import StreamlitMarkdown from "@streamlit/lib/src/components/shared/StreamlitMarkdown"
+import { memo, ReactElement, useCallback } from "react"
 
-import { StyledContent } from "./styled-components"
+import { Checkbox as CheckboxProto } from "@streamlit/protobuf"
 
-export interface OwnProps {
+import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown/StreamlitMarkdown"
+import { Placement } from "~lib/components/shared/Tooltip/Tooltip"
+import { WidgetLabelHelpIconInline } from "~lib/components/widgets/BaseWidget/WidgetLabelHelpIconInline"
+import {
+  useBasicWidgetState,
+  ValueWithSource,
+} from "~lib/hooks/useBasicWidgetState"
+import { labelVisibilityProtoValueToEnum } from "~lib/util/utils"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
+import {
+  StyledCheckbox,
+  StyledCheckboxIndicator,
+  StyledCheckboxRoot,
+  StyledContent,
+  StyledSwitchRoot,
+  StyledToggleThumb,
+  StyledToggleTrack,
+} from "./styled-components"
+
+export interface Props {
   disabled: boolean
   element: CheckboxProto
   widgetMgr: WidgetStateManager
-  width: number
   fragmentId?: string
 }
 
-interface ThemeProps {
-  theme: EmotionTheme
-}
+function Checkbox({
+  element,
+  disabled,
+  widgetMgr,
+  fragmentId,
+}: Readonly<Props>): ReactElement {
+  const queryParamBinding = element.queryParamKey
+    ? {
+        paramKey: element.queryParamKey,
+        valueType: "bool_value" as const,
+        clearable: false,
+      }
+    : undefined
 
-export type Props = OwnProps & ThemeProps
+  const [value, setValueWithSource] = useBasicWidgetState<
+    boolean,
+    CheckboxProto
+  >({
+    getStateFromWidgetMgr,
+    getDefaultStateFromProto,
+    getCurrStateFromProto,
+    updateWidgetMgrState,
+    element,
+    widgetMgr,
+    fragmentId,
+    formClearBehavior: "resetValueOnly",
+    queryParamBinding,
+  })
 
-interface State {
-  /**
-   * The value specified by the user via the UI. If the user didn't touch this
-   * widget's UI, the default value is used.
-   */
-  value: boolean
-}
+  const handleChange = useCallback(
+    (isSelected: boolean): void => {
+      setValueWithSource({ value: isSelected, fromUi: true })
+    },
+    [setValueWithSource]
+  )
 
-class Checkbox extends React.PureComponent<Props, State> {
-  private readonly formClearHelper = new FormClearHelper()
+  const isToggle = element.type === CheckboxProto.StyleType.TOGGLE
+  const labelVisibility = labelVisibilityProtoValueToEnum(
+    element.labelVisibility?.value
+  )
 
-  public state: State = {
-    value: this.initialValue,
-  }
+  const labelContent = (
+    <StyledContent visibility={labelVisibility} data-testid="stWidgetLabel">
+      <StreamlitMarkdown source={element.label} allowHTML={false} isLabel />
+      {element.help && (
+        <WidgetLabelHelpIconInline
+          content={element.help}
+          placement={Placement.TOP_RIGHT}
+          label={element.label}
+        />
+      )}
+    </StyledContent>
+  )
 
-  get initialValue(): boolean {
-    // If WidgetStateManager knew a value for this widget, initialize to that.
-    // Otherwise, use the default value from the widget protobuf.
-    const storedValue = this.props.widgetMgr.getBoolValue(this.props.element)
-    return storedValue !== undefined ? storedValue : this.props.element.default
-  }
-
-  public componentDidMount(): void {
-    if (this.props.element.setValue) {
-      this.updateFromProtobuf()
-    } else {
-      this.commitWidgetValue({ fromUi: false })
-    }
-  }
-
-  public componentDidUpdate(): void {
-    this.maybeUpdateFromProtobuf()
-  }
-
-  public componentWillUnmount(): void {
-    this.formClearHelper.disconnect()
-  }
-
-  private maybeUpdateFromProtobuf(): void {
-    const { setValue } = this.props.element
-    if (setValue) {
-      this.updateFromProtobuf()
-    }
-  }
-
-  private updateFromProtobuf(): void {
-    const { value } = this.props.element
-    this.props.element.setValue = false
-    this.setState({ value }, () => {
-      this.commitWidgetValue({ fromUi: false })
-    })
-  }
-
-  /** Commit state.value to the WidgetStateManager. */
-  private commitWidgetValue = (source: Source): void => {
-    const { widgetMgr, element, fragmentId } = this.props
-    widgetMgr.setBoolValue(element, this.state.value, source, fragmentId)
-  }
-
-  /**
-   * If we're part of a clear_on_submit form, this will be called when our
-   * form is submitted. Restore our default value and update the WidgetManager.
-   */
-  private onFormCleared = (): void => {
-    this.setState(
-      (_, prevProps) => {
-        return { value: prevProps.element.default }
-      },
-      () => this.commitWidgetValue({ fromUi: true })
-    )
-  }
-
-  private onChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
-    const value = e.target.checked
-    this.setState({ value }, () => this.commitWidgetValue({ fromUi: true }))
-  }
-
-  public render(): React.ReactNode {
-    const { theme, width, element, disabled, widgetMgr } = this.props
-    const { colors, spacing } = theme
-    const lightTheme = hasLightBackgroundColor(theme)
-
-    const style = { width }
-    const color = disabled ? colors.fadedText40 : colors.bodyText
-
-    // Manage our form-clear event handler.
-    this.formClearHelper.manageFormClearListener(
-      widgetMgr,
-      element.formId,
-      this.onFormCleared
-    )
-
-    // TODO Check the Widget usage
+  if (isToggle) {
     return (
-      <div
+      <StyledCheckbox
         className="row-widget stCheckbox"
         data-testid="stCheckbox"
-        style={style}
       >
-        <UICheckbox
-          checked={this.state.value}
-          disabled={disabled}
-          onChange={this.onChange}
+        <StyledSwitchRoot
+          isSelected={value}
+          isDisabled={disabled}
+          onChange={handleChange}
           aria-label={element.label}
-          checkmarkType={
-            element.type === CheckboxProto.StyleType.TOGGLE
-              ? STYLE_TYPE.toggle
-              : STYLE_TYPE.default
-          }
-          labelPlacement={LABEL_PLACEMENT.right}
-          overrides={{
-            Root: {
-              style: ({ $isFocusVisible }: { $isFocusVisible: boolean }) => ({
-                marginBottom: 0,
-                marginTop: 0,
-                paddingRight: spacing.twoThirdsSmFont,
-                backgroundColor: $isFocusVisible ? colors.darkenedBgMix25 : "",
-                display: "flex",
-                alignItems: "start",
-              }),
-            },
-            Toggle: {
-              style: ({ $checked }: { $checked: boolean }) => {
-                let backgroundColor = lightTheme
-                  ? colors.bgColor
-                  : colors.bodyText
-
-                if (disabled) {
-                  backgroundColor = lightTheme ? colors.gray60 : colors.gray90
-                }
-                return {
-                  width: "12px",
-                  height: "12px",
-                  transform: $checked ? "translateX(16px)" : "",
-                  backgroundColor,
-                  boxShadow: "",
-                }
-              },
-            },
-            ToggleTrack: {
-              style: ({
-                $checked,
-                $isHovered,
-              }: {
-                $checked: boolean
-                $isHovered: boolean
-              }) => {
-                let backgroundColor = colors.fadedText40
-
-                if ($isHovered && !disabled) {
-                  backgroundColor = colors.fadedText20
-                }
-
-                if ($checked && !disabled) {
-                  backgroundColor = colors.primary
-                }
-
-                return {
-                  marginRight: 0,
-                  marginLeft: "2px",
-                  paddingLeft: "2px",
-                  paddingRight: "2px",
-                  width: "32px",
-                  minWidth: "32px",
-                  height: "16px",
-                  minHeight: "16px",
-                  borderBottomLeftRadius: theme.radii.lg,
-                  borderTopLeftRadius: theme.radii.lg,
-                  borderBottomRightRadius: theme.radii.lg,
-                  borderTopRightRadius: theme.radii.lg,
-                  backgroundColor,
-                }
-              },
-            },
-            Checkmark: {
-              style: ({
-                $isFocusVisible,
-                $checked,
-              }: {
-                $isFocusVisible: boolean
-                $checked: boolean
-              }) => {
-                const borderColor =
-                  $checked && !disabled ? colors.primary : colors.fadedText40
-
-                return {
-                  outline: 0,
-                  width: "1rem",
-                  height: "1rem",
-                  marginTop: "0.30rem",
-                  boxShadow:
-                    $isFocusVisible && $checked
-                      ? `0 0 0 0.2rem ${transparentize(colors.primary, 0.5)}`
-                      : "",
-                  // This is painfully verbose, but baseweb seems to internally
-                  // use the long-hand version, which means we can't use the
-                  // shorthand names here as if we do we'll end up with warn
-                  // logs spamming us every time a checkbox is rendered.
-                  borderLeftWidth: "1px",
-                  borderRightWidth: "1px",
-                  borderTopWidth: "1px",
-                  borderBottomWidth: "1px",
-                  borderLeftColor: borderColor,
-                  borderRightColor: borderColor,
-                  borderTopColor: borderColor,
-                  borderBottomColor: borderColor,
-                }
-              },
-            },
-            Label: {
-              style: {
-                position: "relative",
-                top: "1px",
-                color,
-              },
-            },
-          }}
         >
-          <StyledContent
-            visibility={labelVisibilityProtoValueToEnum(
-              element.labelVisibility?.value
-            )}
-            data-testid="stWidgetLabel"
-          >
-            <StreamlitMarkdown
-              source={element.label}
-              allowHTML={false}
-              isLabel
-              largerLabel
-            />
-            {element.help && (
-              <StyledWidgetLabelHelpInline color={color}>
-                <TooltipIcon
-                  content={element.help}
-                  placement={Placement.TOP_RIGHT}
+          {({ isSelected, isHovered, isDisabled: isDisab }) => (
+            <>
+              <StyledToggleTrack
+                $isSelected={isSelected}
+                $isHovered={isHovered}
+                $isDisabled={isDisab}
+              >
+                <StyledToggleThumb
+                  $isSelected={isSelected}
+                  $isDisabled={isDisab}
                 />
-              </StyledWidgetLabelHelpInline>
-            )}
-          </StyledContent>
-        </UICheckbox>
-      </div>
+              </StyledToggleTrack>
+              {labelContent}
+            </>
+          )}
+        </StyledSwitchRoot>
+      </StyledCheckbox>
     )
   }
+
+  return (
+    <StyledCheckbox className="row-widget stCheckbox" data-testid="stCheckbox">
+      <StyledCheckboxRoot
+        isSelected={value}
+        isDisabled={disabled}
+        onChange={handleChange}
+        aria-label={element.label}
+      >
+        {({ isSelected, isFocusVisible, isDisabled: isDisab }) => (
+          <>
+            <StyledCheckboxIndicator
+              $isSelected={isSelected}
+              $isFocusVisible={isFocusVisible}
+              $isDisabled={isDisab}
+            >
+              {isSelected && (
+                <svg viewBox="0 0 10 8" aria-hidden="true">
+                  <polyline points="1 4 4 7 9 1" />
+                </svg>
+              )}
+            </StyledCheckboxIndicator>
+            {labelContent}
+          </>
+        )}
+      </StyledCheckboxRoot>
+    </StyledCheckbox>
+  )
 }
 
-export default withTheme(Checkbox)
+function getStateFromWidgetMgr(
+  widgetMgr: WidgetStateManager,
+  element: CheckboxProto
+): boolean | undefined {
+  return widgetMgr.getBoolValue(element)
+}
+
+function getDefaultStateFromProto(element: CheckboxProto): boolean {
+  return element.default ?? false
+}
+
+function getCurrStateFromProto(element: CheckboxProto): boolean {
+  return element.value ?? false
+}
+
+function updateWidgetMgrState(
+  element: CheckboxProto,
+  widgetMgr: WidgetStateManager,
+  vws: ValueWithSource<boolean>,
+  fragmentId: string | undefined
+): void {
+  widgetMgr.setBoolValue(
+    element,
+    vws.value,
+    { fromUi: vws.fromUi },
+    fragmentId
+  )
+}
+
+export default memo(Checkbox)

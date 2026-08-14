@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,100 +14,50 @@
  * limitations under the License.
  */
 
-import React, { ReactElement, ReactNode, CSSProperties } from "react"
+import { ReactElement, ReactNode } from "react"
+
+import { DialogType } from "@streamlit/app/src/components/StreamlitDialog/constants"
 import {
   BaseButtonKind,
   Modal,
-  ModalHeader,
   ModalBody,
-  ModalFooter,
   ModalButton,
-  SessionInfo,
+  ModalFooter,
+  ModalHeader,
+  StreamlitErrorCodeBlock,
   StreamlitMarkdown,
-  IException,
 } from "@streamlit/lib"
-import { HotKeys } from "react-hotkeys"
+import { IException } from "@streamlit/protobuf"
 
-import {
-  ScriptChangedDialog,
-  Props as ScriptChangedDialogProps,
-} from "@streamlit/app/src/components/StreamlitDialog/ScriptChangedDialog"
-import { STREAMLIT_HOME_URL } from "@streamlit/app/src/urls"
-import { Props as SettingsDialogProps, SettingsDialog } from "./SettingsDialog"
-import ThemeCreatorDialog, {
-  Props as ThemeCreatorDialogProps,
-} from "./ThemeCreatorDialog"
-import { DeployDialog, DeployDialogProps } from "./DeployDialog"
-
-import {
-  StyledRerunHeader,
-  StyledCommandLine,
-  StyledDeployErrorContent,
-  StyledAboutInfo,
-  StyledAboutLink,
-} from "./styled-components"
+import { DeployDialog, DeployDialogProps } from "./DeployDialog/DeployDialog"
+import { StyledDeployErrorContent } from "./styled-components"
 
 export type PlainEventHandler = () => void
-
-interface SettingsProps extends SettingsDialogProps {
-  type: DialogType.SETTINGS
-}
-
-interface ScriptChangedProps extends ScriptChangedDialogProps {
-  type: DialogType.SCRIPT_CHANGED
-}
-
-interface ThemeCreatorProps extends ThemeCreatorDialogProps {
-  type: DialogType.THEME_CREATOR
-}
 
 export type DialogProps =
   | AboutProps
   | ClearCacheProps
-  | RerunScriptProps
-  | SettingsProps
-  | ScriptChangedProps
   | ScriptCompileErrorProps
-  | ThemeCreatorProps
   | WarningProps
   | DeployErrorProps
   | DeployDialogProps
-
-export enum DialogType {
-  ABOUT = "about",
-  CLEAR_CACHE = "clearCache",
-  RERUN_SCRIPT = "rerunScript",
-  SETTINGS = "settings",
-  SCRIPT_CHANGED = "scriptChanged",
-  SCRIPT_COMPILE_ERROR = "scriptCompileError",
-  THEME_CREATOR = "themeCreator",
-  WARNING = "warning",
-  DEPLOY_ERROR = "deployError",
-  DEPLOY_DIALOG = "deployDialog",
-}
+  | ConnectionErrorProps
 
 export function StreamlitDialog(dialogProps: DialogProps): ReactNode {
   switch (dialogProps.type) {
     case DialogType.ABOUT:
-      return aboutDialog(dialogProps)
+      return <AboutDialog {...dialogProps} />
     case DialogType.CLEAR_CACHE:
-      return clearCacheDialog(dialogProps)
-    case DialogType.RERUN_SCRIPT:
-      return rerunScriptDialog(dialogProps)
-    case DialogType.SETTINGS:
-      return settingsDialog(dialogProps)
-    case DialogType.SCRIPT_CHANGED:
-      return <ScriptChangedDialog {...dialogProps} />
+      return <ClearCacheDialog {...dialogProps} />
     case DialogType.SCRIPT_COMPILE_ERROR:
-      return scriptCompileErrorDialog(dialogProps)
-    case DialogType.THEME_CREATOR:
-      return <ThemeCreatorDialog {...dialogProps} />
+      return <ScriptCompileErrorDialog {...dialogProps} />
     case DialogType.WARNING:
-      return warningDialog(dialogProps)
+    case DialogType.CONNECTION_ERROR:
+      return <WarningDialog {...dialogProps} />
     case DialogType.DEPLOY_DIALOG:
       return <DeployDialog {...dialogProps} />
     case DialogType.DEPLOY_ERROR:
-      return deployErrorDialog(dialogProps)
+      return <DeployErrorDialog {...dialogProps} />
     case undefined:
       return noDialog(dialogProps)
     default:
@@ -118,8 +68,6 @@ export function StreamlitDialog(dialogProps: DialogProps): ReactNode {
 interface AboutProps {
   type: DialogType.ABOUT
 
-  sessionInfo: SessionInfo
-
   /** Callback to close the dialog */
   onClose: PlainEventHandler
 
@@ -127,59 +75,14 @@ interface AboutProps {
 }
 
 /** About Dialog */
-function aboutDialog(props: AboutProps): ReactElement {
-  if (props.aboutSectionMd) {
-    const markdownStyle: CSSProperties = {
-      overflowY: "auto",
-      overflowX: "hidden",
-      maxHeight: "35vh",
-    }
-
-    // Markdown New line is 2 spaces + \n
-    const newLineMarkdown = "  \n"
-    const StreamlitInfo = [
-      `Made with Streamlit v${props.sessionInfo.current.streamlitVersion}`,
-      STREAMLIT_HOME_URL,
-      `Copyright ${new Date().getFullYear()} Snowflake Inc. All rights reserved.`,
-    ].join(newLineMarkdown)
-
-    const source = `${props.aboutSectionMd} ${newLineMarkdown} ${newLineMarkdown} ${StreamlitInfo}`
-
-    return (
-      <Modal isOpen onClose={props.onClose}>
-        <ModalHeader>About</ModalHeader>
-        <ModalBody>
-          <StyledAboutInfo>
-            <StreamlitMarkdown
-              source={source}
-              allowHTML={false}
-              style={markdownStyle}
-            />
-          </StyledAboutInfo>
-        </ModalBody>
-      </Modal>
-    )
-  }
+function AboutDialog(props: AboutProps): ReactElement {
   return (
     <Modal isOpen onClose={props.onClose}>
-      <ModalHeader>Made with</ModalHeader>
+      <ModalHeader>About</ModalHeader>
       <ModalBody>
-        <div>
-          {/* Show our version string only if SessionInfo has been created. If Streamlit
-          hasn't yet connected to the server, the SessionInfo singleton will be null. */}
-          {props.sessionInfo.isSet && (
-            <>
-              Streamlit v{props.sessionInfo.current.streamlitVersion}
-              <br />
-            </>
-          )}
-          <StyledAboutLink href={STREAMLIT_HOME_URL}>
-            {STREAMLIT_HOME_URL}
-          </StyledAboutLink>
-          <br />
-          Copyright {new Date().getFullYear()} Snowflake Inc. All rights
-          reserved.
-        </div>
+        {props.aboutSectionMd && (
+          <StreamlitMarkdown source={props.aboutSectionMd} allowHTML={false} />
+        )}
       </ModalBody>
     </Modal>
   )
@@ -192,9 +95,6 @@ interface ClearCacheProps {
 
   /** callback to close the dialog */
   onClose: PlainEventHandler
-
-  /** callback to run the default action */
-  defaultAction: () => void
 }
 
 /**
@@ -203,128 +103,58 @@ interface ClearCacheProps {
  * confirmCallback - callback to send the clear_cache request to the Proxy
  * onClose         - callback to close the dialog
  */
-function clearCacheDialog(props: ClearCacheProps): ReactElement {
-  const keyHandlers = {
-    enter: () => props.defaultAction(),
-  }
+function ClearCacheDialog(props: ClearCacheProps): ReactElement {
+  // Markdown New line is 2 spaces + \n
+  const newLineMarkdown = "  \n"
+  const clearCacheInfo = [
+    `**Are you sure you want to clear the app's function caches?**`,
+    "This will remove all cached entries from functions using",
+    "`@st.cache_data` and `@st.cache_resource`.",
+  ].join(newLineMarkdown)
 
-  // Not sure exactly why attach is necessary on the HotKeys
-  // component here but it's not working without it
   return (
-    <HotKeys handlers={keyHandlers} attach={window}>
-      <div data-testid="stClearCacheDialog">
-        <Modal isOpen onClose={props.onClose}>
-          <ModalHeader>Clear caches</ModalHeader>
-          <ModalBody>
-            <div>
-              <b>Are you sure you want to clear the app's function caches?</b>
-            </div>
-            <div>
-              This will remove all cached entries from functions using{" "}
-              <code>@st.cache</code>, <code>@st.cache_data</code>, and{" "}
-              <code>@st.cache_resource</code>.
-            </div>
-          </ModalBody>
-          <ModalFooter>
-            <ModalButton
-              kind={BaseButtonKind.TERTIARY}
-              onClick={props.onClose}
-            >
-              Cancel
-            </ModalButton>
-            <ModalButton
-              autoFocus
-              kind={BaseButtonKind.SECONDARY}
-              onClick={props.confirmCallback}
-            >
-              Clear caches
-            </ModalButton>
-          </ModalFooter>
-        </Modal>
-      </div>
-    </HotKeys>
-  )
-}
-
-interface RerunScriptProps {
-  type: DialogType.RERUN_SCRIPT
-
-  /** Callback to get the script's command line */
-  getCommandLine: () => string | string[]
-
-  /** Callback to set the script's command line */
-  setCommandLine: (value: string) => void
-
-  /** Callback to rerun the script */
-  rerunCallback: () => void
-
-  /** Callback to close the dialog */
-  onClose: PlainEventHandler
-
-  /** Callback to run the default action */
-  defaultAction: () => void
-}
-
-/**
- * Dialog shown when the user wants to rerun a script.
- */
-function rerunScriptDialog(props: RerunScriptProps): ReactElement {
-  const keyHandlers = {
-    enter: () => props.defaultAction(),
-  }
-
-  // Not sure exactly why attach is necessary on the HotKeys
-  // component here but it's not working without it
-  return (
-    <HotKeys handlers={keyHandlers} attach={window}>
+    <div data-testid="stClearCacheDialog">
       <Modal isOpen onClose={props.onClose}>
+        <ModalHeader>Clear caches</ModalHeader>
         <ModalBody>
-          <StyledRerunHeader>Command line:</StyledRerunHeader>
-          <div>
-            <StyledCommandLine
-              autoFocus
-              className="command-line"
-              value={props.getCommandLine()}
-              onChange={event => props.setCommandLine(event.target.value)}
-            />
-          </div>
+          <StreamlitMarkdown source={clearCacheInfo} allowHTML={false} />
         </ModalBody>
         <ModalFooter>
-          <ModalButton kind={BaseButtonKind.TERTIARY} onClick={props.onClose}>
+          <ModalButton
+            autoFocus
+            kind={BaseButtonKind.GHOST}
+            onClick={props.onClose}
+          >
             Cancel
           </ModalButton>
           <ModalButton
             kind={BaseButtonKind.SECONDARY}
-            onClick={() => props.rerunCallback()}
+            onClick={props.confirmCallback}
           >
-            Rerun
+            Clear caches
           </ModalButton>
         </ModalFooter>
       </Modal>
-    </HotKeys>
+    </div>
   )
 }
 
-interface ScriptCompileErrorProps {
+export interface ScriptCompileErrorProps {
   type: DialogType.SCRIPT_COMPILE_ERROR
   exception: IException | null | undefined
   onClose: PlainEventHandler
 }
 
-function scriptCompileErrorDialog(
+function ScriptCompileErrorDialog(
   props: ScriptCompileErrorProps
 ): ReactElement {
   return (
-    <Modal isOpen onClose={props.onClose} size="auto" autoFocus={false}>
+    <Modal isOpen onClose={props.onClose} size="auto">
       <ModalHeader>Script execution error</ModalHeader>
       <ModalBody>
-        <div>
-          <pre>
-            <code>
-              {props.exception ? props.exception.message : "No message"}
-            </code>
-          </pre>
-        </div>
+        <StreamlitErrorCodeBlock>
+          {props.exception?.message ? props.exception.message : "No message"}
+        </StreamlitErrorCodeBlock>
       </ModalBody>
       <ModalFooter>
         <ModalButton kind={BaseButtonKind.SECONDARY} onClick={props.onClose}>
@@ -335,24 +165,26 @@ function scriptCompileErrorDialog(
   )
 }
 
-/**
- * Shows the settings dialog.
- */
-function settingsDialog(props: SettingsProps): ReactElement {
-  return <SettingsDialog {...props} />
-}
-
-interface WarningProps {
-  type: DialogType.WARNING
+interface CommonWarningProps {
   title: string
   msg: ReactNode
   onClose: PlainEventHandler
 }
 
+export interface WarningProps extends CommonWarningProps {
+  type: DialogType.WARNING
+}
+
+export interface ConnectionErrorProps extends CommonWarningProps {
+  type: DialogType.CONNECTION_ERROR
+}
+
 /**
  * Prints out a warning
  */
-function warningDialog(props: WarningProps): ReactElement {
+function WarningDialog(
+  props: WarningProps | ConnectionErrorProps
+): ReactElement {
   return (
     <Modal isOpen onClose={props.onClose}>
       <ModalHeader>{props.title}</ModalHeader>
@@ -373,7 +205,7 @@ interface DeployErrorProps {
 /**
  * Modal used to show deployment errors
  */
-function deployErrorDialog({
+function DeployErrorDialog({
   title,
   msg,
   onClose,
@@ -395,7 +227,7 @@ function deployErrorDialog({
         <StyledDeployErrorContent>{msg}</StyledDeployErrorContent>
       </ModalBody>
       <ModalFooter>
-        <ModalButton kind={BaseButtonKind.TERTIARY} onClick={onTryAgain}>
+        <ModalButton kind={BaseButtonKind.GHOST} onClick={onTryAgain}>
           Try again
         </ModalButton>
         <ModalButton

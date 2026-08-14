@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,19 +12,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
+import base64
+import json
 import threading
+from contextlib import contextmanager
+from unittest.mock import MagicMock, patch
+
+import pytest
+from parameterized import parameterized
 
 import streamlit as st
-from streamlit.errors import StreamlitAPIException
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitAuthError,
+    StreamlitMissingAuthlibError,
+)
 from streamlit.runtime.forward_msg_queue import ForwardMsgQueue
 from streamlit.runtime.fragment import MemoryFragmentStorage
+from streamlit.runtime.pages_manager import PagesManager
 from streamlit.runtime.scriptrunner import (
     ScriptRunContext,
     add_script_run_ctx,
     get_script_run_ctx,
 )
 from streamlit.runtime.state import SafeSessionState, SessionState
+from streamlit.user_info import TokensProxy, UserInfoProxy, _get_user_info
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
+
+SECRETS_MOCK = {
+    "redirect_uri": "http://localhost:8501/oauth2callback",
+    "cookie_secret": "test_cookie_secret",
+    "google": {
+        "client_id": "CLIENT_ID",
+        "client_secret": "CLIENT_SECRET",
+        "server_metadata_url": "https://accounts.google.com/.well-known/openid-configuration",
+    },
+    "microsoft": {
+        "client_id": "CLIENT_ID",
+        "client_secret": "CLIENT_SECRET",
+        "server_metadata_url": "https://login.microsoftonline.com/common/v2.0/.well-known/openid-configuration",
+    },
+    "auth0": {
+        "client_id": "CLIENT_ID",
+        "client_secret": "CLIENT_SECRET",
+        "server_metadata_url": "https://YOUR_DOMAIN/.well-known/openid-configuration",
+    },
+}
 
 
 class UserInfoProxyTest(DeltaGeneratorTestCase):
@@ -32,59 +67,59 @@ class UserInfoProxyTest(DeltaGeneratorTestCase):
 
     def test_user_email_attr(self):
         """Test that `st.user.email` returns user info from ScriptRunContext"""
-        self.assertEqual(st.experimental_user.email, "test@test.com")
+        assert st.user.email == "test@example.com"
 
     def test_user_email_key(self):
-        self.assertEqual(st.experimental_user["email"], "test@test.com")
+        assert st.user["email"] == "test@example.com"
 
     def test_user_non_existing_attr(self):
         """Test that an error is raised when called non existed attr."""
-        with self.assertRaises(AttributeError):
-            st.write(st.experimental_user.attribute)
+        with pytest.raises(AttributeError):
+            st.write(st.user.attribute)
 
     def test_user_non_existing_key(self):
         """Test that an error is raised when called non existed key."""
-        with self.assertRaises(KeyError):
-            st.write(st.experimental_user["key"])
+        with pytest.raises(KeyError):
+            st.write(st.user["key"])
 
     def test_user_cannot_be_modified_existing_key(self):
         """
         Test that an error is raised when try to assign new value to existing key.
         """
-        with self.assertRaises(StreamlitAPIException) as e:
-            st.experimental_user["email"] = "NEW_VALUE"
+        with pytest.raises(StreamlitAPIException) as e:
+            st.user["email"] = "NEW_VALUE"
 
-        self.assertEqual(str(e.exception), "st.experimental_user cannot be modified")
+        assert str(e.value) == "st.user cannot be modified"
 
     def test_user_cannot_be_modified_new_key(self):
         """
         Test that an error is raised when try to assign new value to new key.
         """
-        with self.assertRaises(StreamlitAPIException) as e:
-            st.experimental_user["foo"] = "bar"
+        with pytest.raises(StreamlitAPIException) as e:
+            st.user["foo"] = "bar"
 
-        self.assertEqual(str(e.exception), "st.experimental_user cannot be modified")
+        assert str(e.value) == "st.user cannot be modified"
 
     def test_user_cannot_be_modified_existing_attr(self):
         """
         Test that an error is raised when try to assign new value to existing attr.
         """
-        with self.assertRaises(StreamlitAPIException) as e:
-            st.experimental_user.email = "bar"
+        with pytest.raises(StreamlitAPIException) as e:
+            st.user.email = "bar"
 
-        self.assertEqual(str(e.exception), "st.experimental_user cannot be modified")
+        assert str(e.value) == "st.user cannot be modified"
 
     def test_user_cannot_be_modified_new_attr(self):
         """
         Test that an error is raised when try to assign new value to new attr.
         """
-        with self.assertRaises(StreamlitAPIException) as e:
-            st.experimental_user.foo = "bar"
+        with pytest.raises(StreamlitAPIException) as e:
+            st.user.foo = "bar"
 
-        self.assertEqual(str(e.exception), "st.experimental_user cannot be modified")
+        assert str(e.value) == "st.user cannot be modified"
 
     def test_user_len(self):
-        self.assertEqual(len(st.experimental_user), 1)
+        assert len(st.user) == 1
 
     def test_st_user_reads_from_context_(self):
         """Test that st.user reads information from current ScriptRunContext
@@ -104,14 +139,320 @@ class UserInfoProxyTest(DeltaGeneratorTestCase):
                     session_state=SafeSessionState(SessionState(), lambda: None),
                     uploaded_file_mgr=None,
                     main_script_path="",
-                    page_script_hash="",
                     user_info={"email": "something@else.com"},
                     fragment_storage=MemoryFragmentStorage(),
+                    pages_manager=PagesManager(""),
                 ),
             )
 
-            self.assertEqual(st.experimental_user.email, "something@else.com")
+            assert st.user.email == "something@else.com"
         except Exception as e:
             raise e
         finally:
             add_script_run_ctx(threading.current_thread(), orig_report_ctx)
+
+
+@patch(
+    "streamlit.auth_util.secrets_singleton",
+    MagicMock(
+        load_if_toml_exists=MagicMock(return_value=True),
+        get=MagicMock(return_value=SECRETS_MOCK),
+    ),
+)
+class UserInfoAuthTest(DeltaGeneratorTestCase):
+    """Test UserInfoProxy Auth functionality."""
+
+    @parameterized.expand(["google", "microsoft", "auth0"])
+    def test_user_login(self, provider):
+        """Test that st.login sends correct proto message."""
+        st.login(provider)
+
+        c = self.get_message_from_queue().auth_redirect
+
+        assert c.url.startswith("/auth/login?provider=")
+
+        jwt_token = c.url.split("=")[1]
+        raw_payload = jwt_token.split(".")[1]
+        parsed_payload = json.loads(base64.b64decode(raw_payload + "==="))
+
+        assert parsed_payload["provider"] == provider
+
+    def test_user_login_with_invalid_provider(self):
+        """Test that st.login raise exception for invalid provider."""
+        with pytest.raises(StreamlitAuthError) as ex:
+            st.login("invalid-provider")
+
+        assert str(ex.value) == (
+            "Authentication credentials in `.streamlit/secrets.toml` are missing for the "
+            'authentication provider "invalid-provider". Please check your configuration.'
+        )
+
+    def test_user_login_with_provider_with_underscore(self):
+        """Test that st.login raise exception for provider containing underscore."""
+        with pytest.raises(StreamlitAuthError) as ex:
+            st.login("invalid_provider")
+
+        assert str(ex.value) == (
+            """Auth provider name "invalid_provider" contains an underscore. """
+            """Please use a provider name without underscores."""
+        )
+
+    def test_user_login_redirect_uri_missing(self):
+        """Tests that an error is raised if the redirect uri is missing"""
+        with patch(
+            "streamlit.auth_util.secrets_singleton",
+            MagicMock(
+                load_if_toml_exists=MagicMock(return_value=True),
+                get=MagicMock(return_value={"google": {}}),
+            ),
+        ):
+            with pytest.raises(StreamlitAuthError) as ex:
+                st.login("google")
+
+            assert (
+                str(ex.value)
+                == """Authentication credentials in `.streamlit/secrets.toml` are missing the
+            "redirect_uri" key. Please check your configuration."""
+            )
+
+    def test_user_login_cookie_secret_missing(self):
+        """Tests that an error is raised if the cookie secret is missing in secrets.toml"""
+        with patch(
+            "streamlit.auth_util.secrets_singleton",
+            MagicMock(
+                load_if_toml_exists=MagicMock(return_value=True),
+                get=MagicMock(
+                    return_value={
+                        "redirect_uri": "http://localhost:8501/oauth2callback",
+                        "google": {},
+                    }
+                ),
+            ),
+        ):
+            with pytest.raises(StreamlitAuthError) as ex:
+                st.login("google")
+
+            assert (
+                str(ex.value)
+                == """Authentication credentials in `.streamlit/secrets.toml` are missing the
+            "cookie_secret" key. Please check your configuration."""
+            )
+
+    def test_user_login_required_fields_missing(self):
+        """Tests that an error is raised if the required fields are missing"""
+        with patch(
+            "streamlit.auth_util.secrets_singleton",
+            MagicMock(
+                load_if_toml_exists=MagicMock(return_value=True),
+                get=MagicMock(
+                    return_value={
+                        "redirect_uri": "http://localhost:8501/oauth2callback",
+                        "cookie_secret": "test_cookie_secret",
+                        "google": {},
+                    }
+                ),
+            ),
+        ):
+            with pytest.raises(StreamlitAuthError) as ex:
+                st.login("google")
+
+            assert str(ex.value) == (
+                "Authentication credentials in `.streamlit/secrets.toml` for the "
+                'authentication provider "google" are missing the following keys: '
+                "['client_id', 'client_secret', 'server_metadata_url']. Please check your "
+                "configuration."
+            )
+
+    def test_user_logout(self):
+        """Test that st.logout sends correct proto message."""
+        st.logout()
+
+        c = self.get_message_from_queue().auth_redirect
+
+        assert c.url.startswith("/auth/logout")
+
+
+class TestTokensProxy:
+    """Test TokensProxy class functionality."""
+
+    def test_tokens_proxy_access(self):
+        """Test token access via key and attribute notation."""
+        proxy = TokensProxy({"id": "token1", "access": "token2"})
+
+        assert proxy["id"] == "token1"
+        assert proxy.id == "token1"
+        assert proxy["access"] == "token2"
+        assert proxy.access == "token2"
+
+    def test_tokens_proxy_empty(self):
+        """Test TokensProxy with no tokens."""
+        proxy = TokensProxy({})
+
+        assert len(proxy) == 0
+        with pytest.raises(KeyError):
+            assert proxy["id"]
+        with pytest.raises(AttributeError):
+            assert proxy.id
+
+    def test_tokens_proxy_readonly(self):
+        """Test that tokens cannot be modified."""
+        proxy = TokensProxy({"id": "test"})
+
+        with pytest.raises(StreamlitAPIException):
+            proxy.id = "modified"
+        with pytest.raises(StreamlitAPIException):
+            proxy["id"] = "modified"
+
+    def test_tokens_proxy_to_dict(self):
+        """Test that tokens can be converted to a dictionary."""
+        proxy = TokensProxy({"id": "test", "access": "test"})
+        assert proxy.to_dict() == {"id": "test", "access": "test"}
+        proxy.to_dict()["id"] = "modified"
+        assert proxy.to_dict() == {"id": "test", "access": "test"}
+
+
+class UserInfoTokensTest(DeltaGeneratorTestCase):
+    """Test st.user.tokens functionality."""
+
+    @contextmanager
+    def _with_user_context(self, user_info):
+        """Helper to set up user context for testing."""
+        orig_report_ctx = get_script_run_ctx()
+        forward_msg_queue = ForwardMsgQueue()
+
+        try:
+            add_script_run_ctx(
+                threading.current_thread(),
+                ScriptRunContext(
+                    session_id="test session id",
+                    _enqueue=forward_msg_queue.enqueue,
+                    query_string="",
+                    session_state=SafeSessionState(SessionState(), lambda: None),
+                    uploaded_file_mgr=None,
+                    main_script_path="",
+                    user_info=user_info,
+                    fragment_storage=MemoryFragmentStorage(),
+                    pages_manager=PagesManager(""),
+                ),
+            )
+            yield
+        finally:
+            add_script_run_ctx(threading.current_thread(), orig_report_ctx)
+
+    def test_user_tokens_property_access(self):
+        """Test that st.user.tokens returns a TokensProxy."""
+        user_info = {
+            "email": "test@example.com",
+            "tokens": {"id": "token1", "access": "token2"},
+        }
+
+        with self._with_user_context(user_info):
+            tokens = st.user.tokens
+            assert isinstance(tokens, TokensProxy)
+            assert tokens.id == "token1"
+            assert tokens.access == "token2"
+
+    def test_user_tokens_key_access(self):
+        """Test that st.user['tokens'] returns a TokensProxy."""
+        user_info = {
+            "email": "test@example.com",
+            "tokens": {"id": "token1", "access": "token2"},
+        }
+
+        with self._with_user_context(user_info):
+            tokens = st.user["tokens"]
+            assert isinstance(tokens, TokensProxy)
+            assert tokens.id == "token1"
+            assert tokens.access == "token2"
+
+    def test_user_tokens_empty(self):
+        """Test st.user.tokens when no tokens are present."""
+        user_info = {"email": "test@example.com"}
+
+        with self._with_user_context(user_info):
+            tokens = st.user.tokens
+            assert isinstance(tokens, TokensProxy)
+            assert len(tokens) == 0
+
+    def test_user_tokens_consistency(self):
+        """Test that st.user.tokens and st.user['tokens'] return the same type."""
+        user_info = {"email": "test@example.com", "tokens": {"id": "test_token"}}
+
+        with self._with_user_context(user_info):
+            tokens_prop = st.user.tokens
+            tokens_key = st.user["tokens"]
+
+            assert isinstance(tokens_prop, TokensProxy)
+            assert isinstance(tokens_key, TokensProxy)
+            assert tokens_prop.id == tokens_key.id
+
+
+def test_tokens_proxy_iter_yields_known_keys() -> None:
+    """``TokensProxy.__iter__`` yields the tokens it was constructed with."""
+    proxy = TokensProxy({"id": "token1", "access": "token2"})
+    assert sorted(iter(proxy)) == ["access", "id"]
+    assert "id" in proxy
+
+
+def test_user_info_proxy_iter_yields_user_info_keys() -> None:
+    """``UserInfoProxy.__iter__`` iterates over the underlying user info keys."""
+    with patch(
+        "streamlit.user_info._get_user_info",
+        return_value={"email": "a@b.com", "is_logged_in": True},
+    ):
+        assert sorted(iter(UserInfoProxy())) == ["email", "is_logged_in"]
+
+
+def test_get_user_info_returns_empty_when_no_context() -> None:
+    """``_get_user_info`` returns an empty dict and warns when no ctx is set."""
+    with (
+        patch("streamlit.user_info._get_script_run_ctx", return_value=None),
+        patch("streamlit.user_info._LOGGER") as mock_logger,
+    ):
+        assert _get_user_info() == {}
+        mock_logger.warning.assert_called_once()
+
+
+def test_get_user_info_marks_logged_out_when_auth_configured() -> None:
+    """When auth is configured but ``is_logged_in`` is missing, it defaults to ``False``."""
+    ctx = MagicMock(user_info={"email": "x@y.com"})
+    with (
+        patch("streamlit.user_info._get_script_run_ctx", return_value=ctx),
+        patch("streamlit.user_info.get_secrets_auth_section", return_value=True),
+    ):
+        assert _get_user_info()["is_logged_in"] is False
+
+
+_DEFAULT_AUTH_SECRETS = MagicMock(
+    load_if_toml_exists=MagicMock(return_value=True),
+    get=MagicMock(
+        return_value={
+            "redirect_uri": "http://localhost:8501/oauth2callback",
+            "cookie_secret": "test_cookie_secret",
+            "client_id": "CLIENT_ID",
+            "client_secret": "CLIENT_SECRET",
+            "server_metadata_url": (
+                "https://accounts.google.com/.well-known/openid-configuration"
+            ),
+        }
+    ),
+)
+
+
+@patch("streamlit.auth_util.secrets_singleton", _DEFAULT_AUTH_SECRETS)
+class UserInfoLoginDefaultsTest(DeltaGeneratorTestCase):
+    """Tests for ``st.login`` default-provider behavior and missing authlib."""
+
+    def test_login_without_provider_uses_default(self) -> None:
+        """``st.login()`` with no provider falls back to the default provider."""
+        st.login()
+        url = self.get_message_from_queue().auth_redirect.url
+        assert url.startswith("/auth/login?provider=")
+
+    def test_login_raises_when_authlib_missing(self) -> None:
+        """``st.login`` raises ``StreamlitMissingAuthlibError`` when authlib is missing."""
+        with (
+            patch("streamlit.user_info.is_authlib_installed", return_value=False),
+            pytest.raises(StreamlitMissingAuthlibError),
+        ):
+            st.login()

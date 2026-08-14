@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,53 +18,64 @@
 
 import { lightThemePrimitives } from "baseui"
 import { transparentize } from "color2k"
-import { ThemeConfig } from "@streamlit/lib/src/theme"
-import { createEmotionColors } from "@streamlit/lib/src/theme/getColors"
-import { createBaseUiTheme } from "@streamlit/lib/src/theme/createThemeUtil"
+
+import { createBaseUiTheme } from "~lib/theme/createBaseUiTheme"
+import { createEmotionColors } from "~lib/theme/getColors"
+import { createShadows } from "~lib/theme/getShadows"
+import { breakpoints } from "~lib/theme/primitives/breakpoints"
+import { colors } from "~lib/theme/primitives/colors"
+import { iconSizes } from "~lib/theme/primitives/iconSizes"
+import { opacities } from "~lib/theme/primitives/opacities"
+import { radii } from "~lib/theme/primitives/radii"
+import { sizes } from "~lib/theme/primitives/sizes"
+import { spacing } from "~lib/theme/primitives/spacing"
 import {
-  breakpoints,
   fonts,
   fontSizes,
   fontWeights,
   genericFonts,
-  iconSizes,
   lineHeights,
-  letterSpacings,
-  radii,
-  sizes,
-  spacing,
-  zIndices,
-  colors,
-} from "@streamlit/lib/src/theme/primitives"
+} from "~lib/theme/primitives/typography"
+import { zIndices } from "~lib/theme/primitives/zIndices"
+import type { ThemeConfig } from "~lib/theme/types"
 
 const requiredThemeColors = {
   bgColor: colors.white,
   secondaryBg: colors.gray20,
   bodyText: colors.gray85,
-  warning: colors.yellow110,
-  warningBg: transparentize(colors.yellow80, 0.8),
-  success: colors.green100,
-  successBg: transparentize(colors.green80, 0.8),
-  infoBg: transparentize(colors.blue70, 0.9),
-  info: colors.blue100,
-  danger: colors.red100,
-  dangerBg: transparentize(colors.red70, 0.8),
 
   primary: colors.red70,
-  disabled: colors.gray40,
-  lightestGray: colors.gray20,
-  lightGray: colors.gray30,
-  gray: colors.gray60,
-  darkGray: colors.gray70,
-  red: colors.red80,
-  blue: colors.blue80,
-  green: colors.green80,
-  yellow: colors.yellow80,
+  secondary: colors.blue70,
+
+  // Default main theme colors (light theme)
+  redColor: colors.red70,
+  orangeColor: colors.orange70,
+  yellowColor: colors.yellow80,
+  blueColor: colors.blue70,
+  greenColor: colors.green70,
+  violetColor: colors.purple70,
+  grayColor: colors.gray60,
+
+  // Default background theme colors (light theme)
+  redBackgroundColor: transparentize(colors.red80, 0.9),
+  orangeBackgroundColor: transparentize(colors.orange70, 0.9),
+  yellowBackgroundColor: transparentize(colors.yellow65, 0.9),
+  blueBackgroundColor: transparentize(colors.blue65, 0.9),
+  greenBackgroundColor: transparentize(colors.green70, 0.9),
+  violetBackgroundColor: transparentize(colors.purple60, 0.9),
+  grayBackgroundColor: transparentize(colors.gray85, 0.9),
+
+  // Default text theme colors (light theme)
+  redTextColor: colors.red90,
+  orangeTextColor: colors.orange95,
+  yellowTextColor: colors.yellow115,
+  blueTextColor: colors.blue90,
+  greenTextColor: colors.green90,
+  violetTextColor: colors.purple90,
+  grayTextColor: transparentize(colors.gray85, 0.4),
 }
 
 interface OptionalThemeColors {
-  skeletonBackgroundColor?: string
-  widgetBackgroundColor?: string
   widgetBorderColor?: string
 }
 
@@ -76,19 +87,25 @@ const genericColors = {
   ...optionalThemeColors,
 }
 
+// Create colors and shadows using the same pattern as emotionBaseTheme
+const emotionColors = createEmotionColors(genericColors)
+const shadows = createShadows(emotionColors)
+
 const emotionMockTheme = {
   inSidebar: false,
+  showSidebarBorder: false,
+  linkUnderline: true,
   breakpoints,
-  colors: createEmotionColors(genericColors),
-  genericColors,
+  colors: emotionColors,
   fonts,
   fontSizes,
   fontWeights,
   genericFonts,
   iconSizes,
   lineHeights,
-  letterSpacings,
+  opacities,
   radii,
+  shadows,
   sizes,
   spacing,
   zIndices,

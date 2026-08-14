@@ -1,5 +1,5 @@
 /**!
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,8 +16,7 @@
 
 syntax = "proto3";
 
-option java_package = "com.snowflake.apps.streamlit";
-option java_outer_classname = "ExceptionProto";
+import "streamlit/proto/WidthConfig.proto";
 
 // A python exception.
 //
@@ -25,7 +24,6 @@ option java_outer_classname = "ExceptionProto";
 // relatively stable. While it isn't entirely set in stone, changing it
 // may require a good amount of effort so should be avoided if possible.
 message Exception {
-
   // The type of the exception. This can be any string, but is usually a valid
   // Python exception type, like 'RuntimeError'.
   string type = 1;
@@ -42,4 +40,7 @@ message Exception {
   // If true, this is an error that doesn't stop the execution flow. So it gets
   // rendered differently for clarity.
   bool is_warning = 5;
+
+  // Indicates the width setting: "stetch", "content" or a pixel value.
+  streamlit.WidthConfig width_config = 6;
 }

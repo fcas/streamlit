@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,13 @@
 # limitations under the License.
 
 """Unit tests for InMemoryCacheStorageWrapper"""
+
+from __future__ import annotations
+
 import unittest
 from unittest.mock import patch
 
+import pytest
 from testfixtures import TempDirectory
 
 from streamlit.runtime.caching.storage import (
@@ -94,11 +98,11 @@ class InMemoryCacheStorageWrapperTest(unittest.TestCase):
         with patch.object(
             persist_storage, "get", wraps=persist_storage.get
         ) as mock_persist_get:
-            self.assertEqual(wrapped_storage.get("some-key"), b"some-value")
+            assert wrapped_storage.get("some-key") == b"some-value"
             mock_persist_get.assert_called_once_with("some-key")
 
             # Call get again to make that underlying storage is not called again
-            self.assertEqual(wrapped_storage.get("some-key"), b"some-value")
+            assert wrapped_storage.get("some-key") == b"some-value"
             mock_persist_get.assert_called_once()
 
     def test_in_memory_cache_storage_wrapper_get_key_in_memory_storage(self):
@@ -117,7 +121,41 @@ class InMemoryCacheStorageWrapperTest(unittest.TestCase):
         with patch.object(
             persist_storage, "get", wraps=persist_storage.get
         ) as mock_persist_get:
-            self.assertEqual(wrapped_storage.get("some-key"), b"some-value")
+            assert wrapped_storage.get("some-key") == b"some-value"
+            mock_persist_get.assert_not_called()
+
+    def test_has_key_in_memory_storage_does_not_check_persist_storage(self):
+        context = self.get_storage_context()
+        persist_storage = LocalDiskCacheStorage(context)
+        wrapped_storage = InMemoryCacheStorageWrapper(
+            persist_storage=persist_storage, context=context
+        )
+        wrapped_storage.set("some-key", b"some-value")
+
+        with patch.object(
+            persist_storage, "has", wraps=persist_storage.has
+        ) as mock_persist_has:
+            assert wrapped_storage.has("some-key") is True
+            mock_persist_has.assert_not_called()
+
+    def test_has_key_in_persist_storage_does_not_read_value(self):
+        context = self.get_storage_context()
+        persist_storage = LocalDiskCacheStorage(context)
+        wrapped_storage = InMemoryCacheStorageWrapper(
+            persist_storage=persist_storage, context=context
+        )
+        persist_storage.set("some-key", b"some-value")
+
+        with (
+            patch.object(
+                persist_storage, "has", wraps=persist_storage.has
+            ) as mock_persist_has,
+            patch.object(
+                persist_storage, "get", wraps=persist_storage.get
+            ) as mock_persist_get,
+        ):
+            assert wrapped_storage.has("some-key") is True
+            mock_persist_has.assert_called_once_with("some-key")
             mock_persist_get.assert_not_called()
 
     def test_in_memory_cache_storage_wrapper_set(self):
@@ -138,7 +176,7 @@ class InMemoryCacheStorageWrapperTest(unittest.TestCase):
             wrapped_storage.set("some-key", b"some-value")
             mock_persist_set.assert_called_once_with("some-key", b"some-value")
 
-        self.assertEqual(wrapped_storage.get("some-key"), b"some-value")
+        assert wrapped_storage.get("some-key") == b"some-value"
 
     def test_in_memory_cache_storage_wrapper_delete(self):
         """
@@ -158,7 +196,7 @@ class InMemoryCacheStorageWrapperTest(unittest.TestCase):
             wrapped_storage.delete("some-key")
             mock_persist_delete.assert_called_once_with("some-key")
 
-        with self.assertRaises(CacheStorageKeyNotFoundError):
+        with pytest.raises(CacheStorageKeyNotFoundError):
             wrapped_storage.get("some-key")
 
     def test_in_memory_cache_storage_wrapper_close(self):

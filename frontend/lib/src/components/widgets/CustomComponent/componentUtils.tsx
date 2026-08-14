@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,26 +14,29 @@
  * limitations under the License.
  */
 
-import { ComponentMessageType, StreamlitMessageType } from "./enums"
-import { logWarning } from "@streamlit/lib/src/util/log"
+import { getLogger } from "loglevel"
+
 import {
   ArrowDataframe,
   ComponentInstance as ComponentInstanceProto,
+  IArrowTable,
   ISpecialArg,
   SpecialArg as SpecialArgProto,
-} from "@streamlit/lib/src/proto"
-import { EmotionTheme, toExportedTheme } from "@streamlit/lib/src/theme"
-import {
-  Source,
-  WidgetStateManager,
-} from "@streamlit/lib/src/WidgetStateManager"
+} from "@streamlit/protobuf"
+
+import type { EmotionTheme } from "~lib/theme/types"
+import { toExportedTheme } from "~lib/theme/utils"
+import { isNullOrUndefined } from "~lib/util/utils"
+import { Source, WidgetStateManager } from "~lib/WidgetStateManager"
+
+import { ComponentMessageType, StreamlitMessageType } from "./enums"
 
 // The custom component's value posted from the iFrame has one of the three types as defined
-// in component-lib/
-export type ValueType = "bytes" | "dataframe" | "json"
+// in frontend/component-lib/
+type ValueType = "bytes" | "dataframe" | "json"
 
 // Define types for messages being sent from the custom component
-// The types are also defined in the component-lib/ module, and we can
+// The types are also defined in the frontend/component-lib module, and we can
 // replace these here when we have a shared module. Until then,
 // the typing is hopefully at least a little bit helpful for devs.
 type ReadyMessage = {
@@ -41,7 +44,7 @@ type ReadyMessage = {
 }
 type ComponentValueMessage = {
   /* the value sent from the custom component can be anything */
-  value: any
+  value: unknown
   dataType: ValueType
 }
 type FrameHeightMessage = {
@@ -63,11 +66,11 @@ export interface IframeMessageHandlerProps {
 }
 
 export interface Args {
-  [name: string]: any
+  [name: string]: unknown
 }
 export interface DataframeArg {
   key: string
-  value: any
+  value: unknown
 }
 
 /**
@@ -76,6 +79,7 @@ export interface DataframeArg {
  * version in the COMPONENT_READY call.
  */
 export const CUSTOM_COMPONENT_API_VERSION = 1
+export const LOG = getLogger("componentUtils")
 
 /**
  * Create a callback to be passed to  {@link ComponentRegistry#registerListener}.
@@ -110,6 +114,7 @@ export function createIframeMessageHandler(
     const isReady = readyCheck()
 
     switch (type) {
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
       case ComponentMessageType.COMPONENT_READY: {
         // Our component is ready to begin receiving messages. Send off its
         // first render message! It is *not* an error to get multiple
@@ -130,9 +135,10 @@ export function createIframeMessageHandler(
         break
       }
 
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
       case ComponentMessageType.SET_COMPONENT_VALUE:
         if (!isReady) {
-          logWarning(
+          LOG.warn(
             `Got ${type} before ${ComponentMessageType.COMPONENT_READY}!`
           )
         } else {
@@ -147,20 +153,21 @@ export function createIframeMessageHandler(
         }
         break
 
+      // eslint-disable-next-line @typescript-eslint/no-unsafe-enum-comparison
       case ComponentMessageType.SET_FRAME_HEIGHT:
         if (!isReady) {
-          logWarning(
+          LOG.warn(
             `Got ${type} before ${ComponentMessageType.COMPONENT_READY}!`
           )
         } else {
           frameHeightCallback(
-            tryGetValue(data as FrameHeightMessage, "height")
+            tryGetValue(data, "height") as number | undefined
           )
         }
         break
 
       default:
-        logWarning(`Unrecognized ComponentBackMsgType: ${type}`)
+        LOG.warn(`Unrecognized ComponentBackMsgType: ${type}`)
     }
   }
 }
@@ -241,13 +248,13 @@ export function sendRenderMessage(
 ): void {
   if (!iframe) {
     // This should never happen!
-    logWarning("Can't send ForwardMsg; missing our iframe!")
+    LOG.warn("Can't send ForwardMsg; missing our iframe!")
     return
   }
 
-  if (iframe.contentWindow == null) {
+  if (isNullOrUndefined(iframe.contentWindow)) {
     // Nor should this!
-    logWarning("Can't send ForwardMsg; iframe has no contentWindow!")
+    LOG.warn("Can't send ForwardMsg; iframe has no contentWindow!")
     return
   }
 
@@ -260,7 +267,12 @@ export function sendRenderMessage(
       args: currentArgs,
       dfs: currentDataframeArgs,
       disabled: disabled,
-      theme: toExportedTheme(theme),
+      theme: {
+        ...toExportedTheme(theme),
+        // TODO(lukasmasuch): adds backwards compatibility for the deprecated font
+        // property. Should be cleaned-up at some point when we revamp custom components.
+        font: theme.genericFonts.bodyFont,
+      },
     },
     "*"
   )
@@ -276,7 +288,7 @@ export function sendRenderMessage(
  * @returns undefined
  */
 function handleSetComponentValue(
-  value: any, // we do not know what data the custom component is sending us, so we use 'any' here
+  value: unknown, // we do not know what data the custom component is sending us
   dataType: ValueType,
   source: Source,
   element: ComponentInstanceProto,
@@ -284,16 +296,21 @@ function handleSetComponentValue(
   fragmentId?: string
 ): void {
   if (value === undefined) {
-    logWarning(`handleSetComponentValue: missing 'value' prop`)
+    LOG.warn(`handleSetComponentValue: missing 'value' prop`)
     return
   }
 
   switch (dataType) {
     case "dataframe":
-      widgetMgr.setArrowValue(element, value, source, fragmentId)
+      widgetMgr.setArrowValue(
+        element,
+        value as IArrowTable,
+        source,
+        fragmentId
+      )
       break
     case "bytes":
-      widgetMgr.setBytesValue(element, value, source, fragmentId)
+      widgetMgr.setBytesValue(element, value as Uint8Array, source, fragmentId)
       break
     default:
       widgetMgr.setJsonValue(element, value, source, fragmentId)
@@ -302,9 +319,11 @@ function handleSetComponentValue(
 
 /** Return the property with the given name, if it exists. */
 function tryGetValue(
-  obj: any,
+  obj: object,
   name: string,
-  defaultValue: any = undefined
-): any {
-  return obj.hasOwnProperty(name) ? obj[name] : defaultValue
+  defaultValue: unknown = undefined
+): unknown {
+  return Object.hasOwn(obj, name)
+    ? (obj as Record<string, unknown>)[name]
+    : defaultValue
 }

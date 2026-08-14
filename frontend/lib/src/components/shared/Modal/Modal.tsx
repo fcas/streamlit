@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,108 +14,46 @@
  * limitations under the License.
  */
 
-import React, { ReactNode, ReactElement, FunctionComponent } from "react"
-import { useTheme } from "@emotion/react"
-import {
-  Modal as UIModal,
-  ModalHeader as UIModalHeader,
-  ModalBody as UIModalBody,
-  ModalFooter as UIModalFooter,
-  ModalProps,
-} from "baseui/modal"
+import { FunctionComponent, ReactElement, ReactNode } from "react"
+
 import BaseButton, {
   BaseButtonProps,
-} from "@streamlit/lib/src/components/shared/BaseButton"
-import merge from "lodash/merge"
-import { EmotionTheme } from "@streamlit/lib/src/theme"
-import { StyledModalButton } from "./styled-components"
+} from "~lib/components/shared/BaseButton/BaseButton"
+import { useEmotionTheme } from "~lib/hooks/useEmotionTheme"
 
-export interface ModalHeaderProps {
+import {
+  StyledDialogClose,
+  StyledDialogInner,
+  StyledDialogOverlay,
+  StyledDialogPanel,
+  StyledModalBody,
+  StyledModalButton,
+  StyledModalFooter,
+  StyledModalHeader,
+} from "./styled-components"
+
+interface ModalHeaderProps {
   children: ReactNode
 }
 
-function ModalHeader({ children }: ModalHeaderProps): ReactElement {
-  const { genericFonts, fontSizes, spacing }: EmotionTheme = useTheme()
-
-  return (
-    <UIModalHeader
-      style={{
-        marginTop: spacing.none,
-        marginLeft: spacing.none,
-        marginRight: spacing.none,
-        marginBottom: spacing.none,
-        paddingTop: spacing.twoXL,
-        paddingRight: spacing.twoXL,
-        paddingBottom: spacing.md,
-        paddingLeft: spacing.twoXL,
-        fontFamily: genericFonts.bodyFont,
-        fontSize: fontSizes.xl,
-        fontWeight: 600,
-        margin: spacing.none,
-        lineHeight: 1.5,
-        textTransform: "none",
-        display: "flex",
-        alignItems: "center",
-        maxHeight: "80vh",
-        flexDirection: "row",
-      }}
-    >
-      {children}
-    </UIModalHeader>
-  )
+function ModalHeader({ children }: Readonly<ModalHeaderProps>): ReactElement {
+  return <StyledModalHeader slot="title">{children}</StyledModalHeader>
 }
 
-export interface ModalBodyProps {
+interface ModalBodyProps {
   children: ReactNode
 }
 
-function ModalBody({ children }: ModalBodyProps): ReactElement {
-  const { colors, fontSizes, spacing }: EmotionTheme = useTheme()
-
-  return (
-    <UIModalBody
-      style={{
-        marginTop: spacing.none,
-        marginLeft: spacing.none,
-        marginRight: spacing.none,
-        marginBottom: spacing.none,
-        paddingTop: spacing.md,
-        paddingRight: spacing.twoXL,
-        paddingBottom: spacing.twoXL,
-        paddingLeft: spacing.twoXL,
-        color: colors.bodyText,
-        fontSize: fontSizes.md,
-        overflowY: "auto",
-      }}
-    >
-      {children}
-    </UIModalBody>
-  )
+function ModalBody({ children }: Readonly<ModalBodyProps>): ReactElement {
+  return <StyledModalBody>{children}</StyledModalBody>
 }
 
-export interface ModalFooterProps {
+interface ModalFooterProps {
   children: ReactNode
 }
 
-function ModalFooter({ children }: ModalFooterProps): ReactElement {
-  const { spacing }: EmotionTheme = useTheme()
-
-  return (
-    <UIModalFooter
-      style={{
-        marginTop: spacing.none,
-        marginLeft: spacing.none,
-        marginRight: spacing.none,
-        marginBottom: spacing.none,
-        paddingTop: spacing.md,
-        paddingRight: spacing.md,
-        paddingBottom: spacing.md,
-        paddingLeft: spacing.md,
-      }}
-    >
-      <div className="ModalBody">{children}</div>
-    </UIModalFooter>
-  )
+function ModalFooter({ children }: Readonly<ModalFooterProps>): ReactElement {
+  return <StyledModalFooter>{children}</StyledModalFooter>
 }
 
 const ModalButton: FunctionComponent<
@@ -126,45 +64,128 @@ const ModalButton: FunctionComponent<
   </StyledModalButton>
 )
 
-function Modal(props: ModalProps): ReactElement {
-  const { spacing, radii, colors }: EmotionTheme = useTheme()
+/**
+ * Prevents the dialog from closing when the user interacts with an overlay that
+ * is rendered outside the dialog's DOM subtree but conceptually belongs to it,
+ * e.g. BaseWeb dropdowns/popovers/calendars and the dataframe portal (menus,
+ * cell editors). These overlay roots are tagged with `data-st-overlay-root`.
+ *
+ * Those same hosts also carry `data-react-aria-top-layer`, which React Aria's
+ * `useInteractOutside` already ignores. We keep this explicit check because it
+ * relies on React Aria's documented `shouldCloseOnInteractOutside` API rather
+ * than that internal attribute, and it keeps the dismissal contract obvious.
+ */
+function shouldCloseOnInteractOutside(element: Element): boolean {
+  return element.closest('[data-st-overlay-root="true"]') === null
+}
 
-  const defaultOverrides = {
-    Root: {
-      style: {
-        background: colors.darkenedBgMix25,
-      },
-      props: {
-        "data-testid": "stModal",
-      },
-    },
-    DialogContainer: {
-      style: {
-        alignItems: "start",
-        paddingTop: "3rem",
-      },
-    },
-    Dialog: {
-      style: {
-        borderBottomRadius: radii.xl,
-        borderTopRadius: radii.xl,
-        borderLeftRadius: radii.xl,
-        borderRightRadius: radii.xl,
-        // make sure the modal is not too small on mobile
-        minWidth: "20rem",
-      },
-    },
-    Close: {
-      style: {
-        top: `calc(${spacing.twoXL} + .375rem)`, // Trying to center the button on the available space.
-        right: spacing.twoXL,
-      },
-    },
+interface StreamlitModalProps {
+  isOpen?: boolean
+  onClose?: () => void
+  /** Controls backdrop click, Escape key, and close button visibility. Defaults to true. */
+  closeable?: boolean
+  size?: "auto" | "default" | "medium" | "large"
+  /** Explicit CSS width override, takes precedence over size. Used for non-standard widths like "80vw". */
+  width?: string
+  children?: ReactNode
+}
+
+/**
+ * Maps the StreamlitModal size to a CSS width string.
+ *
+ * @param size the modal size variant
+ * @param width the content max width used for the 'medium' size calculation
+ * @param padding extra horizontal padding added for the 'medium' size
+ * @param largeWidth the explicit CSS width for 'large' size
+ * @returns a CSS width string, or undefined for auto (content-sized)
+ */
+export function calculateModalSize(
+  size: StreamlitModalProps["size"],
+  width?: string,
+  padding?: string,
+  largeWidth?: string
+): string | undefined {
+  if (size === "large" && largeWidth) {
+    return largeWidth
+  }
+  if (size === "medium" && width && padding) {
+    // Same width as the AppView container (contentMaxWidth) plus the extra dialog padding.
+    // The dialog has 0.5rem more left/right padding than AppView, adding 1rem total.
+    // Note: the panel's maxWidth (calc(100% - lg - lg)) keeps this responsive on
+    // narrow screens regardless of the calculated value.
+    return `calc(${width} + ${padding})`
+  }
+  if (size === "auto") {
+    return undefined
+  }
+  // Default: 31.25rem (= 500px at 16px base)
+  // rem is used so the dialog scales with the user's browser font-size preference.
+  return "31.25rem"
+}
+
+function Modal({
+  isOpen,
+  onClose,
+  closeable = true,
+  size,
+  width,
+  children,
+}: Readonly<StreamlitModalProps>): ReactElement {
+  const { sizes, spacing } = useEmotionTheme()
+  const dialogWidth = calculateModalSize(
+    size,
+    sizes.contentMaxWidth,
+    spacing.lg,
+    sizes.dialogLargeWidth
+  )
+
+  const handleOpenChange = (open: boolean): void => {
+    if (!open) onClose?.()
   }
 
-  const mergedOverrides = merge(defaultOverrides, props.overrides)
-
-  return <UIModal {...props} overrides={mergedOverrides} />
+  return (
+    <StyledDialogOverlay
+      isOpen={isOpen ?? false}
+      isDismissable={closeable}
+      isKeyboardDismissDisabled={!closeable}
+      shouldCloseOnInteractOutside={shouldCloseOnInteractOutside}
+      onOpenChange={handleOpenChange}
+      className="stDialog"
+      data-testid="stDialog"
+    >
+      <StyledDialogPanel $dialogWidth={width ?? dialogWidth}>
+        <StyledDialogInner>
+          {({ close }) => (
+            <>
+              {closeable && (
+                <StyledDialogClose
+                  aria-label="Close"
+                  type="button"
+                  onClick={close}
+                >
+                  <svg
+                    aria-hidden="true"
+                    height="10"
+                    viewBox="0 0 10 10"
+                    width="10"
+                    xmlns="http://www.w3.org/2000/svg"
+                  >
+                    <path
+                      d="M9 1L5 5M1 9L5 5M5 5L1 1M5 5L9 9"
+                      stroke="currentColor"
+                      strokeLinecap="round"
+                      strokeWidth="2"
+                    />
+                  </svg>
+                </StyledDialogClose>
+              )}
+              {children}
+            </>
+          )}
+        </StyledDialogInner>
+      </StyledDialogPanel>
+    </StyledDialogOverlay>
+  )
 }
 
 export default Modal

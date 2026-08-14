@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,10 +14,9 @@
  * limitations under the License.
  */
 
-import React from "react"
-import { render } from "@streamlit/lib/src/test_util"
 import { screen } from "@testing-library/react"
-import "@testing-library/jest-dom"
+
+import { render } from "~lib/test_util"
 
 import AlertContainer, { AlertContainerProps, Kind } from "./AlertContainer"
 
@@ -31,9 +30,11 @@ const getProps = (
 })
 
 describe("AlertContainer element", () => {
-  it("renders a Notification", () => {
+  it("renders the alert container", () => {
     render(<AlertContainer {...getProps()} />)
-    expect(screen.getByTestId("stNotification")).toBeInTheDocument()
+    const alertContainer = screen.getByTestId("stAlertContainer")
+    expect(alertContainer).toBeVisible()
+    expect(alertContainer).toHaveClass("stAlertContainer")
   })
 
   it("renders its children", () => {
@@ -43,6 +44,19 @@ describe("AlertContainer element", () => {
       </AlertContainer>
     )
 
-    expect(screen.getByTestId("foo")).toBeInTheDocument()
+    expect(screen.getByTestId("foo")).toBeVisible()
   })
+
+  it.each([
+    [Kind.ERROR, "alert"],
+    [Kind.INFO, "status"],
+    [Kind.SUCCESS, "status"],
+    [Kind.WARNING, "alert"],
+  ] as const)(
+    "for kind=%s, renders role=%s",
+    (kind: Kind, expectedRole: string) => {
+      render(<AlertContainer {...getProps({ kind })} />)
+      expect(screen.getByRole(expectedRole)).toBeVisible()
+    }
+  )
 })

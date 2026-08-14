@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,7 +18,7 @@ from streamlit import runtime
 # st.session_state can only be used in streamlit
 if runtime.exists():
 
-    def on_click(x, y):
+    def on_click(x: int, y: int) -> None:
         if "click_count" not in st.session_state:
             st.session_state.click_count = 0
 
@@ -51,15 +51,41 @@ st.write("value 3:", i4)
 i5 = st.button("button 4 (primary + disabled)", type="primary", disabled=True)
 st.write("value 4:", i5)
 
-st.button("button 5 (container_width)", use_container_width=True)
-
 st.button(
-    "button 6 (container_width + help)", use_container_width=True, help="help text"
+    ":material/search: _button 5_ (**styled** :green[label]) :material/arrow_forward:",
+    key="styled_label_button",
 )
 
-st.button("_button 7_ (**styled** :green[label])")
+with st.container(key="help_button_container"):
+    st.write("help_button_container")
+    st.button("button 6 (just help)", help="help text", key="help_button_key")
 
-cols = st.columns(3)
+st.button("Like Button", icon=":material/thumb_up:")
+st.button("Star Button", icon="⭐")
+shortcut_button_clicked = st.button(
+    "Shortcut Button", key="shortcut_button", shortcut="Ctrl+J"
+)
+if shortcut_button_clicked:
+    st.write("Shortcut button pressed!")
+
+st.button("Tertiary Button", type="tertiary")
+st.button("Disabled Tertiary Button", type="tertiary", disabled=True)
+
+# We add this to test a regression that was happened previously
+# because of unused icon name processing
+# See: https://github.com/streamlit/streamlit/pull/10247#issuecomment-2612956073
+st.button(
+    "Button with material icon containing a digit",
+    icon=":material/1k:",
+    key="material_icon_digit_button",
+)
+st.button(
+    "Button with material icon containing a digit in label :material/1k:",
+    key="material_icon_digit_in_label_button",
+)
+
+
+cols = st.container(key="buttons_in_columns").columns(3)
 
 # Order of conn_types matters to preserve the order in st_button.spec.js and the snapshot
 conn_types = [
@@ -73,4 +99,81 @@ conn_types = [
     "custom",
 ]
 for i in range(len(conn_types)):
-    cols[i % 3].button(conn_types[i], use_container_width=True)
+    cols[i % 3].button(conn_types[i], width="stretch")
+
+st.button("Foo :blue[bar] baz", key="colored_text_primary", type="primary")
+st.button("Foo :blue[bar] baz", key="colored_text_secondary")
+st.button("Foo :blue[bar] baz", key="colored_text_tertiary", type="tertiary")
+
+with st.expander("Button Width Examples", expanded=True):
+    st.button("Content Width (Default)", width="content")
+    st.button("Stretch Width", width="stretch")
+    st.button("200px Width", width=200)
+
+st.markdown("Dynamic button props:")
+
+if st.toggle("Update button props"):
+    clicked = st.button(
+        "Updated dynamic button",
+        type="secondary",
+        icon=":material/looks_two:",
+        width="stretch",
+        help="updated help",
+        key="dynamic_button_with_key",
+    )
+    st.write("Clicked updated button:", clicked)
+else:
+    clicked = st.button(
+        "Initial dynamic button",
+        type="primary",
+        icon=":material/looks_one:",
+        width="content",
+        help="initial help",
+        key="dynamic_button_with_key",
+    )
+    st.write("Clicked initial button:", clicked)
+
+st.button("Button with spinner icon", icon="spinner")
+
+st.button(
+    "Icon Right",
+    icon=":material/thumb_up:",
+    icon_position="right",
+    key="icon_right_material",
+)
+
+# Test for markdown syntax characters in labels (issue #7359)
+# These should display the literal characters, not be parsed as markdown
+st.button("+", key="markdown_plus_label")
+st.button("1. Something", key="markdown_numbered_label")
+
+# wrap=False keeps the button on one row and ellipsizes an overflowing label,
+# exposing the full label via a native title (skipped when help is set). A
+# narrow fixed width forces the long label to overflow so the auto default
+# (wrap=None) wraps and grows taller in a vertical layout, while wrap=False
+# stays single-row.
+_WRAP_LABEL = "Regenerate the complete quarterly report now"
+with st.container(key="wrap_buttons"):
+    st.button(_WRAP_LABEL, width=150, wrap=False, key="wrap_false_button")
+    st.button(_WRAP_LABEL, width=150, key="wrap_auto_vertical_button")
+    st.button(
+        _WRAP_LABEL,
+        width=150,
+        wrap=False,
+        help="wrap help text",
+        key="wrap_help_button",
+    )
+    st.button(
+        _WRAP_LABEL,
+        width=150,
+        wrap=False,
+        icon=":material/mood:",
+        shortcut="Alt+W",
+        key="wrap_icon_button",
+    )
+
+# Default (auto) wrap: inside a horizontal container the label does not wrap; it
+# ellipsizes and exposes the full label via a native title. A fixed container
+# width narrower than the label forces the overflow.
+with st.container(horizontal=True, width=200, key="wrap_auto_horizontal"):
+    st.button(_WRAP_LABEL, key="wrap_auto_button")

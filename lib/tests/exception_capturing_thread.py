@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,20 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from __future__ import annotations
+
 import threading
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any
 
 from streamlit.runtime.forward_msg_queue import ForwardMsgQueue
 from streamlit.runtime.fragment import MemoryFragmentStorage
 from streamlit.runtime.memory_uploaded_file_manager import MemoryUploadedFileManager
-from streamlit.runtime.scriptrunner import ScriptRunContext, add_script_run_ctx
+from streamlit.runtime.pages_manager import PagesManager
+from streamlit.runtime.scriptrunner import ScriptRunContext
+from streamlit.runtime.scriptrunner_utils.script_run_context import (
+    SCRIPT_RUN_CONTEXT_ATTR_NAME,
+    ThreadState,
+)
 from streamlit.runtime.state import SafeSessionState, SessionState
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def call_on_threads(
     func: Callable[[int], Any],
     num_threads: int,
-    timeout: Optional[float] = 0.25,
+    timeout: float | None = 0.25,
     attach_script_run_ctx: bool = True,
 ) -> None:
     """Call a function on multiple threads simultaneously and assert that no
@@ -66,12 +76,29 @@ def call_on_threads(
                 session_state=SafeSessionState(SessionState(), lambda: None),
                 uploaded_file_mgr=MemoryUploadedFileManager("/mock/upload"),
                 main_script_path="",
-                page_script_hash="",
-                user_info={"email": "test@test.com"},
+                user_info={"email": "test@example.com"},
                 fragment_storage=MemoryFragmentStorage(),
+                pages_manager=PagesManager(""),
             )
             thread = threads[ii]
-            add_script_run_ctx(thread, ctx)
+            # Attach ctx directly rather than via add_script_run_ctx so each
+            # worker simulates an independent script run rather than inheriting
+            # the caller's ThreadState snapshot. (add_script_run_ctx wraps
+            # thread.run to propagate the parent's snapshot, which would
+            # stack with the wrapper below and leak the parent's state into
+            # the worker.) In production, ScriptRunner.reset() initializes
+            # ThreadState; here we do it manually in _run_with_init.
+            setattr(thread, SCRIPT_RUN_CONTEXT_ATTR_NAME, ctx)
+            original_run = thread.run
+
+            # Default arg captures original_run per iteration; without it,
+            # all workers would see the last iteration's run() via
+            # late-binding closure.
+            def _run_with_init(orig=original_run):
+                ThreadState.initialize()
+                orig()
+
+            thread.run = _run_with_init  # type: ignore[method-assign]  # ty: ignore[invalid-assignment]
 
     for thread in threads:
         thread.start()
@@ -95,10 +122,10 @@ class ExceptionCapturingThread(threading.Thread):
             kwargs=kwargs,
             daemon=daemon,
         )
-        self._unhandled_exception: Optional[BaseException] = None
+        self._unhandled_exception: BaseException | None = None
 
     @property
-    def unhandled_exception(self) -> Optional[BaseException]:
+    def unhandled_exception(self) -> BaseException | None:
         """The unhandled exception raised by the thread's target, if it raised one."""
         return self._unhandled_exception
 

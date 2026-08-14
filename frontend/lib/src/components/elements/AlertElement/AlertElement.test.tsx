@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,24 +14,21 @@
  * limitations under the License.
  */
 
-import React from "react"
-import "@testing-library/jest-dom"
 import { screen } from "@testing-library/react"
 
-import { render } from "@streamlit/lib/src/test_util"
-import { Kind } from "@streamlit/lib/src/components/shared/AlertContainer"
-import { Alert as AlertProto } from "@streamlit/lib/src/proto"
-import AlertElement, {
-  AlertElementProps,
-  getAlertElementKind,
-} from "./AlertElement"
+import { Alert as AlertProto } from "@streamlit/protobuf"
+
+import { Kind } from "~lib/components/shared/AlertContainer/AlertContainer"
+import { render } from "~lib/test_util"
+
+import AlertElement, { AlertElementProps } from "./AlertElement"
+import { getAlertElementKind } from "./utils"
 
 const getProps = (
   elementProps: Partial<AlertElementProps> = {}
 ): AlertElementProps => ({
   body: "Something happened!",
   kind: Kind.INFO,
-  width: 100,
   ...elementProps,
 })
 
@@ -42,10 +39,11 @@ describe("Alert element", () => {
       body: "#what in the world?",
     })
     render(<AlertElement {...props} />)
-    expect(screen.getByTestId("stAlert")).toBeInTheDocument()
-    expect(
-      screen.getByTestId("stNotificationContentError")
-    ).toBeInTheDocument()
+    const alertElement = screen.getByTestId("stAlert")
+    expect(alertElement).toBeInTheDocument()
+    expect(alertElement).toHaveClass("stAlert")
+
+    expect(screen.getByTestId("stAlertContentError")).toBeInTheDocument()
     expect(screen.queryByTestId("stAlertDynamicIcon")).not.toBeInTheDocument()
     expect(screen.getByText("#what in the world?")).toBeInTheDocument()
   })
@@ -57,9 +55,7 @@ describe("Alert element", () => {
     })
     render(<AlertElement {...props} />)
     expect(screen.getByTestId("stAlert")).toBeInTheDocument()
-    expect(
-      screen.getByTestId("stNotificationContentWarning")
-    ).toBeInTheDocument()
+    expect(screen.getByTestId("stAlertContentWarning")).toBeInTheDocument()
     expect(screen.queryByTestId("stAlertDynamicIcon")).not.toBeInTheDocument()
     expect(screen.getByText("test")).toBeInTheDocument()
   })
@@ -71,9 +67,7 @@ describe("Alert element", () => {
     })
     render(<AlertElement {...props} />)
     expect(screen.getByTestId("stAlert")).toBeInTheDocument()
-    expect(
-      screen.getByTestId("stNotificationContentSuccess")
-    ).toBeInTheDocument()
+    expect(screen.getByTestId("stAlertContentSuccess")).toBeInTheDocument()
     expect(screen.queryByTestId("stAlertDynamicIcon")).not.toBeInTheDocument()
     expect(
       screen.getByText("But our princess was in another castle!")
@@ -87,7 +81,7 @@ describe("Alert element", () => {
     })
     render(<AlertElement {...props} />)
     expect(screen.getByTestId("stAlert")).toBeInTheDocument()
-    expect(screen.getByTestId("stNotificationContentInfo")).toBeInTheDocument()
+    expect(screen.getByTestId("stAlertContentInfo")).toBeInTheDocument()
     expect(screen.queryByTestId("stAlertDynamicIcon")).not.toBeInTheDocument()
     expect(screen.getByText("It's dangerous to go alone.")).toBeInTheDocument()
   })
@@ -100,14 +94,47 @@ describe("Alert element", () => {
     })
     render(<AlertElement {...props} />)
     expect(screen.getByTestId("stAlert")).toBeInTheDocument()
-    expect(screen.getByTestId("stNotificationContentInfo")).toBeInTheDocument()
+    expect(screen.getByTestId("stAlertContentInfo")).toBeInTheDocument()
     expect(screen.getByTestId("stAlertDynamicIcon")).toHaveTextContent("👉🏻")
     expect(screen.getByText("It's dangerous to go alone.")).toBeInTheDocument()
   })
-})
 
-test("getAlertElementKind throws an error on invalid format", () => {
-  expect(() => getAlertElementKind(AlertProto.Format.UNUSED)).toThrow(
-    `Unexpected alert type: ${AlertProto.Format.UNUSED}`
-  )
+  it("renders a title when provided", () => {
+    const props = getProps({
+      kind: getAlertElementKind(AlertProto.Format.INFO),
+      body: "This is the body text.",
+      title: "Important Notice",
+    })
+    render(<AlertElement {...props} />)
+    expect(screen.getByTestId("stAlert")).toBeVisible()
+    expect(screen.getByTestId("stAlertTitle")).toHaveTextContent(
+      "Important Notice"
+    )
+    expect(screen.getByText("This is the body text.")).toBeVisible()
+  })
+
+  it("does not render title element when title is not provided", () => {
+    const props = getProps({
+      kind: getAlertElementKind(AlertProto.Format.INFO),
+      body: "Just the body.",
+    })
+    render(<AlertElement {...props} />)
+    expect(screen.getByTestId("stAlert")).toBeVisible()
+    expect(screen.queryByTestId("stAlertTitle")).not.toBeInTheDocument()
+    expect(screen.getByText("Just the body.")).toBeVisible()
+  })
+
+  it("renders title with icon", () => {
+    const props = getProps({
+      kind: getAlertElementKind(AlertProto.Format.SUCCESS),
+      body: "Operation completed successfully.",
+      title: "Success!",
+      icon: "✅",
+    })
+    render(<AlertElement {...props} />)
+    expect(screen.getByTestId("stAlert")).toBeVisible()
+    expect(screen.getByTestId("stAlertTitle")).toHaveTextContent("Success!")
+    expect(screen.getByTestId("stAlertDynamicIcon")).toHaveTextContent("✅")
+    expect(screen.getByText("Operation completed successfully.")).toBeVisible()
+  })
 })

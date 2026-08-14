@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,9 +13,9 @@
 # limitations under the License.
 
 import streamlit as st
-from streamlit.elements.doc_string import _get_scriptrunner_frame
+from streamlit.elements.help import _get_caller_frame
 
-if _get_scriptrunner_frame() is None:
+if _get_caller_frame() is None:
     st.warning(
         """
         You're running this script in an `exec` context, so the `foo` part
@@ -23,18 +23,19 @@ if _get_scriptrunner_frame() is None:
         """
     )
 
+
 # Testing case where there are no docs.
 class FooWithNoDocs:
     my_static_var_1 = 123
 
 
-st.help(FooWithNoDocs)
+st.container(key="help_no_docs").help(FooWithNoDocs)
 
 # Testing case where there are no members.
-st.help(globals)
+st.container(key="help_globals").help(globals)
 
-# Test case where there the docs need to scroll,
-# and test case where some members doesn't have docs.
+
+# Test case where there the docs need to scroll
 class FooWithLongDocs:
     """My docstring.
 
@@ -69,14 +70,53 @@ class FooWithLongDocs:
     def __init__(self):
         self.my_var_1 = 123
 
-    def my_func_1(self, a, b=False):
-        "Func with doc."
+
+f = FooWithLongDocs()
+
+st.container(key="help_long_docs").help(f)
+
+
+class FooWithMixedDocs:
+    """My docstring."""
+
+    def __init__(self):
+        self.my_var_1 = 123
+
+    def my_func_1(self, a: int, b: bool = False) -> None:
+        """Func with doc."""
 
     def my_func_2(self):
         # Func without doc.
         pass
 
 
-f = FooWithLongDocs()
+st.container(key="help_mixed_docs").help(FooWithMixedDocs())
 
-f
+
+# Create a class with very long documentation to demonstrate width differences
+class LongDocumentationClass:
+    """Class with very long documentation to demonstrate width differences.
+
+    This documentation is intentionally long to show how different width settings affect
+    the display of help text. The content should be long enough to wrap and show the
+    difference between stretch and fixed width settings.
+
+    Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore
+    eu fugiat nulla pariatur. Excepteur sint occaecat cupidatat non proident,
+    sunt in culpa qui officia deserunt mollit anim id est laborum.
+    """
+
+    def __init__(self):
+        self.some_attribute = "This is a sample attribute"
+        self.another_attribute = "This is another attribute"
+        self.third_attribute = "This is a third attribute"
+        self.fourth_attribute = "This is a fourth attribute"
+        self.fifth_attribute = "This is a fifth attribute"
+
+
+# Create instances for testing
+long_doc_instance = LongDocumentationClass()
+
+# Test different width configurations
+st.help(long_doc_instance, width=300)
+st.help(long_doc_instance, width="stretch")

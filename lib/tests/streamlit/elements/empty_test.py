@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import streamlit as st
-from streamlit.errors import StreamlitAPIException
 from streamlit.proto.Empty_pb2 import Empty as EmptyProto
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
 
@@ -26,4 +25,4 @@ class StEmptyAPITest(DeltaGeneratorTestCase):
         st.empty()
 
         el = self.get_delta_from_queue().new_element
-        self.assertEqual(el.empty, EmptyProto())
+        assert el.empty == EmptyProto()

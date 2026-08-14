@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,17 +14,17 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
+import { memo, ReactElement } from "react"
+
 import { SwitchCamera } from "@emotion-icons/material-rounded"
 
 import BaseButton, {
   BaseButtonKind,
-} from "@streamlit/lib/src/components/shared/BaseButton"
-import Icon from "@streamlit/lib/src/components/shared/Icon"
-import Tooltip, {
-  Placement,
-} from "@streamlit/lib/src/components/shared/Tooltip"
-import themeColors from "@streamlit/lib/src/theme/emotionBaseTheme/themeColors"
+} from "~lib/components/shared/BaseButton/BaseButton"
+import Icon from "~lib/components/shared/Icon/Icon"
+import Tooltip, { Placement } from "~lib/components/shared/Tooltip/Tooltip"
+import themeColors from "~lib/theme/emotionBaseTheme/themeColors"
+
 import { StyledSwitchFacingModeButton } from "./styled-components"
 
 export enum FacingMode {
@@ -32,7 +32,7 @@ export enum FacingMode {
   ENVIRONMENT = "environment",
 }
 
-export interface SwitchFacingModeButtonProps {
+interface SwitchFacingModeButtonProps {
   switchFacingMode: () => void
 }
 
@@ -40,8 +40,8 @@ const SwitchFacingModeButton = ({
   switchFacingMode,
 }: SwitchFacingModeButtonProps): ReactElement => {
   return (
-    <StyledSwitchFacingModeButton data-testid="stCameraSwitchButton">
-      <Tooltip content={"Switch camera"} placement={Placement.TOP_RIGHT}>
+    <StyledSwitchFacingModeButton data-testid="stCameraInputSwitchButton">
+      <Tooltip content="Switch camera" placement={Placement.TOP_RIGHT}>
         <BaseButton kind={BaseButtonKind.MINIMAL} onClick={switchFacingMode}>
           <Icon
             content={SwitchCamera}
@@ -54,4 +54,4 @@ const SwitchFacingModeButton = ({
   )
 }
 
-export default SwitchFacingModeButton
+export default memo(SwitchFacingModeButton)

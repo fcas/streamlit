@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,11 +21,53 @@ components.html(html, width=200, height=500, scrolling=False)
 src = "http://not.a.real.url"
 components.iframe(src, width=200, height=500, scrolling=True)
 
-# Set a query parameter to ensure that it doesn't affect the path of the custom component,
-# since that would trigger a reload if the query param changes
-st.query_params["hello"] = "world"
+# Different tab_index examples for testing
+st.markdown("### IFrames with different tab_index values")
 
-url = "http://not.a.real.url"
-test_component = components.declare_component("test_component", url=url)
+# Default - no tab_index specified
+components.iframe(src, width=200, height=100, scrolling=True)
 
-test_component()
+# Positive tab_index
+components.iframe(src, width=200, height=100, scrolling=True, tab_index=5)
+
+# Negative tab_index
+components.iframe(src, width=200, height=100, scrolling=True, tab_index=-1)
+
+# Zero tab_index
+components.iframe(src, width=200, height=100, scrolling=True, tab_index=0)
+
+data_url = """data:text/html,
+<h1>Iframe Test</h1>
+<p>This content is stable for snapshot testing.</p>
+<div style='background-color: lightblue; padding: 10px;'>
+    Fixed content for reliable snapshots
+</div>
+""".replace("\n", "")
+long_html = """<h1>HTML Test</h1>
+<p>This content is stable for snapshot testing.</p>
+<div style='background-color: lightblue; padding: 10px;'>
+    Fixed content for reliable snapshots
+</div>
+""".replace("\n", "")
+# Dimensions tests
+components.iframe(data_url)
+components.iframe(data_url, width=200, height=100)
+components.html(long_html)
+
+with st.container(key="html-iframe-in-vertical-container"):
+    components.html(long_html)
+    components.iframe(data_url)
+
+if st.toggle("Show custom component"):
+    # Set a query parameter to ensure that it doesn't affect the path of the custom component,
+    # since that would trigger a reload if the query param changes
+    st.query_params["hello"] = "world"
+
+    url = "http://not.a.real.url"
+    test_component = components.declare_component("test_component", url=url)
+
+    test_component(key="component_1")
+
+st.markdown("### Zero dimension tests")
+components.html("<p>Zero width and height HTML</p>", width=0, height=0)
+components.iframe(data_url, width=0, height=0)

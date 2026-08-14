@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,342 +14,326 @@
  * limitations under the License.
  */
 
-import React, { PureComponent, ReactElement, ReactNode } from "react"
-import { ChevronRight, Close } from "@emotion-icons/material-outlined"
-import { withTheme } from "@emotion/react"
-import { Resizable } from "re-resizable"
+import {
+  ReactElement,
+  useCallback,
+  useContext,
+  useEffect,
+  useRef,
+  useState,
+} from "react"
 
 import {
-  Icon,
+  NumberSize,
+  Resizable,
+  ResizeCallback,
+  ResizeDirection,
+} from "re-resizable"
+
+import LogoComponent from "@streamlit/app/src/components/Logo/LogoComponent"
+import SidebarNav from "@streamlit/app/src/components/Navigation/SidebarNav"
+import { shouldShowNavigation } from "@streamlit/app/src/components/Navigation/utils"
+import { StreamlitEndpoints } from "@streamlit/connection"
+import {
   BaseButton,
   BaseButtonKind,
-  EmotionTheme,
-  localStorageAvailable,
-  StreamlitEndpoints,
+  DynamicIcon,
   IsSidebarContext,
-  isEmbed,
-  isColoredLineDisplayed,
-  IAppPage,
-  PageConfig,
-  Logo,
+  NavigationContext,
+  SidebarConfigContext,
+  useEmotionTheme,
+  useExecuteWhenChanged,
+  useScrollbarGutterSize,
+  useWindowDimensionsContext,
 } from "@streamlit/lib"
+import { localStorageAvailable, notNullOrUndefined } from "@streamlit/utils"
 
 import {
+  RESIZE_HANDLE_WIDTH,
+  StyledCollapseSidebarButton,
+  StyledNoLogoSpacer,
+  StyledResizeHandle,
   StyledSidebar,
   StyledSidebarContent,
-  StyledSidebarUserContent,
-  StyledResizeHandle,
   StyledSidebarHeaderContainer,
-  StyledCollapseSidebarButton,
-  StyledSidebarOpenContainer,
-  StyledOpenSidebarButton,
-  StyledLogo,
-  StyledNoLogoSpacer,
-  StyledLogoLink,
+  StyledSidebarUserContent,
 } from "./styled-components"
-import SidebarNav from "./SidebarNav"
+import {
+  calculateMaxBreakpoint,
+  clampSidebarWidth,
+  DEFAULT_WIDTH,
+} from "./utils"
 
 export interface SidebarProps {
   endpoints: StreamlitEndpoints
-  chevronDownshift: number
   children?: ReactElement
-  initialSidebarState?: PageConfig.SidebarState
-  theme: EmotionTheme
   hasElements: boolean
-  appLogo: Logo | null
-  appPages: IAppPage[]
-  onPageChange: (pageName: string) => void
-  currentPageScriptHash: string
-  hideSidebarNav: boolean
+  isCollapsed: boolean
+  onToggleCollapse: (collapsed: boolean, shouldPersist?: boolean) => void
+  widgetsDisabled: boolean
 }
 
-interface State {
-  collapsedSidebar: boolean
-  sidebarWidth: string
-  lastInnerWidth: number
+const Sidebar: React.FC<SidebarProps> = ({
+  endpoints,
+  children,
+  hasElements,
+  isCollapsed,
+  onToggleCollapse,
+  widgetsDisabled,
+}): ReactElement => {
+  const theme = useEmotionTheme()
+  const mediumBreakpointPx = calculateMaxBreakpoint(theme.breakpoints.md)
+  const { innerWidth } = useWindowDimensionsContext()
 
-  // When hovering the nav
-  hideScrollbar: boolean
-}
+  const { appPages } = useContext(NavigationContext)
 
-class Sidebar extends PureComponent<SidebarProps, State> {
-  private mediumBreakpointPx: number
+  const {
+    hideSidebarNav,
+    appLogo,
+    initialSidebarWidth,
+    appRootRef,
+    isSidebarLocked,
+  } = useContext(SidebarConfigContext)
 
-  static readonly minWidth = "336"
+  const isMobileViewport = innerWidth > 0 && innerWidth <= mediumBreakpointPx
 
-  public static calculateMaxBreakpoint(value: string): number {
-    // We subtract a margin of 0.02 to use as a max-width
-    return parseInt(value, 10) - 0.02
-  }
+  const scrollbarGutterSize = useScrollbarGutterSize()
 
-  private sidebarRef = React.createRef<HTMLDivElement>()
+  const sidebarRef = useRef<HTMLDivElement>(null)
 
-  constructor(props: SidebarProps) {
-    super(props)
-    this.mediumBreakpointPx = Sidebar.calculateMaxBreakpoint(
-      props.theme.breakpoints.md
-    )
+  const cachedSidebarWidth = localStorageAvailable()
+    ? window.localStorage.getItem("sidebarWidth")
+    : undefined
 
-    const cachedSidebarWidth = localStorageAvailable()
-      ? localStorage.getItem("sidebarWidth")
-      : undefined
-
-    this.state = {
-      collapsedSidebar: Sidebar.shouldCollapse(props, this.mediumBreakpointPx),
-      sidebarWidth: cachedSidebarWidth || Sidebar.minWidth,
-      lastInnerWidth: window ? window.innerWidth : Infinity,
-      hideScrollbar: false,
-    }
-  }
-
-  componentDidUpdate(prevProps: any): void {
-    this.mediumBreakpointPx = Sidebar.calculateMaxBreakpoint(
-      this.props.theme.breakpoints.md
-    )
-    // Immediately expand/collapse sidebar when initialSidebarState or hasElements changes
-    if (
-      this.props.initialSidebarState !== prevProps.initialSidebarState ||
-      this.props.hasElements !== prevProps.hasElements
-    ) {
-      this.setState({
-        collapsedSidebar: Sidebar.shouldCollapse(
-          this.props,
-          this.mediumBreakpointPx
-        ),
-      })
-    }
-  }
-
-  static shouldCollapse(
-    props: SidebarProps,
-    mediumBreakpointPx: number
-  ): boolean {
-    switch (props.initialSidebarState) {
-      case PageConfig.SidebarState.EXPANDED:
-        return false
-      case PageConfig.SidebarState.COLLAPSED:
-        return true
-      case PageConfig.SidebarState.AUTO:
-      default: {
-        // Expand sidebar only if browser width > MEDIUM_BREAKPOINT_PX
-        const { innerWidth } = window || {}
-        return innerWidth ? innerWidth <= mediumBreakpointPx : false
+  const [sidebarWidth, setSidebarWidth] = useState<string>(() => {
+    const getCachedWidth = (): string | null => {
+      if (cachedSidebarWidth) {
+        const cached = Number.parseInt(cachedSidebarWidth, 10)
+        return Number.isNaN(cached)
+          ? null
+          : clampSidebarWidth(cached).toString()
       }
+      return null
     }
-  }
 
-  componentDidMount(): void {
-    window.addEventListener("resize", this.checkMobileOnResize)
-    document.addEventListener("mousedown", this.handleClickOutside)
-  }
+    const clampedCached = getCachedWidth()
 
-  componentWillUnmount(): void {
-    window.removeEventListener("resize", this.checkMobileOnResize)
-    document.removeEventListener("mousedown", this.handleClickOutside)
-  }
-
-  handleClickOutside = (event: any): void => {
-    if (this.sidebarRef && window) {
-      const { current } = this.sidebarRef
-      const { innerWidth } = window
-
-      if (
-        current &&
-        !current.contains(event.target) &&
-        innerWidth <= this.mediumBreakpointPx
-      ) {
-        this.setState({ collapsedSidebar: true })
-      }
+    if (clampedCached) {
+      return clampedCached
     }
-  }
 
-  setSidebarWidth = (width: number): void => {
-    const newWidth = width.toString()
+    if (notNullOrUndefined(initialSidebarWidth)) {
+      return clampSidebarWidth(initialSidebarWidth).toString()
+    }
 
-    this.setState({ sidebarWidth: newWidth })
+    return DEFAULT_WIDTH
+  })
+
+  const [lastInnerWidth, setLastInnerWidth] = useState<number>(
+    innerWidth ?? Infinity
+  )
+
+  // When hovering sidebar header
+  const [showSidebarCollapse, setShowSidebarCollapse] =
+    useState<boolean>(false)
+
+  const onMouseOver = useCallback(() => {
+    setShowSidebarCollapse(true)
+  }, [])
+
+  const onMouseOut = useCallback(() => {
+    setShowSidebarCollapse(false)
+  }, [])
+
+  const initializeSidebarWidth = useCallback((width: number): void => {
+    const clampedWidth = clampSidebarWidth(width)
+    const newWidth = clampedWidth.toString()
+
+    setSidebarWidth(newWidth)
 
     if (localStorageAvailable()) {
       window.localStorage.setItem("sidebarWidth", newWidth)
     }
-  }
+  }, [])
 
-  resetSidebarWidth = (event: any): void => {
-    // Double clicking on the resize handle resets sidebar to default width
-    if (event.detail === 2) {
-      this.setState({ sidebarWidth: Sidebar.minWidth })
-      if (localStorageAvailable()) {
-        window.localStorage.setItem("sidebarWidth", Sidebar.minWidth)
+  const onResizeStop = useCallback<ResizeCallback>(
+    (
+      _e: MouseEvent | TouchEvent,
+      _direction: ResizeDirection,
+      ref: HTMLElement,
+      _d: NumberSize
+    ) => {
+      // Use the actual ref width, not the delta, to avoid stale delta values
+      if (ref) {
+        // eslint-disable-next-line streamlit-custom/no-force-reflow-access -- Existing usage
+        const newWidth = ref.clientWidth || ref.offsetWidth
+        initializeSidebarWidth(newWidth)
       }
-    }
-  }
+    },
+    [initializeSidebarWidth]
+  )
 
-  checkMobileOnResize = (): boolean => {
-    if (!window) return false
-
-    const { innerWidth } = window
-
+  useExecuteWhenChanged(() => {
     // Collapse the sidebar if the window was narrowed and is now mobile-sized
     if (
-      innerWidth < this.state.lastInnerWidth &&
-      innerWidth <= this.mediumBreakpointPx
+      innerWidth < lastInnerWidth &&
+      innerWidth <= mediumBreakpointPx &&
+      !isCollapsed
     ) {
-      this.setState({ collapsedSidebar: true })
+      onToggleCollapse(true, false)
     }
-    this.setState({ lastInnerWidth: innerWidth })
+    setLastInnerWidth(innerWidth)
+  }, [innerWidth])
 
-    return true
-  }
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent): void => {
+      const sidebarElement = sidebarRef.current
+      const appRootElement = appRootRef?.current
+      const target = event.target as Node | null
 
-  toggleCollapse = (): void => {
-    const { collapsedSidebar } = this.state
+      if (!sidebarElement || !target) {
+        return
+      }
 
-    this.setState({ collapsedSidebar: !collapsedSidebar })
-  }
+      const isInsideSidebar = sidebarElement.contains(target)
+      const isInsideApp = appRootElement?.contains(target) ?? false
+      const isMobileViewport = innerWidth <= mediumBreakpointPx
 
-  hideScrollbar = (newValue: boolean): void => {
-    this.setState({ hideScrollbar: newValue })
-  }
+      // Only collapse if click is outside the sidebar but inside the main app.
+      // This excludes clicks on portaled elements (dropdowns, modals, etc.)
+      // since they render outside the main app container.
+      const shouldCollapse =
+        !isInsideSidebar && isInsideApp && isMobileViewport && !isCollapsed
 
-  // Additional safeguard for sidebar height sizing
-  headerDecorationVisible(): boolean {
-    let coloredLineExists = false
-    const headerDecoration = document.getElementById("stDecoration")
-    if (headerDecoration) {
-      const decorationStyles = window.getComputedStyle(headerDecoration)
-      coloredLineExists =
-        decorationStyles.visibility !== "hidden" &&
-        decorationStyles.visibility !== "collapse" &&
-        decorationStyles.display !== "none"
+      if (shouldCollapse) {
+        onToggleCollapse(true)
+      }
     }
-    return coloredLineExists
+
+    document.addEventListener("mousedown", handleClickOutside)
+
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside)
+    }
+  }, [
+    mediumBreakpointPx,
+    isCollapsed,
+    onToggleCollapse,
+    innerWidth,
+    appRootRef,
+  ])
+
+  function resetSidebarWidth(): void {
+    // Double clicking on the resize handle resets sidebar to initial width or default
+    const resetWidth = notNullOrUndefined(initialSidebarWidth)
+      ? clampSidebarWidth(initialSidebarWidth).toString()
+      : DEFAULT_WIDTH
+    setSidebarWidth(resetWidth)
+    if (localStorageAvailable()) {
+      window.localStorage.setItem("sidebarWidth", resetWidth)
+    }
   }
 
-  renderLogo(collapsed: boolean): ReactElement {
-    const { appLogo } = this.props
+  const toggleCollapse = useCallback(() => {
+    onToggleCollapse(!isCollapsed)
+  }, [isCollapsed, onToggleCollapse])
 
+  // Render logo or spacer - using shared LogoComponent
+  const renderLogoContent = (): ReactElement | undefined => {
     if (!appLogo) {
       return <StyledNoLogoSpacer data-testid="stLogoSpacer" />
     }
 
-    const displayImage =
-      collapsed && appLogo.iconImage ? appLogo.iconImage : appLogo.image
-    const source = this.props.endpoints.buildMediaURL(displayImage)
-    if (appLogo.link) {
-      return (
-        <StyledLogoLink
-          href={appLogo.link}
-          target="_blank"
-          rel="noreferrer"
-          data-testid="stLogoLink"
-        >
-          <StyledLogo src={source} alt="Logo" data-testid="stLogo" />
-        </StyledLogoLink>
-      )
-    }
-    return <StyledLogo src={source} alt="Logo" data-testid="stLogo" />
-  }
-
-  public render(): ReactNode {
-    const { collapsedSidebar, sidebarWidth, hideScrollbar } = this.state
-    const {
-      appPages,
-      chevronDownshift,
-      children,
-      hasElements,
-      onPageChange,
-      currentPageScriptHash,
-      hideSidebarNav,
-    } = this.props
-
-    // Handles checking the URL params
-    const isEmbedded = isEmbed() && !isColoredLineDisplayed()
-    // If header decoration visible, move sidebar down so decoration doesn't go below it
-    const sidebarAdjust = !isEmbedded && this.headerDecorationVisible()
-
-    // The tabindex is required to support scrolling by arrow keys.
     return (
-      <>
-        {collapsedSidebar && (
-          <StyledSidebarOpenContainer
-            chevronDownshift={chevronDownshift}
-            isCollapsed={collapsedSidebar}
-            data-testid="collapsedControl"
-          >
-            {this.renderLogo(true)}
-            <StyledOpenSidebarButton>
-              <BaseButton
-                kind={BaseButtonKind.HEADER_NO_PADDING}
-                onClick={this.toggleCollapse}
-              >
-                <Icon content={ChevronRight} size="xl" />
-              </BaseButton>
-            </StyledOpenSidebarButton>
-          </StyledSidebarOpenContainer>
-        )}
-        <Resizable
-          data-testid="stSidebar"
-          aria-expanded={!collapsedSidebar}
-          enable={{
-            top: false,
-            right: true,
-            bottom: false,
-            left: false,
-          }}
-          handleStyles={{ right: { width: "8px", right: "-6px" } }}
-          handleComponent={{
-            right: <StyledResizeHandle onClick={this.resetSidebarWidth} />,
-          }}
-          size={{
-            width: sidebarWidth,
-            // Addresses height glitch when anchor used - issue #6264
-            height: sidebarAdjust ? window.innerHeight - 2 : "100%",
-          }}
-          as={StyledSidebar}
-          onResizeStop={(e, direction, ref, d) => {
-            const newWidth = parseInt(sidebarWidth, 10) + d.width
-            this.setSidebarWidth(newWidth)
-          }}
-          // Props part of StyledSidebar, but not Resizable component
-          // @ts-expect-error
-          isCollapsed={collapsedSidebar}
-          adjustTop={sidebarAdjust}
-          sidebarWidth={sidebarWidth}
-        >
-          <StyledSidebarContent
-            data-testid="stSidebarContent"
-            hideScrollbar={hideScrollbar}
-            ref={this.sidebarRef}
-          >
-            <StyledSidebarHeaderContainer data-testid="stSidebarHeader">
-              {this.renderLogo(false)}
-              <StyledCollapseSidebarButton data-testid="stSidebarCollapseButton">
-                <BaseButton
-                  kind={BaseButtonKind.HEADER_BUTTON}
-                  onClick={this.toggleCollapse}
-                >
-                  <Icon content={Close} size="lg" />
-                </BaseButton>
-              </StyledCollapseSidebarButton>
-            </StyledSidebarHeaderContainer>
-            {!hideSidebarNav && (
-              <SidebarNav
-                endpoints={this.props.endpoints}
-                appPages={appPages}
-                collapseSidebar={this.toggleCollapse}
-                currentPageScriptHash={currentPageScriptHash}
-                hasSidebarElements={hasElements}
-                hideParentScrollbar={this.hideScrollbar}
-                onPageChange={onPageChange}
-              />
-            )}
-            <StyledSidebarUserContent data-testid="stSidebarUserContent">
-              {children}
-            </StyledSidebarUserContent>
-          </StyledSidebarContent>
-        </Resizable>
-      </>
+      <LogoComponent
+        appLogo={appLogo}
+        endpoints={endpoints}
+        collapsed={isCollapsed}
+        componentName="Sidebar Logo"
+        dataTestId="stSidebarLogo"
+      />
     )
   }
+
+  const hasPageNavAbove = shouldShowNavigation(appPages) && !hideSidebarNav
+
+  // The tabindex is required to support scrolling by arrow keys.
+  return (
+    <Resizable
+      className="stSidebar"
+      data-testid="stSidebar"
+      aria-expanded={!isCollapsed}
+      enable={{
+        top: false,
+        right: true,
+        bottom: false,
+        left: false,
+      }}
+      handleStyles={{
+        right: {
+          width: RESIZE_HANDLE_WIDTH,
+          right: "-6px",
+        },
+      }}
+      handleComponent={{
+        right: <StyledResizeHandle onDoubleClick={resetSidebarWidth} />,
+      }}
+      size={{
+        width: sidebarWidth,
+        height: "auto",
+      }}
+      as={StyledSidebar}
+      onResizeStop={onResizeStop}
+      // Props part of StyledSidebar, but not Resizable component
+      // @ts-expect-error
+      isCollapsed={isCollapsed}
+      sidebarWidth={sidebarWidth}
+      windowInnerWidth={innerWidth}
+    >
+      <StyledSidebarContent
+        data-testid="stSidebarContent"
+        ref={sidebarRef}
+        onMouseOver={onMouseOver}
+        onMouseOut={onMouseOut}
+        scrollbarGutterSize={scrollbarGutterSize}
+      >
+        <StyledSidebarHeaderContainer data-testid="stSidebarHeader">
+          {renderLogoContent()}
+          {(!isSidebarLocked || isMobileViewport) && (
+            <StyledCollapseSidebarButton
+              showSidebarCollapse={showSidebarCollapse}
+              data-testid="stSidebarCollapseButton"
+            >
+              <BaseButton
+                kind={BaseButtonKind.HEADER_NO_PADDING}
+                onClick={toggleCollapse}
+              >
+                <DynamicIcon
+                  size="xl"
+                  iconValue=":material/keyboard_double_arrow_left:"
+                  color={theme.colors.fadedText60}
+                />
+              </BaseButton>
+            </StyledCollapseSidebarButton>
+          )}
+        </StyledSidebarHeaderContainer>
+        {hasPageNavAbove && (
+          <SidebarNav
+            endpoints={endpoints}
+            collapseSidebar={toggleCollapse}
+            hasSidebarElements={hasElements}
+            widgetsDisabled={widgetsDisabled}
+          />
+        )}
+        <StyledSidebarUserContent
+          hasPageNavAbove={hasPageNavAbove}
+          data-testid="stSidebarUserContent"
+        >
+          {children}
+        </StyledSidebarUserContent>
+      </StyledSidebarContent>
+    </Resizable>
+  )
 }
 
 function SidebarWithProvider(props: SidebarProps): ReactElement {
@@ -360,4 +344,4 @@ function SidebarWithProvider(props: SidebarProps): ReactElement {
   )
 }
 
-export default withTheme(SidebarWithProvider)
+export default SidebarWithProvider

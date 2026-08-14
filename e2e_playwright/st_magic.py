@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -16,6 +16,7 @@
 
 import asyncio
 import contextlib
+from typing import Any
 
 async_loop = asyncio.new_event_loop()
 
@@ -31,17 +32,17 @@ if True:
     "IF"
 
 if False:
-    pass
+    pass  # type: ignore[unreachable]
 elif True:
     "ELIF"
 
 if False:
-    pass
+    pass  # type: ignore[unreachable]
 else:
     "ELSE"
 
 
-for ii in range(1):
+for _ in range(1):
     "FOR"
 
 while True:
@@ -51,10 +52,7 @@ while True:
 
 @contextlib.contextmanager
 def context_mgr():
-    try:
-        yield
-    finally:
-        pass
+    yield
 
 
 with context_mgr():
@@ -76,14 +74,14 @@ finally:
     "FINALLY"
 
 
-def func(value):
+def func(value: Any) -> None:
     value
 
 
 func("FUNCTION")
 
 
-async def async_func(value):
+async def async_func(value: Any) -> None:
     value
 
 
@@ -104,10 +102,7 @@ async_loop.run_until_complete(async_for())
 async def async_with():
     @contextlib.asynccontextmanager
     async def async_context_mgr():
-        try:
-            yield
-        finally:
-            pass
+        yield
 
     async with async_context_mgr():
         "ASYNC WITH"
@@ -123,13 +118,11 @@ def docstrings():
 
     def nested():
         """Multiline docstring.
-        Should not be printed."""
-        pass
+        Should not be printed.
+        """
 
-    class Foo(object):
+    class Foo:
         """Class docstring. Should not be printed."""
-
-        pass
 
     nested()
 
@@ -139,7 +132,6 @@ docstrings()
 
 def my_func():
     """my_func: this help block should be printed."""
-    pass
 
 
 my_func
@@ -149,7 +141,7 @@ class MyClass:
     """MyClass: this help block should be printed."""
 
     def __init__(self):
-        """This should not be printed."""
+        """Should not be printed."""
 
 
 MyClass

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,9 @@
  * limitations under the License.
  */
 
-import React, { useState } from "react"
+import { useCallback, useMemo, useState } from "react"
 
-import { GridColumn, DataEditorProps } from "@glideapps/glide-data-grid"
+import { DataEditorProps, GridColumn } from "@glideapps/glide-data-grid"
 
 type ColumnSizerReturn = Pick<DataEditorProps, "columns" | "onColumnResize">
 
@@ -35,7 +35,7 @@ function useColumnSizer(columns: GridColumn[]): ColumnSizerReturn {
     () => new Map()
   )
 
-  const onColumnResize = React.useCallback(
+  const onColumnResize = useCallback(
     (
       column: GridColumn,
       _newSize: number,
@@ -49,7 +49,7 @@ function useColumnSizer(columns: GridColumn[]): ColumnSizerReturn {
     [columnSizes]
   )
 
-  const sizedColumns = React.useMemo(() => {
+  const sizedColumns = useMemo(() => {
     return columns.map(column => {
       if (
         column.id &&

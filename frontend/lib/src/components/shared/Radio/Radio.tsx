@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,191 +14,147 @@
  * limitations under the License.
  */
 
-import React from "react"
-import { withTheme } from "@emotion/react"
-import { Radio as UIRadio, RadioGroup, ALIGN } from "baseui/radio"
+import { memo, ReactElement, useCallback, useEffect, useState } from "react"
+
+import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown/StreamlitMarkdown"
+import { Placement } from "~lib/components/shared/Tooltip/Tooltip"
+import { WidgetLabel } from "~lib/components/widgets/BaseWidget/WidgetLabel"
+import { WidgetLabelHelpIconInline } from "~lib/components/widgets/BaseWidget/WidgetLabelHelpIconInline"
+import { LabelVisibilityOptions } from "~lib/util/utils"
+
 import {
-  WidgetLabel,
-  StyledWidgetLabelHelpInline,
-} from "@streamlit/lib/src/components/widgets/BaseWidget"
-import TooltipIcon from "@streamlit/lib/src/components/shared/TooltipIcon"
-import { LabelVisibilityOptions } from "@streamlit/lib/src/util/utils"
-import { Placement } from "@streamlit/lib/src/components/shared/Tooltip"
-import { EmotionTheme } from "@streamlit/lib/src/theme"
-import StreamlitMarkdown from "@streamlit/lib/src/components/shared/StreamlitMarkdown/StreamlitMarkdown"
+  StyledRadioCaption,
+  StyledRadioContent,
+  StyledRadioGroup,
+  StyledRadioInner,
+  StyledRadioItem,
+  StyledRadioOuter,
+  StyledRadioRow,
+} from "./styled-components"
 
 export interface Props {
   disabled: boolean
   horizontal: boolean
-  theme: EmotionTheme
-  width?: number
   value: number | null
-  onChange: (selectedIndex: number) => any
-  options: any[]
-  captions: any[]
+  onChange: (selectedIndex: number) => void
+  options: string[]
+  captions: string[]
   label?: string
   labelVisibility?: LabelVisibilityOptions
   help?: string
 }
 
-interface State {
-  /**
-   * The value specified by the user via the UI. If the user didn't touch this
-   * widget's UI, the default value is used.
-   */
-  value: number | null
+function Radio({
+  disabled,
+  horizontal,
+  value: defaultValue,
+  onChange,
+  options,
+  captions,
+  label,
+  labelVisibility,
+  help,
+}: Readonly<Props>): ReactElement {
+  const [value, setValue] = useState(defaultValue ?? null)
+
+  useEffect(() => {
+    if (defaultValue === value) {
+      return
+    }
+
+    setValue(defaultValue ?? null)
+
+    // Exclude value from the dependency list on purpose to avoid a loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- TODO: Update to match React best practices
+  }, [defaultValue])
+
+  const handleChange = useCallback(
+    (selectedValue: string): void => {
+      const selectedIndex = parseInt(selectedValue, 10)
+      setValue(selectedIndex)
+      onChange(selectedIndex)
+    },
+    [onChange]
+  )
+
+  const hasCaptions = captions.length > 0
+  const hasOptions = options.length > 0
+  const cleanedOptions = hasOptions ? options : ["No options to select."]
+
+  // Either the user specified it as disabled or it's disabled because we don't have any options
+  const shouldDisable = disabled || !hasOptions
+
+  const spacerNeeded = (caption: string): string => {
+    // When captions are provided for only some options in horizontal layout
+    // we need to add a spacer for the options without captions
+    const spacer = caption === "" && horizontal && hasCaptions
+    return spacer ? "&nbsp;" : caption
+  }
+
+  return (
+    <div className="stRadio" data-testid="stRadio">
+      <WidgetLabel
+        label={label}
+        disabled={shouldDisable}
+        labelVisibility={labelVisibility}
+      >
+        {help && (
+          <WidgetLabelHelpIconInline
+            content={help}
+            placement={Placement.TOP_RIGHT}
+            label={label}
+          />
+        )}
+      </WidgetLabel>
+      <StyledRadioGroup
+        onChange={handleChange}
+        value={value !== null ? value.toString() : null}
+        isDisabled={shouldDisable}
+        orientation={horizontal ? "horizontal" : "vertical"}
+        aria-label={label}
+        data-testid="stRadioGroup"
+        $horizontal={horizontal}
+        $hasCaptions={hasCaptions}
+      >
+        {cleanedOptions.map((option: string, index: number) => (
+          <StyledRadioItem
+            // eslint-disable-next-line @eslint-react/no-array-index-key
+            key={index}
+            value={index.toString()}
+            data-testid="stRadioOption"
+          >
+            {({ isSelected, isDisabled }) => (
+              <StyledRadioContent $isDisabled={isDisabled}>
+                <StyledRadioRow>
+                  <StyledRadioOuter
+                    $isSelected={isSelected}
+                    $isDisabled={isDisabled}
+                  >
+                    <StyledRadioInner $isSelected={isSelected} />
+                  </StyledRadioOuter>
+                  <StreamlitMarkdown
+                    source={option}
+                    allowHTML={false}
+                    isLabel
+                  />
+                </StyledRadioRow>
+                {hasCaptions && (
+                  <StyledRadioCaption>
+                    <StreamlitMarkdown
+                      source={spacerNeeded(captions[index])}
+                      allowHTML={false}
+                      isCaption
+                      isLabel
+                    />
+                  </StyledRadioCaption>
+                )}
+              </StyledRadioContent>
+            )}
+          </StyledRadioItem>
+        ))}
+      </StyledRadioGroup>
+    </div>
+  )
 }
 
-class Radio extends React.PureComponent<Props, State> {
-  public state: State = {
-    value: this.props.value ?? null,
-  }
-
-  public componentDidUpdate(prevProps: Props): void {
-    // If props.value has changed, re-initialize state.value.
-    if (
-      prevProps.value !== this.props.value &&
-      this.props.value !== this.state.value
-    ) {
-      this.setState((_, prevProps) => {
-        return { value: prevProps.value ?? null }
-      })
-    }
-  }
-
-  private onChange = (e: React.ChangeEvent<HTMLInputElement>): void => {
-    const selectedIndex = parseInt(e.target.value, 10)
-    this.setState({ value: selectedIndex }, () =>
-      this.props.onChange(selectedIndex)
-    )
-  }
-
-  public render(): React.ReactNode {
-    const { theme, width, help, label, horizontal, labelVisibility } =
-      this.props
-    let { disabled } = this.props
-    const { colors, radii } = theme
-    const style = { width }
-    const options = [...this.props.options]
-    const captions = [...this.props.captions]
-    const hasCaptions = captions.length > 0
-
-    const spacerNeeded = (caption: string): string => {
-      // When captions are provided for only some options in horizontal
-      // layout we need to add a spacer for the options without captions
-      const spacer = caption == "" && horizontal && hasCaptions
-      return spacer ? "&nbsp;" : caption
-    }
-
-    if (options.length === 0) {
-      options.push("No options to select.")
-      disabled = true
-    }
-
-    return (
-      <div className="row-widget stRadio" data-testid="stRadio" style={style}>
-        <WidgetLabel
-          label={label}
-          disabled={disabled}
-          labelVisibility={labelVisibility}
-        >
-          {help && (
-            <StyledWidgetLabelHelpInline>
-              <TooltipIcon content={help} placement={Placement.TOP_RIGHT} />
-            </StyledWidgetLabelHelpInline>
-          )}
-        </WidgetLabel>
-        <RadioGroup
-          onChange={this.onChange}
-          value={
-            this.state.value !== null ? this.state.value.toString() : undefined
-          }
-          disabled={disabled}
-          align={horizontal ? ALIGN.horizontal : ALIGN.vertical}
-          aria-label={label}
-          data-testid="stRadioGroup"
-          overrides={{
-            RadioGroupRoot: {
-              style: {
-                gap: hasCaptions ? "0.5rem" : "0",
-              },
-            },
-          }}
-        >
-          {options.map((option: string, index: number) => (
-            <UIRadio
-              key={index}
-              value={index.toString()}
-              overrides={{
-                Root: {
-                  style: ({
-                    $isFocusVisible,
-                  }: {
-                    $isFocusVisible: boolean
-                  }) => ({
-                    marginBottom: 0,
-                    marginTop: 0,
-                    marginRight: hasCaptions ? "0.5rem" : "1rem",
-                    // Make left and right padding look the same visually.
-                    paddingLeft: 0,
-                    alignItems: "start",
-                    paddingRight: "2px",
-                    backgroundColor: $isFocusVisible
-                      ? colors.darkenedBgMix25
-                      : "",
-                    borderTopLeftRadius: radii.md,
-                    borderTopRightRadius: radii.md,
-                    borderBottomLeftRadius: radii.md,
-                    borderBottomRightRadius: radii.md,
-                  }),
-                },
-                RadioMarkOuter: {
-                  style: ({ $checked }: { $checked: boolean }) => ({
-                    width: "1rem",
-                    height: "1rem",
-                    marginTop: "0.35rem",
-                    marginRight: "0",
-                    backgroundColor:
-                      $checked && !disabled
-                        ? colors.primary
-                        : colors.fadedText40,
-                  }),
-                },
-                RadioMarkInner: {
-                  style: ({ $checked }: { $checked: boolean }) => ({
-                    height: $checked ? "6px" : "14px",
-                    width: $checked ? "6px" : "14px",
-                  }),
-                },
-                Label: {
-                  style: {
-                    color: disabled ? colors.fadedText40 : colors.bodyText,
-                    position: "relative",
-                    top: "1px",
-                  },
-                },
-              }}
-            >
-              <StreamlitMarkdown
-                source={option}
-                allowHTML={false}
-                isLabel
-                largerLabel
-              />
-              {hasCaptions && (
-                <StreamlitMarkdown
-                  source={spacerNeeded(captions[index])}
-                  allowHTML={false}
-                  isCaption
-                  isLabel
-                />
-              )}
-            </UIRadio>
-          ))}
-        </RadioGroup>
-      </div>
-    )
-  }
-}
-
-export default withTheme(Radio)
+export default memo(Radio)

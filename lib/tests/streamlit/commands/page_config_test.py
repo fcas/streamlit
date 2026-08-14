@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -12,13 +12,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
 from unittest import mock
 
+import pytest
 from parameterized import param, parameterized
 
 import streamlit as st
-from streamlit.commands.page_config import ENG_EMOJIS, RANDOM_EMOJIS, PageIcon
-from streamlit.errors import StreamlitAPIException
+from streamlit.commands.page_config import (
+    RANDOM_EMOJIS,
+    PageIcon,
+    _get_favicon_string,
+    _lower_clean_dict_keys,
+)
+from streamlit.errors import (
+    StreamlitAPIException,
+    StreamlitInvalidSidebarStateError,
+    StreamlitInvalidURLError,
+)
 from streamlit.proto.PageConfig_pb2 import PageConfig as PageConfigProto
 from streamlit.string_util import is_emoji
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
@@ -28,21 +39,27 @@ class PageConfigTest(DeltaGeneratorTestCase):
     def test_set_page_config_title(self):
         st.set_page_config(page_title="Hello")
         c = self.get_message_from_queue().page_config_changed
-        self.assertEqual(c.title, "Hello")
+        assert c.title == "Hello"
 
-    @parameterized.expand(["🦈", ":shark:", "https://foo.com/image.png"])
+    @parameterized.expand([":shark:", "https://foo.com/image.png"])
     def test_set_page_config_icon_strings(self, icon_string: str):
-        """page_config icons can be emojis, emoji shortcodes, and image URLs."""
+        """page_config icons can be emoji shortcodes, and image URLs."""
         st.set_page_config(page_icon=icon_string)
         c = self.get_message_from_queue().page_config_changed
-        self.assertEqual(c.favicon, icon_string)
+        assert c.favicon == icon_string
+
+    def test_set_page_config_emoji_icon_strings(self):
+        """page_config icons can be emojis."""
+        st.set_page_config(page_icon="🦈")
+        c = self.get_message_from_queue().page_config_changed
+        assert c.favicon == "emoji:🦈"
 
     def test_set_page_config_icon_random(self):
         """If page_icon == "random", we choose a random emoji."""
         st.set_page_config(page_icon="random")
         c = self.get_message_from_queue().page_config_changed
-        self.assertIn(c.favicon, set(RANDOM_EMOJIS + ENG_EMOJIS))
-        self.assertTrue(is_emoji(c.favicon))
+        assert c.favicon in set(RANDOM_EMOJIS)
+        assert is_emoji(c.favicon)
 
     def test_set_page_config_icon_invalid_string(self):
         """If set_page_config is passed a garbage icon string, we just pass it
@@ -50,63 +67,84 @@ class PageConfigTest(DeltaGeneratorTestCase):
         """
         st.set_page_config(page_icon="st.balloons")
         c = self.get_message_from_queue().page_config_changed
-        self.assertEqual(c.favicon, "st.balloons")
+        assert c.favicon == "st.balloons"
 
     @parameterized.expand([param(b"123"), param("file/on/disk.png")])
     def test_set_page_config_icon_calls_image_to_url(self, icon: PageIcon):
         """For all other page_config icon inputs, we just call image_to_url."""
         with mock.patch(
-            "streamlit.commands.page_config.image.image_to_url",
+            "streamlit.commands.page_config.image_to_url",
             return_value="https://mock.url",
         ):
             st.set_page_config(page_icon=icon)
             c = self.get_message_from_queue().page_config_changed
-            self.assertEqual(c.favicon, "https://mock.url")
+            assert c.favicon == "https://mock.url"
 
     def test_set_page_config_layout_wide(self):
         st.set_page_config(layout="wide")
         c = self.get_message_from_queue().page_config_changed
-        self.assertEqual(c.layout, PageConfigProto.WIDE)
+        assert c.layout == PageConfigProto.WIDE
 
     def test_set_page_config_layout_centered(self):
         st.set_page_config(layout="centered")
         c = self.get_message_from_queue().page_config_changed
-        self.assertEqual(c.layout, PageConfigProto.CENTERED)
+        assert c.layout == PageConfigProto.CENTERED
+
+    def test_set_page_config_layout_none(self):
+        st.set_page_config(layout=None)
+        c = self.get_message_from_queue().page_config_changed
+        assert c.layout == PageConfigProto.LAYOUT_UNSET
 
     def test_set_page_config_layout_invalid(self):
-        with self.assertRaises(StreamlitAPIException):
+        with pytest.raises(StreamlitAPIException):
             st.set_page_config(layout="invalid")
 
     def test_set_page_config_sidebar_auto(self):
         st.set_page_config(initial_sidebar_state="auto")
         c = self.get_message_from_queue().page_config_changed
-        self.assertEqual(c.initial_sidebar_state, PageConfigProto.AUTO)
+        assert c.initial_sidebar_state == PageConfigProto.AUTO
 
     def test_set_page_config_sidebar_expanded(self):
         st.set_page_config(initial_sidebar_state="expanded")
         c = self.get_message_from_queue().page_config_changed
-        self.assertEqual(c.initial_sidebar_state, PageConfigProto.EXPANDED)
+        assert c.initial_sidebar_state == PageConfigProto.EXPANDED
 
     def test_set_page_config_sidebar_collapsed(self):
         st.set_page_config(initial_sidebar_state="collapsed")
         c = self.get_message_from_queue().page_config_changed
-        self.assertEqual(c.initial_sidebar_state, PageConfigProto.COLLAPSED)
+        assert c.initial_sidebar_state == PageConfigProto.COLLAPSED
+
+    def test_set_page_config_sidebar_none(self):
+        st.set_page_config(initial_sidebar_state=None)
+        c = self.get_message_from_queue().page_config_changed
+        assert c.initial_sidebar_state == PageConfigProto.SIDEBAR_UNSET
+
+    def test_set_page_config_sidebar_locked(self):
+        """``"locked"`` maps to the LOCKED protobuf enum value."""
+        st.set_page_config(initial_sidebar_state="locked")
+        c = self.get_message_from_queue().page_config_changed
+        assert c.initial_sidebar_state == PageConfigProto.LOCKED
 
     def test_set_page_config_sidebar_invalid(self):
-        with self.assertRaises(StreamlitAPIException) as e:
+        with pytest.raises(StreamlitInvalidSidebarStateError):
             st.set_page_config(initial_sidebar_state="INVALID")
-        self.assertEqual(
-            str(e.exception),
-            '`initial_sidebar_state` must be "auto" or "expanded" or "collapsed" (got "INVALID")',
-        )
+
+    def test_set_page_config_sidebar_width_positive(self):
+        st.set_page_config(initial_sidebar_state=400)
+        c = self.get_message_from_queue().page_config_changed
+        assert c.initial_sidebar_state == PageConfigProto.AUTO
+        assert c.initial_sidebar_width.pixel_width == 400
+
+    @parameterized.expand([param(0), param(-100)])
+    def test_set_page_config_sidebar_width_invalid(self, invalid_value: int):
+        with pytest.raises(StreamlitInvalidSidebarStateError):
+            st.set_page_config(initial_sidebar_state=invalid_value)
 
     def test_set_page_config_menu_items_about(self):
         menu_items = {" about": "*This is an about. This accepts markdown.*"}
         st.set_page_config(menu_items=menu_items)
         c = self.get_message_from_queue().page_config_changed.menu_items
-        self.assertEqual(
-            c.about_section_md, "*This is an about. This accepts markdown.*"
-        )
+        assert c.about_section_md == "*This is an about. This accepts markdown.*"
 
     def test_set_page_config_menu_items_bug_and_help(self):
         menu_items = {
@@ -115,37 +153,101 @@ class PageConfigTest(DeltaGeneratorTestCase):
         }
         st.set_page_config(menu_items=menu_items)
         c = self.get_message_from_queue().page_config_changed.menu_items
-        self.assertFalse(c.hide_report_a_bug)
-        self.assertFalse(c.hide_get_help)
-        self.assertEqual(c.about_section_md, "")
-        self.assertEqual(c.report_a_bug_url, "https://report_a_bug.com")
-        self.assertEqual(c.get_help_url, "https://get_help.com")
+        assert not c.hide_report_a_bug
+        assert not c.hide_get_help
+        assert c.about_section_md == ""
+        assert c.report_a_bug_url == "https://report_a_bug.com"
+        assert c.get_help_url == "https://get_help.com"
 
     def test_set_page_config_menu_items_empty_string(self):
-        with self.assertRaises(StreamlitAPIException) as e:
+        with pytest.raises(StreamlitInvalidURLError):
             menu_items = {"report a bug": "", "GET HELP": "", "about": ""}
             st.set_page_config(menu_items=menu_items)
-        self.assertEqual(str(e.exception), '"" is a not a valid URL!')
 
     def test_set_page_config_menu_items_none(self):
         menu_items = {"report a bug": None, "GET HELP": None, "about": None}
         st.set_page_config(menu_items=menu_items)
         c = self.get_message_from_queue().page_config_changed.menu_items
-        self.assertTrue(c.hide_report_a_bug)
-        self.assertTrue(c.hide_get_help)
-        self.assertEqual(c.about_section_md, "")
+        assert c.hide_report_a_bug
+        assert c.hide_get_help
+        assert c.about_section_md == ""
 
     def test_set_page_config_menu_items_invalid(self):
-        with self.assertRaises(StreamlitAPIException) as e:
+        with pytest.raises(StreamlitAPIException) as e:
             menu_items = {"invalid": "fdsa"}
             st.set_page_config(menu_items=menu_items)
-        self.assertEqual(
-            str(e.exception),
-            'We only accept the keys: "Get help", "Report a bug", and "About" '
-            '("invalid" is not a valid key.)',
+        assert str(e.value) == (
+            'We only accept the keys: `"Get help"`, `"Report a bug"`, and `"About"` '
+            '(`"invalid"` is not a valid key.)'
         )
 
     def test_set_page_config_menu_items_empty_dict(self):
         st.set_page_config(menu_items={})
         c = self.get_message_from_queue().page_config_changed.menu_items
-        self.assertEqual(c.about_section_md, "")
+        assert c.about_section_md == ""
+
+    @parameterized.expand(
+        [
+            ({}, {}),
+            (
+                {
+                    "HELLO_1": 4,
+                    "Hello_2": "world",
+                    "hElLo_3": 5.5,
+                    "": "",
+                },
+                {"hello_1": 4, "hello_2": "world", "hello_3": 5.5, "": ""},
+            ),
+        ]
+    )
+    def test_lower_clean_dict_keys(self, input_dict, answer_dict):
+        return_dict = _lower_clean_dict_keys(input_dict)
+        assert return_dict == answer_dict
+
+    def test_set_page_config_no_op_without_ctx(self):
+        """When no script run context exists, ``set_page_config`` enqueues nothing.
+
+        The early ``return`` when ``get_script_run_ctx()`` is ``None`` prevents the
+        page-config message from reaching the (otherwise populated) message queue.
+        """
+        with mock.patch(
+            "streamlit.commands.page_config.get_script_run_ctx",
+            return_value=None,
+        ):
+            st.set_page_config(page_title="Hello")
+
+        assert self.forward_msg_queue._queue == []
+
+
+def test_get_favicon_string_material_icon() -> None:
+    """A ``:material/...:`` page icon is validated and returned as a Material icon."""
+    assert _get_favicon_string(":material/thumb_up:") == ":material/thumb_up:"
+
+
+def test_get_favicon_string_converts_path_to_str() -> None:
+    """A ``Path`` page icon is converted to a string before ``image_to_url``."""
+    with mock.patch(
+        "streamlit.commands.page_config.image_to_url",
+        return_value="https://mock.url",
+    ) as mock_image_to_url:
+        result = _get_favicon_string(Path("some/icon.png"))
+
+    assert result == "https://mock.url"
+    # The Path must be stringified before reaching image_to_url.
+    assert isinstance(mock_image_to_url.call_args.args[0], str)
+
+
+def test_get_favicon_string_reraises_for_non_string_icon() -> None:
+    """Re-raise ``image_to_url`` errors when the page icon is not a string.
+
+    String icons fall through to be returned as-is (they may be emoji shortcodes),
+    but a non-string icon that ``image_to_url`` cannot handle must propagate.
+    """
+    with (
+        mock.patch(
+            "streamlit.commands.page_config.image_to_url",
+            side_effect=RuntimeError("boom"),
+        ),
+        pytest.raises(RuntimeError, match="boom"),
+    ):
+        _get_favicon_string(b"123")

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,19 +28,42 @@ export const StyledMessageType = styled.span(({ theme }) => ({
 }))
 
 export const StyledStackTraceTitle = styled.div(({ theme }) => ({
-  // Need to add xl to top margin because markdown has negative xl margin bottom.
-  marginTop: `calc(${theme.spacing.sm} + ${theme.spacing.xl})`,
   marginBottom: theme.spacing.sm,
 }))
 
-export const StyledStackTrace = styled.pre(({ theme }) => ({
-  whiteSpace: "pre-wrap",
-  wordWrap: "break-word",
-  color: "inherit",
-  fontSize: theme.fontSizes.sm,
-  backgroundColor: theme.colors.transparent,
+/**
+ * Preserve a visible right-side gutter in horizontally scrolled stack
+ * traces. The inner `StyledCode` (rendered with `wrapLines={false}`) carries
+ * its own `padding-right` via `codeBlockStyle`; wrapping it in this
+ * `inline-block` + `minWidth: 100%` div guarantees the code cell always
+ * stretches to at least the outer `<pre>` width so the gutter stays inside
+ * the scrollable content. See issue #8206.
+ */
+export const StyledStackTraceContent = styled.div({
+  display: "inline-block",
+  minWidth: "100%",
+})
 
-  code: {
-    color: "inherit",
-  },
+export const StyledExceptionMessage = styled.div({
+  wordWrap: "break-word",
+})
+
+export const StyledExceptionLinks = styled.div(({ theme }) => ({
+  fontSize: theme.fontSizes.sm,
+  display: "flex",
+  flexWrap: "wrap",
+  gap: theme.spacing.md,
+  justifyContent: "flex-end",
+}))
+
+export const StyledExceptionCopyButton = styled.button({
+  all: "unset",
+  font: "inherit",
+  textDecoration: "underline",
+})
+
+export const StyledExceptionWrapper = styled.div(({ theme }) => ({
+  display: "flex",
+  flexDirection: "column",
+  gap: theme.spacing.lg,
 }))

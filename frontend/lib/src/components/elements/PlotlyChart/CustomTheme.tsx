@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,31 +14,30 @@
  * limitations under the License.
  */
 
-import merge from "lodash/merge"
+import { merge } from "lodash-es"
+import { getLogger } from "loglevel"
 
 import {
+  getBlue80,
   getDecreasingRed,
   getGray30,
   getGray70,
   getGray90,
   getIncreasingGreen,
-  hasLightBackgroundColor,
-  EmotionTheme,
-  getSequentialColorsArray,
-  getCategoricalColorsArray,
-  getDivergingColorsArray,
-} from "@streamlit/lib/src/theme"
-import { ensureError } from "@streamlit/lib/src/util/ErrorHandling"
-import { logError } from "@streamlit/lib/src/util/log"
+} from "~lib/theme/getColors"
+import type { EmotionTheme } from "~lib/theme/types"
+import { convertRemToPx } from "~lib/theme/utils"
+import { ensureError } from "~lib/util/ErrorHandling"
 
+const LOG = getLogger("PlotlyChart:CustomTheme")
 /**
  * This applies general layout changes to things such as x axis,
  * y axis, legends, titles, grid changes, background, etc.
  * @param layout - spec.layout.template.layout
- * @param theme - Theme from useTheme()
+ * @param theme - Theme from useEmotionTheme()
  */
 export function applyStreamlitThemeTemplateLayout(
-  layout: any,
+  layout: Record<string, unknown>,
   theme: EmotionTheme
 ): void {
   const { genericFonts, colors, fontSizes } = theme
@@ -47,18 +46,19 @@ export function applyStreamlitThemeTemplateLayout(
     font: {
       color: getGray70(theme),
       family: genericFonts.bodyFont,
-      size: fontSizes.twoSmPx,
+      size: convertRemToPx(fontSizes.twoSm),
+      weight: theme.fontWeights.normal,
     },
     title: {
       color: colors.headingColor,
       subtitleColor: colors.bodyText,
       font: {
         family: genericFonts.headingFont,
-        size: fontSizes.mdPx,
+        size: convertRemToPx(fontSizes.md),
         color: colors.headingColor,
       },
       pad: {
-        l: theme.spacing.twoXSPx,
+        l: convertRemToPx(theme.spacing.twoXS),
       },
       xanchor: "left",
       x: 0,
@@ -66,16 +66,16 @@ export function applyStreamlitThemeTemplateLayout(
     legend: {
       title: {
         font: {
-          size: fontSizes.twoSmPx,
+          size: convertRemToPx(fontSizes.twoSm),
           color: getGray70(theme),
         },
         side: "top",
       },
       valign: "top",
       bordercolor: colors.transparent,
-      borderwidth: theme.spacing.nonePx,
+      borderwidth: 0,
       font: {
-        size: fontSizes.twoSmPx,
+        size: convertRemToPx(fontSizes.twoSm),
         color: getGray90(theme),
       },
     },
@@ -87,14 +87,14 @@ export function applyStreamlitThemeTemplateLayout(
       title: {
         font: {
           color: getGray70(theme),
-          size: fontSizes.smPx,
+          size: convertRemToPx(fontSizes.sm),
         },
-        standoff: theme.spacing.twoXLPx,
+        standoff: convertRemToPx(theme.spacing.twoXL),
       },
       tickcolor: getGray30(theme),
       tickfont: {
         color: getGray70(theme),
-        size: fontSizes.twoSmPx,
+        size: convertRemToPx(fontSizes.twoSm),
       },
       gridcolor: getGray30(theme),
       minor: {
@@ -108,15 +108,15 @@ export function applyStreamlitThemeTemplateLayout(
       showgrid: false,
       tickfont: {
         color: getGray70(theme),
-        size: fontSizes.twoSmPx,
+        size: convertRemToPx(fontSizes.twoSm),
       },
       tickcolor: getGray30(theme),
       title: {
         font: {
           color: getGray70(theme),
-          size: fontSizes.smPx,
+          size: convertRemToPx(fontSizes.sm),
         },
-        standoff: theme.spacing.xlPx,
+        standoff: convertRemToPx(theme.spacing.xl),
       },
       minor: {
         gridcolor: getGray30(theme),
@@ -126,28 +126,29 @@ export function applyStreamlitThemeTemplateLayout(
       rangeselector: {
         bgcolor: colors.bgColor,
         bordercolor: getGray30(theme),
+        // eslint-disable-next-line streamlit-custom/no-hardcoded-theme-values
         borderwidth: 1,
         x: 0,
       },
     },
     margin: {
-      pad: theme.spacing.smPx,
-      r: theme.spacing.nonePx,
-      l: theme.spacing.nonePx,
+      pad: convertRemToPx(theme.spacing.sm),
+      r: 0,
+      l: 0,
     },
     hoverlabel: {
       bgcolor: colors.bgColor,
-      bordercolor: colors.fadedText10,
+      bordercolor: colors.borderColor,
       font: {
         color: getGray70(theme),
         family: genericFonts.bodyFont,
-        size: fontSizes.twoSmPx,
+        size: convertRemToPx(fontSizes.twoSm),
       },
     },
     coloraxis: {
       colorbar: {
         thickness: 16,
-        xpad: theme.spacing.twoXLPx,
+        xpad: convertRemToPx(theme.spacing.twoXL),
         ticklabelposition: "outside",
         outlinecolor: colors.transparent,
         outlinewidth: 8,
@@ -156,12 +157,12 @@ export function applyStreamlitThemeTemplateLayout(
         title: {
           font: {
             color: getGray70(theme),
-            size: fontSizes.smPx,
+            size: convertRemToPx(fontSizes.sm),
           },
         },
         tickfont: {
           color: getGray70(theme),
-          size: fontSizes.twoSmPx,
+          size: convertRemToPx(fontSizes.twoSm),
         },
       },
     },
@@ -172,7 +173,7 @@ export function applyStreamlitThemeTemplateLayout(
       title: {
         font: {
           family: genericFonts.bodyFont,
-          size: fontSizes.smPx,
+          size: convertRemToPx(fontSizes.sm),
         },
       },
       color: getGray70(theme),
@@ -181,7 +182,7 @@ export function applyStreamlitThemeTemplateLayout(
         linecolor: getGray70(theme),
         tickfont: {
           family: genericFonts.bodyFont,
-          size: fontSizes.twoSmPx,
+          size: convertRemToPx(fontSizes.twoSm),
         },
       },
       baxis: {
@@ -189,7 +190,7 @@ export function applyStreamlitThemeTemplateLayout(
         gridcolor: getGray70(theme),
         tickfont: {
           family: genericFonts.bodyFont,
-          size: fontSizes.twoSmPx,
+          size: convertRemToPx(fontSizes.twoSm),
         },
       },
       caxis: {
@@ -197,7 +198,7 @@ export function applyStreamlitThemeTemplateLayout(
         gridcolor: getGray70(theme),
         tickfont: {
           family: genericFonts.bodyFont,
-          size: fontSizes.twoSmPx,
+          size: convertRemToPx(fontSizes.twoSm),
         },
       },
     },
@@ -233,7 +234,7 @@ function replaceCategoricalColors(
   const CATEGORY_9 = "#000010"
 
   if (elementTheme === "streamlit") {
-    const categoryColors = getCategoricalColorsArray(theme)
+    const categoryColors = theme.colors.chartCategoricalColors
     spec = spec.replaceAll(CATEGORY_0, categoryColors[0])
     spec = spec.replaceAll(CATEGORY_1, categoryColors[1])
     spec = spec.replaceAll(CATEGORY_2, categoryColors[2])
@@ -278,7 +279,7 @@ function replaceSequentialColors(
   const SEQUENTIAL_9 = "#000020"
 
   if (elementTheme === "streamlit") {
-    const sequentialColors = getSequentialColorsArray(theme)
+    const sequentialColors = theme.colors.chartSequentialColors
     spec = spec.replaceAll(SEQUENTIAL_0, sequentialColors[0])
     spec = spec.replaceAll(SEQUENTIAL_1, sequentialColors[1])
     spec = spec.replaceAll(SEQUENTIAL_2, sequentialColors[2])
@@ -321,10 +322,9 @@ function replaceDivergingColors(
   const DIVERGING_7 = "#000028"
   const DIVERGING_8 = "#000029"
   const DIVERGING_9 = "#000030"
-  const DIVERGING_10 = "#000031"
 
   if (elementTheme === "streamlit") {
-    const divergingColors = getDivergingColorsArray(theme)
+    const divergingColors = theme.colors.chartDivergingColors
     spec = spec.replaceAll(DIVERGING_0, divergingColors[0])
     spec = spec.replaceAll(DIVERGING_1, divergingColors[1])
     spec = spec.replaceAll(DIVERGING_2, divergingColors[2])
@@ -335,20 +335,18 @@ function replaceDivergingColors(
     spec = spec.replaceAll(DIVERGING_7, divergingColors[7])
     spec = spec.replaceAll(DIVERGING_8, divergingColors[8])
     spec = spec.replaceAll(DIVERGING_9, divergingColors[9])
-    spec = spec.replaceAll(DIVERGING_10, divergingColors[10])
   } else {
-    // Default plotly colors
+    // Default plotly colors (PiYG scale)
     spec = spec.replaceAll(DIVERGING_0, "#8e0152")
     spec = spec.replaceAll(DIVERGING_1, "#c51b7d")
     spec = spec.replaceAll(DIVERGING_2, "#de77ae")
     spec = spec.replaceAll(DIVERGING_3, "#f1b6da")
     spec = spec.replaceAll(DIVERGING_4, "#fde0ef")
-    spec = spec.replaceAll(DIVERGING_5, "#f7f7f7")
-    spec = spec.replaceAll(DIVERGING_6, "#e6f5d0")
-    spec = spec.replaceAll(DIVERGING_7, "#b8e186")
-    spec = spec.replaceAll(DIVERGING_8, "#7fbc41")
-    spec = spec.replaceAll(DIVERGING_9, "#4d9221")
-    spec = spec.replaceAll(DIVERGING_10, "#276419")
+    spec = spec.replaceAll(DIVERGING_5, "#e6f5d0")
+    spec = spec.replaceAll(DIVERGING_6, "#b8e186")
+    spec = spec.replaceAll(DIVERGING_7, "#7fbc41")
+    spec = spec.replaceAll(DIVERGING_8, "#4d9221")
+    spec = spec.replaceAll(DIVERGING_9, "#276419")
   }
   return spec
 }
@@ -372,10 +370,7 @@ function replaceGOSpecificColors(spec: string, theme: EmotionTheme): string {
 
   spec = spec.replaceAll(INCREASING, getIncreasingGreen(theme))
   spec = spec.replaceAll(DECREASING, getDecreasingRed(theme))
-  spec = spec.replaceAll(
-    TOTAL,
-    hasLightBackgroundColor(theme) ? theme.colors.blue80 : theme.colors.blue40
-  )
+  spec = spec.replaceAll(TOTAL, getBlue80(theme))
 
   spec = spec.replaceAll(GRAY_30, getGray30(theme))
   spec = spec.replaceAll(GRAY_70, getGray70(theme))
@@ -404,30 +399,105 @@ export function replaceTemporaryColors(
  * spec.data, spec.layout.template.data, and spec.layout.template.layout
  * @param spec - spec
  */
-export function applyStreamlitTheme(spec: any, theme: EmotionTheme): void {
+export function applyStreamlitTheme(
+  spec: Record<string, unknown>,
+  theme: EmotionTheme
+): void {
   try {
-    applyStreamlitThemeTemplateLayout(spec.layout.template.layout, theme)
+    const layout = spec.layout as Record<string, unknown>
+    const template = layout.template as Record<string, unknown>
+    applyStreamlitThemeTemplateLayout(
+      template.layout as Record<string, unknown>,
+      theme
+    )
+    // Ensure user-provided `layout.font` overrides Streamlit's trace-level
+    // `textfont` defaults (e.g. Sankey, icicle); otherwise those template
+    // defaults shadow user settings.
+    // See https://github.com/streamlit/streamlit/issues/11031.
+    respectUserFontOnTemplateTraces(spec, theme)
   } catch (e) {
     const err = ensureError(e)
-    logError(err)
+    LOG.error(err)
   }
-  if ("title" in spec.layout) {
-    spec.layout.title = merge(spec.layout.title, {
-      text: `<b>${spec.layout.title.text}</b>`,
+  const layout = spec.layout as Record<string, unknown>
+  if ("title" in layout) {
+    const title = layout.title as Record<string, unknown>
+    layout.title = merge(title, {
+      text: `<b>${String(title.text)}</b>`,
     })
+  }
+}
+
+/**
+ * Trace-level `textfont.color` values injected by the Streamlit Plotly theme.
+ * These shadow the user's `layout.font.color` and are scrubbed only when their
+ * current value matches the Streamlit-injected default — so a user-owned
+ * custom template that sets a different `textfont.color` on the same trace
+ * type is preserved. Keep in sync with the `textfont=` entries in
+ * `lib/streamlit/elements/lib/streamlit_plotly_theme.py`. Trace types not in
+ * this map are treated as user-owned. `family` is not injected by the
+ * Streamlit theme on any trace type, so `layout.font.family` inherits via
+ * Plotly's normal cascade with no frontend intervention.
+ */
+function getStreamlitInjectedTextfontColors(
+  theme: EmotionTheme
+): ReadonlyMap<string, string> {
+  return new Map([
+    ["icicle", "white"],
+    ["sankey", getGray70(theme)],
+  ])
+}
+
+/**
+ * Drops `textfont.color` from Streamlit-owned template traces when the user
+ * provided `layout.font.color`. Plotly prefers template `textfont` over
+ * `layout.font`, so removing Streamlit's trace-level defaults (e.g. Sankey
+ * `textfont.color`) lets the user's layout font be inherited. User-owned
+ * custom traces — including custom `sankey`/`icicle` templates whose
+ * `textfont.color` does not match the Streamlit-injected value — are left
+ * untouched.
+ */
+function respectUserFontOnTemplateTraces(
+  spec: Record<string, unknown>,
+  theme: EmotionTheme
+): void {
+  const layout = spec.layout as Record<string, unknown> | undefined
+  const userFont = layout?.font as Record<string, unknown> | undefined
+  if (userFont?.color === undefined) {
+    return
+  }
+  const template = layout?.template as Record<string, unknown> | undefined
+  const templateData = template?.data as Record<string, unknown[]> | undefined
+  if (!templateData) {
+    return
+  }
+  const injectedColors = getStreamlitInjectedTextfontColors(theme)
+  for (const [traceType, traces] of Object.entries(templateData)) {
+    const injectedColor = injectedColors.get(traceType)
+    if (injectedColor === undefined || !Array.isArray(traces)) {
+      continue
+    }
+    for (const trace of traces) {
+      const textfont = (trace as Record<string, unknown>)?.textfont as
+        | Record<string, unknown>
+        | undefined
+      if (textfont?.color === injectedColor) {
+        delete textfont.color
+      }
+    }
   }
 }
 
 /**
  * Apply minimum changes to graph to fit streamlit
  * @param layout - spec.layout
- * @param theme - theme from useTheme()
+ * @param theme - theme from useEmotionTheme()
  * @returns modified spec.layout
  */
 export function layoutWithThemeDefaults(
-  layout: any,
+  layout: Record<string, unknown>,
   theme: EmotionTheme
-): any {
+): Record<string, unknown> {
   const { colors, genericFonts } = theme
 
   const themeDefaults = {
@@ -444,7 +514,7 @@ export function layoutWithThemeDefaults(
     ...layout,
     font: {
       ...themeDefaults.font,
-      ...layout.font,
+      ...(layout.font as Record<string, unknown> | undefined),
     },
     paper_bgcolor: layout.paper_bgcolor || themeDefaults.paper_bgcolor,
     plot_bgcolor: layout.plot_bgcolor || themeDefaults.plot_bgcolor,

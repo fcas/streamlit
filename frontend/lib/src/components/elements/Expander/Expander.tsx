@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,261 +14,228 @@
  * limitations under the License.
  */
 
-import React, { ReactElement, useEffect, useRef, useState } from "react"
-import {
-  ExpandMore,
-  ExpandLess,
-  Check,
-  ErrorOutline,
-} from "@emotion-icons/material-outlined"
-import { Block as BlockProto } from "@streamlit/lib/src/proto"
-import {
-  StyledSpinnerIcon,
-  StyledIcon,
-} from "@streamlit/lib/src/components/shared/Icon"
-import StreamlitMarkdown from "@streamlit/lib/src/components/shared/StreamlitMarkdown"
-import { notNullOrUndefined } from "@streamlit/lib/src/util/utils"
-import { LibContext } from "@streamlit/lib/src/components/core/LibContext"
-import { IconSize, isPresetTheme } from "@streamlit/lib/src/theme"
+import { memo, ReactElement, useCallback, useState } from "react"
+
+import { Block as BlockProto } from "@streamlit/protobuf"
+import { notNullOrUndefined } from "@streamlit/utils"
+
+import { DynamicIcon } from "~lib/components/shared/Icon/DynamicIcon"
+import StreamlitMarkdown from "~lib/components/shared/StreamlitMarkdown/StreamlitMarkdown"
+import { useExecuteWhenChanged } from "~lib/hooks/useExecuteWhenChanged"
+import useWidgetManagerElementState from "~lib/hooks/useWidgetManagerElementState"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
 
 import {
-  BORDER_SIZE,
+  StyledDetails,
+  StyledDetailsPanel,
   StyledExpandableContainer,
   StyledSummary,
   StyledSummaryHeading,
-  StyledDetailsPanel,
-  StyledDetails,
+  StyledSummaryLabelWrapper,
 } from "./styled-components"
+import { useDetailsAnimation } from "./useDetailsAnimation"
 
-export interface ExpanderIconProps {
-  icon: string
+interface ExpanderIconProps {
+  icon?: string
 }
 
 /**
- * Renders an icon for the expander.
+ * Renders an icon for the expander and optionally a user-defined icon.
  *
  * If the icon is "spinner", it will render a spinner icon.
- * If the icon is "check", it will render a check icon.
- * If the icon is "error", it will render an error icon.
+ * If the icon is a valid, user-defined icon, it will render the user-defined icon.
  * Otherwise, it will render nothing.
  *
  * @param {string} icon - The icon to render.
  * @returns {ReactElement}
  */
-export const ExpanderIcon = (props: ExpanderIconProps): ReactElement => {
+const ExpanderIcon = (props: ExpanderIconProps): ReactElement => {
   const { icon } = props
-  const { activeTheme } = React.useContext(LibContext)
 
-  const iconProps = {
-    size: "lg" as IconSize,
-    margin: "",
-    padding: "",
-  }
-  if (icon === "spinner") {
-    const usingCustomTheme = !isPresetTheme(activeTheme)
-    return (
-      <StyledSpinnerIcon
-        usingCustomTheme={usingCustomTheme}
-        data-testid="stExpanderIconSpinner"
-        {...iconProps}
-      />
-    )
-  } else if (icon === "check") {
-    return (
-      <StyledIcon
-        as={Check}
-        color={"inherit"}
-        aria-hidden="true"
-        data-testid="stExpanderIconCheck"
-        {...iconProps}
-      />
-    )
-  } else if (icon === "error") {
-    return (
-      <StyledIcon
-        as={ErrorOutline}
-        color={"inherit"}
-        aria-hidden="true"
-        data-testid="stExpanderIconError"
-        {...iconProps}
-      />
-    )
+  const statusIconTestIds: Record<string, string> = {
+    ":material/check:": "stExpanderIconCheck",
+    ":material/error:": "stExpanderIconError",
+    spinner: "stExpanderIconSpinner",
   }
 
-  return <></>
+  return icon ? (
+    <DynamicIcon
+      size="base"
+      iconValue={icon}
+      testid={statusIconTestIds[icon] || "stExpanderIcon"}
+    />
+  ) : (
+    <></>
+  )
 }
 
 export interface ExpanderProps {
   element: BlockProto.Expandable
   isStale: boolean
-  empty: boolean
+  widgetMgr: WidgetStateManager
+  /** Block-level ID for CSS key styling (may be set without widget mode). */
+  blockId?: string
+  fragmentId?: string
 }
 
 const Expander: React.FC<React.PropsWithChildren<ExpanderProps>> = ({
   element,
   isStale,
-  empty,
+  widgetMgr,
+  blockId,
+  fragmentId,
   children,
 }): ReactElement => {
-  const { label, expanded: initialExpanded } = element
-  const [expanded, setExpanded] = useState<boolean>(initialExpanded || false)
-  const detailsRef = useRef<HTMLDetailsElement>(null)
-  const summaryRef = useRef<HTMLElement>(null)
-  const animationRef = useRef<Animation | null>(null)
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const contentRef = useRef<HTMLDivElement>(null)
+  const { label, icon, type } = element
+  const [isHovered, setIsHovered] = useState(false)
 
-  useEffect(() => {
-    // Only apply the expanded state if it was actually set in the proto.
-    if (notNullOrUndefined(initialExpanded)) {
-      setExpanded(initialExpanded)
+  // element.id is only set when the backend registers the expander as a
+  // stateful widget (on_change="rerun"). block.id may still be set for
+  // CSS key styling without implying widget mode.
+  const widgetId = element.id || undefined
+  const isWidget = Boolean(widgetMgr && widgetId)
+  const isPassivelyKeyed = Boolean(blockId) && !isWidget
 
-      // We manage the open attribute via the detailsRef and not with React state
-      if (detailsRef.current) {
-        detailsRef.current.open = initialExpanded
-      }
-    }
+  // Persist expanded state across remounts via elementStates.
+  // The hook is always called (Rules of Hooks) but only effective when
+  // isPassivelyKeyed — otherwise the empty id produces a no-op entry.
+  const [storedExpanded, setStoredExpanded] =
+    useWidgetManagerElementState<boolean>({
+      widgetMgr,
+      id: isPassivelyKeyed ? (blockId ?? "") : "",
+      key: "expanded",
+      defaultValue: element.expanded ?? false,
+    })
 
-    // Having `label` in the dependency array here is necessary because
-    // sometimes two distinct expanders look so similar that even the react
-    // diffing algorithm decides that they're the same element with updated
-    // props (this happens when something in the app removes one expander and
-    // replaces it with another in the same position).
-    //
-    // By adding `label` as a dependency, we ensure that we reset the
-    // expander's `expanded` state in this edge case.
-  }, [label, initialExpanded])
+  const initialExpanded = isPassivelyKeyed ? storedExpanded : element.expanded
 
-  const onAnimationFinish = (open: boolean): void => {
-    if (!detailsRef.current) {
+  // Sync widget manager state when the backend programmatically changes the
+  // expanded value (e.g. st.session_state.key = False). Without this, the
+  // widget manager retains the stale value and sends it back on the next
+  // rerun, causing the expander to revert to its old state.
+  useExecuteWhenChanged(() => {
+    if (!widgetId || !notNullOrUndefined(element.expanded)) {
       return
     }
-
-    detailsRef.current.open = open
-    animationRef.current = null
-    detailsRef.current.style.height = ""
-    detailsRef.current.style.overflow = ""
-  }
-
-  const toggleAnimation = (
-    detailsEl: HTMLDetailsElement,
-    startHeight: number,
-    endHeight: number
-  ): void => {
-    const isOpen = endHeight > startHeight
-
-    if (animationRef.current) {
-      animationRef.current.cancel()
-
-      if (timeoutRef.current) {
-        clearTimeout(timeoutRef.current)
-        timeoutRef.current = null
-      }
-    }
-
-    const animation = detailsEl.animate(
-      {
-        height: [`${startHeight}px`, `${endHeight}px`],
-      },
-      {
-        duration: 500,
-        easing: "cubic-bezier(0.23, 1, 0.32, 1)",
-      }
+    widgetMgr.setBoolValue(
+      { id: widgetId },
+      element.expanded,
+      { fromUi: false },
+      fragmentId
     )
+  }, [widgetId, element.expanded])
 
-    animation.onfinish = () => onAnimationFinish(isOpen)
-    animationRef.current = animation
+  // Callback to notify backend of toggle (only used in widget mode)
+  const handleWidgetToggle = useCallback(
+    (newOpen: boolean): void => {
+      if (widgetMgr && widgetId) {
+        widgetMgr.setBoolValue(
+          { id: widgetId },
+          newOpen,
+          { fromUi: true },
+          fragmentId
+        )
+      }
+    },
+    [widgetMgr, widgetId, fragmentId]
+  )
+
+  // Callback for passive persistence (only when passively keyed)
+  const handlePersistToggle = useCallback(
+    (newOpen: boolean): void => {
+      setStoredExpanded(newOpen)
+    },
+    [setStoredExpanded]
+  )
+
+  const onToggle = isWidget
+    ? handleWidgetToggle
+    : isPassivelyKeyed
+      ? handlePersistToggle
+      : undefined
+
+  const isCompact = type === BlockProto.Expandable.Type.COMPACT
+
+  // Leading icon logic: normal mode swaps between chevron and user icon on hover;
+  // compact mode always shows user icon (if any) since the chevron is trailing.
+  const showLeadingChevron = !isCompact && (!icon || isHovered)
+  const showLeadingUserIcon = isCompact ? Boolean(icon) : icon && !isHovered
+
+  const { isOpen, detailsRef, summaryRef, contentRef, handleToggle } =
+    useDetailsAnimation({
+      backendExpanded: initialExpanded,
+      label,
+      onToggle,
+      isCompact,
+    })
+
+  const handleMouseEnter = (): void => {
+    setIsHovered(true)
   }
 
-  const toggle = (e: React.MouseEvent<HTMLDetailsElement>): void => {
-    e.preventDefault()
-    if (empty) {
-      return
-    }
-
-    setExpanded(!expanded)
-    const detailsEl = detailsRef.current
-    if (!detailsEl || !summaryRef.current) {
-      return
-    }
-
-    detailsEl.style.overflow = "hidden"
-    const detailsHeight = detailsEl.getBoundingClientRect().height
-    const summaryHeight = summaryRef.current.getBoundingClientRect().height
-
-    if (!expanded) {
-      detailsEl.style.height = `${detailsHeight}px`
-      detailsEl.open = true
-
-      window.requestAnimationFrame(() => {
-        // For expansion animations, we rely on the rendered width and height
-        // of the children content. However, in Safari, the children are not
-        // rendered because Safari doesn't paint elements that are not visible
-        // (in this case, the details element is not visible because it's
-        // not open). This operation produces inconsistent heights to animate.
-        // To work around this, we force a repaint by animating a tiny bit
-        // and animate the rest of it later.
-        toggleAnimation(
-          detailsEl,
-          detailsHeight,
-          summaryHeight + 2 * BORDER_SIZE + 5 // Arbitrary size of 5px
-        )
-
-        timeoutRef.current = setTimeout(() => {
-          if (!contentRef.current) {
-            return
-          }
-
-          const contentHeight =
-            contentRef.current.getBoundingClientRect().height
-          toggleAnimation(
-            detailsEl,
-            detailsHeight,
-            summaryHeight + contentHeight + 2 * BORDER_SIZE
-          )
-        }, 100)
-      })
-    } else {
-      toggleAnimation(
-        detailsEl,
-        detailsHeight,
-        summaryHeight + 2 * BORDER_SIZE
-      )
-    }
+  const handleMouseLeave = (): void => {
+    setIsHovered(false)
   }
 
   return (
-    <StyledExpandableContainer data-testid="stExpander">
-      <StyledDetails isStale={isStale} ref={detailsRef}>
-        <StyledSummary onClick={toggle} empty={empty} ref={summaryRef}>
+    <StyledExpandableContainer className="stExpander" data-testid="stExpander">
+      <StyledDetails
+        isStale={isStale}
+        isCompact={isCompact}
+        ref={detailsRef}
+        onMouseEnter={handleMouseEnter}
+        onMouseLeave={handleMouseLeave}
+      >
+        <StyledSummary
+          onClick={handleToggle}
+          ref={summaryRef}
+          isStale={isStale}
+          expanded={isOpen}
+          isCompact={isCompact}
+        >
           <StyledSummaryHeading>
-            {element.icon && <ExpanderIcon icon={element.icon} />}
-            <StreamlitMarkdown source={label} allowHTML={false} isLabel />
+            {showLeadingChevron && (
+              <DynamicIcon
+                iconValue={
+                  isOpen
+                    ? ":material/keyboard_arrow_down:"
+                    : ":material/keyboard_arrow_right:"
+                }
+                size="base"
+              />
+            )}
+            {showLeadingUserIcon && <ExpanderIcon icon={icon} />}
+
+            <StyledSummaryLabelWrapper isCompact={isCompact}>
+              <StreamlitMarkdown source={label} allowHTML={false} isLabel />
+            </StyledSummaryLabelWrapper>
+
+            {/* Trailing chevron for compact mode (uses chevron_right for tighter appearance) */}
+            {isCompact && (
+              <DynamicIcon
+                iconValue={
+                  isOpen
+                    ? ":material/keyboard_arrow_down:"
+                    : ":material/chevron_right:"
+                }
+                size="lg"
+              />
+            )}
           </StyledSummaryHeading>
-          {!empty ? (
-            <StyledIcon
-              as={expanded ? ExpandLess : ExpandMore}
-              color={"inherit"}
-              aria-hidden="true"
-              data-testid="stExpanderToggleIcon"
-              size="lg"
-              margin=""
-              padding=""
-            />
-          ) : (
-            <></>
-          )}
         </StyledSummary>
-        {!empty ? (
-          <StyledDetailsPanel data-testid="stExpanderDetails" ref={contentRef}>
-            {children}
-          </StyledDetailsPanel>
-        ) : (
-          <></>
-        )}
+        <StyledDetailsPanel
+          data-testid="stExpanderDetails"
+          ref={contentRef}
+          isCompact={isCompact}
+          // Exclude collapsed content from browser find-in-page (Cmd+F) searches.
+          // Using "" instead of true for consistent behavior in jsdom tests.
+          inert={!isOpen ? "" : undefined}
+        >
+          {children}
+        </StyledDetailsPanel>
       </StyledDetails>
     </StyledExpandableContainer>
   )
 }
 
-export default Expander
+export default memo(Expander)

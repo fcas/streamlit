@@ -1,4 +1,4 @@
-# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+# Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,6 +15,7 @@
 from parameterized import parameterized
 
 import streamlit as st
+from streamlit.commands.echo import _get_indent, _get_initial_indent
 from tests.delta_generator_test_case import DeltaGeneratorTestCase
 
 
@@ -36,9 +37,9 @@ class EchoTest(DeltaGeneratorTestCase):
             def foo(x):
                 y = x + 10
 
-                print(y)
+                st.write(y)
 
-            class MyClass(object):
+            class MyClass:
                 def do_x(self):
                     pass
 
@@ -52,9 +53,9 @@ class EchoTest(DeltaGeneratorTestCase):
 def foo(x):
     y = x + 10
 
-    print(y)
+    st.write(y)
 
-class MyClass(object):
+class MyClass:
     def do_x(self):
         pass
 
@@ -62,10 +63,10 @@ class MyClass(object):
         pass"""
 
         element = self.get_delta_from_queue(echo_index).new_element
-        self.assertEqual(echo_str, element.code.code_text)
+        assert echo_str == element.code.code_text
 
         element = self.get_delta_from_queue(output_index).new_element
-        self.assertEqual("Hello", element.markdown.body)
+        assert element.markdown.body == "Hello"
 
         self.clear_queue()
 
@@ -92,9 +93,9 @@ class MyClass(object):
             def foo(x):
                 y = x + 10
 
-                print(y)
+                st.write(y)
 
-            class MyClass(object):
+            class MyClass:
                 def do_x(self):
                     pass
 
@@ -107,9 +108,9 @@ class MyClass(object):
 def foo(x):
     y = x + 10
 
-    print(y)
+    st.write(y)
 
-class MyClass(object):
+class MyClass:
     def do_x(self):
         pass
 
@@ -117,9 +118,9 @@ class MyClass(object):
         pass"""
 
         element = self.get_delta_from_queue(echo_index).new_element
-        self.assertEqual(echo_str, element.code.code_text)
+        assert echo_str == element.code.code_text
         element = self.get_delta_from_queue(output_index).new_element
-        self.assertEqual("Hello", element.markdown.body)
+        assert element.markdown.body == "Hello"
         self.clear_queue()
 
     def test_if_elif_else(self):
@@ -139,23 +140,100 @@ class MyClass(object):
 
         echo_str = 'st.write("Dual")'
         element = self.get_delta_from_queue(0).new_element
-        self.assertEqual(echo_str, element.code.code_text)
+        assert echo_str == element.code.code_text
         element = self.get_delta_from_queue(1).new_element
-        self.assertEqual("Dual", element.markdown.body)
+        assert element.markdown.body == "Dual"
+        self.clear_queue()
+
+    def test_decorated_function_as_first_statement(self):
+        """A decorated function/class as the first body statement must include
+        the @decorator lines in the echoed source (regression for #9252).
+
+        ast reports `FunctionDef.lineno` as the `def` line, so a naive
+        `body[0].lineno` skips the decorator lines above it.
+        """
+
+        def decorator(fn):
+            return fn
+
+        with st.echo():
+
+            @decorator
+            def function():
+                pass
+
+            @decorator
+            @decorator
+            class MultiDecorated:
+                pass
+
+        echo_str = """@decorator
+def function():
+    pass
+
+@decorator
+@decorator
+class MultiDecorated:
+    pass"""
+
+        element = self.get_delta_from_queue(0).new_element
+        assert echo_str == element.code.code_text
         self.clear_queue()
 
     def test_root_level_echo(self):
-        import tests.streamlit.echo_test_data.root_level_echo
+        import tests.streamlit.echo_test_data.root_level_echo  # noqa: F401
 
         echo_str = "a = 123"
 
         element = self.get_delta_from_queue(0).new_element
-        self.assertEqual(echo_str, element.code.code_text)
+        assert echo_str == element.code.code_text
 
     def test_echo_multiline_param(self):
-        import tests.streamlit.echo_test_data.multiline_param_echo
+        import tests.streamlit.echo_test_data.multiline_param_echo  # noqa: F401
 
         echo_str = "a = 123"
 
         element = self.get_delta_from_queue(0).new_element
-        self.assertEqual(echo_str, element.code.code_text)
+        assert echo_str == element.code.code_text
+
+
+class EchoUtilsTest(DeltaGeneratorTestCase):
+    """Test echo utility functions for indent handling."""
+
+    def test_get_indent_with_spaces(self):
+        """Test _get_indent returns correct number of leading spaces."""
+        assert _get_indent("    hello") == 4
+        assert _get_indent("  hello") == 2
+        assert _get_indent("hello") == 0
+
+    def test_get_indent_with_tabs(self):
+        """Test _get_indent handles tabs as single characters."""
+        assert _get_indent("\thello") == 1
+        assert _get_indent("\t\thello") == 2
+
+    def test_get_indent_empty_line(self):
+        """Test _get_indent returns None for whitespace-only lines with newline."""
+        assert _get_indent("\n") is None
+        assert _get_indent("   \n") is None
+        # Empty string without newline returns 0, not None
+        assert _get_indent("") == 0
+
+    def test_get_initial_indent_finds_first_non_empty(self):
+        """Test _get_initial_indent returns indent of first non-empty line."""
+        # Lines with content (even if just whitespace before newline triggers None from _get_indent)
+        lines = ["  \n", "    \n", "    code here", "more code"]
+        assert _get_initial_indent(lines) == 4
+
+    def test_get_initial_indent_first_line_has_content(self):
+        """Test _get_initial_indent when first line has content."""
+        lines = ["  hello", "  world"]
+        assert _get_initial_indent(lines) == 2
+
+    def test_get_initial_indent_all_empty_lines(self):
+        """Test _get_initial_indent returns 0 when all lines are whitespace with newlines."""
+        lines = ["\n", "  \n", "\n"]
+        assert _get_initial_indent(lines) == 0
+
+    def test_get_initial_indent_empty_list(self):
+        """Test _get_initial_indent returns 0 for empty list."""
+        assert _get_initial_indent([]) == 0

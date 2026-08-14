@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,19 +14,9 @@
  * limitations under the License.
  */
 
-import emotionBaseTheme from "@streamlit/lib/src/theme/emotionBaseTheme"
-import { createEmotionColors } from "@streamlit/lib/src/theme/getColors"
-import genericColors from "./themeColors"
+import emotionBaseTheme from "~lib/theme/emotionBaseTheme"
 
 export default {
   ...emotionBaseTheme,
   inSidebar: false,
-  genericColors: {
-    ...emotionBaseTheme.genericColors,
-    ...genericColors,
-  },
-  colors: createEmotionColors({
-    ...emotionBaseTheme.colors,
-    ...genericColors,
-  }),
 }

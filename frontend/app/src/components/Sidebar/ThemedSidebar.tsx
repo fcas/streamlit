@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,41 +14,21 @@
  * limitations under the License.
  */
 
-import React, { ReactElement } from "react"
-import { AppContext } from "@streamlit/app/src/components/AppContext"
+import { ReactElement, useContext } from "react"
+
 import {
+  createSidebarTheme,
+  ThemeContext,
   ThemeProvider,
-  createTheme,
-  ThemeConfig,
-  LibContext,
 } from "@streamlit/lib"
+
 import Sidebar, { SidebarProps } from "./Sidebar"
-
-const createSidebarTheme = (theme: ThemeConfig): ThemeConfig => {
-  return createTheme(
-    "Sidebar",
-    {
-      secondaryBackgroundColor: theme.emotion.colors.bgColor,
-      backgroundColor: theme.emotion.colors.secondaryBg,
-
-      // Explictly pass these props to the sidebar theming as well.
-      // This ensures custom fonts passed through postMessage propagate to the sidebar as well.
-      bodyFont: theme.emotion.genericFonts.bodyFont,
-      codeFont: theme.emotion.genericFonts.codeFont,
-    },
-    theme,
-    // inSidebar
-    true
-  )
-}
 
 const ThemedSidebar = ({
   children,
   ...sidebarProps
-}: Omit<SidebarProps, "chevronDownshift" | "theme">): ReactElement => {
-  const { sidebarChevronDownshift: chevronDownshift } =
-    React.useContext(AppContext)
-  const { activeTheme } = React.useContext(LibContext)
+}: Omit<SidebarProps, "chevronDownshift">): ReactElement => {
+  const { activeTheme } = useContext(ThemeContext)
   const sidebarTheme = createSidebarTheme(activeTheme)
 
   return (
@@ -56,9 +36,7 @@ const ThemedSidebar = ({
       theme={sidebarTheme.emotion}
       baseuiTheme={sidebarTheme.basewebTheme}
     >
-      <Sidebar {...sidebarProps} chevronDownshift={chevronDownshift}>
-        {children}
-      </Sidebar>
+      <Sidebar {...sidebarProps}>{children}</Sidebar>
     </ThemeProvider>
   )
 }

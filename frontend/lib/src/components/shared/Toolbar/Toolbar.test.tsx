@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,22 +14,21 @@
  * limitations under the License.
  */
 
-import React from "react"
-
-import "@testing-library/jest-dom"
-import { screen, fireEvent } from "@testing-library/react"
 import { Info } from "@emotion-icons/material-outlined"
+import { act, screen } from "@testing-library/react"
+import { userEvent } from "@testing-library/user-event"
 
-import { render } from "@streamlit/lib/src/test_util"
+import { render } from "~lib/test_util"
 
+import { TOP_DISTANCE } from "./styled-components"
 import Toolbar, {
   ToolbarAction,
-  ToolbarProps,
   ToolbarActionProps,
+  ToolbarProps,
 } from "./Toolbar"
 
-const onExpand = jest.fn()
-const onCollapse = jest.fn()
+const onExpand = vi.fn()
+const onCollapse = vi.fn()
 
 const getToolbarProps = (
   propOverrides: Partial<ToolbarProps> = {}
@@ -44,7 +43,7 @@ const getToolbarProps = (
 const getToolbarActionsProps = (
   propOverrides: Partial<ToolbarActionProps> = {}
 ): ToolbarActionProps => ({
-  onClick: jest.fn(),
+  onClick: vi.fn(),
   icon: Info,
   label: "info",
   show_label: false,
@@ -53,10 +52,14 @@ const getToolbarActionsProps = (
 
 describe("Toolbar element", () => {
   beforeEach(() => {
-    jest.clearAllMocks()
+    vi.clearAllMocks()
   })
 
-  it("renders a Toolbar", async () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("renders a Toolbar", () => {
     render(
       <Toolbar {...getToolbarProps()}>
         <ToolbarAction {...getToolbarActionsProps()} />
@@ -66,13 +69,29 @@ describe("Toolbar element", () => {
     const toolbar = screen.getByTestId("stElementToolbar")
     expect(toolbar).toBeInTheDocument()
     expect(toolbar).toBeVisible()
+    expect(toolbar).toHaveClass("stElementToolbar")
 
     // Check if toolbar buttons are rendered:
     const toolbarButton = screen.getAllByTestId("stElementToolbarButton")
     expect(toolbarButton).toHaveLength(2)
   })
 
-  it("doesn't show toolbar if not locked", async () => {
+  it("styles toolbar & buttons correctly", () => {
+    render(<Toolbar {...getToolbarProps()} />)
+
+    const toolbar = screen.getByTestId("stElementToolbar")
+    // Check positioning of toolbar
+    expect(toolbar).toHaveStyle(`top: ${TOP_DISTANCE}`)
+
+    // Check styling of toolbar
+    const toolbarButtonContainer = screen.getByTestId(
+      "stElementToolbarButtonContainer"
+    )
+    expect(toolbarButtonContainer).toHaveStyle("padding: 0.25rem")
+    expect(toolbarButtonContainer).toHaveStyle("color: rgba(49, 51, 63, 0.6)")
+  })
+
+  it("doesn't show toolbar if not locked", () => {
     render(
       <Toolbar {...getToolbarProps({ locked: false })}>
         <ToolbarAction {...getToolbarActionsProps()} />
@@ -86,6 +105,7 @@ describe("Toolbar element", () => {
   })
 
   it("allows expanding into fullscreen mode", async () => {
+    const user = userEvent.setup()
     render(
       <Toolbar {...getToolbarProps()}>
         <ToolbarAction {...getToolbarActionsProps()} />
@@ -100,13 +120,14 @@ describe("Toolbar element", () => {
     const toolbarButton = screen.getAllByRole("button")
     expect(toolbarButton).toHaveLength(2)
     // Clicking the second button should close the fullscreen mode
-    fireEvent.click(toolbarButton[1])
+    await user.click(toolbarButton[1])
 
     // Check that onCollapse was clicked
     expect(onExpand).toHaveBeenCalled()
   })
 
   it("adapts to fullscreen mode", async () => {
+    const user = userEvent.setup()
     render(
       <Toolbar {...getToolbarProps({ locked: false, isFullScreen: true })}>
         <ToolbarAction {...getToolbarActionsProps()} />
@@ -121,13 +142,13 @@ describe("Toolbar element", () => {
     const toolbarButton = screen.getAllByRole("button")
     expect(toolbarButton).toHaveLength(2)
     // Clicking the second button should close the fullscreen mode
-    fireEvent.click(toolbarButton[1])
+    await user.click(toolbarButton[1])
 
     // Check that onCollapse was clicked
     expect(onCollapse).toHaveBeenCalled()
   })
 
-  it("deactivates fullscreen mode via props", async () => {
+  it("deactivates fullscreen mode via props", () => {
     render(
       <Toolbar
         {...getToolbarProps({ locked: false, disableFullscreenMode: true })}
@@ -144,7 +165,11 @@ describe("Toolbar element", () => {
 })
 
 describe("ToolbarAction Button element", () => {
-  it("renders correctly", async () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it("renders correctly", () => {
     render(<ToolbarAction {...getToolbarActionsProps()} />)
     // Check if toolbar button is rendered:
     const toolbarButton = screen.getByTestId("stElementToolbarButton")
@@ -155,14 +180,14 @@ describe("ToolbarAction Button element", () => {
     expect(toolbarButtonIcon).toBeInTheDocument()
   })
 
-  it("shows a label if show_labe=true", async () => {
+  it("shows a label if show_labe=true", () => {
     render(<ToolbarAction {...getToolbarActionsProps({ show_label: true })} />)
     // Check that the info label is visible
     const infoLabel = screen.getByText("info")
     expect(infoLabel).toBeVisible()
   })
 
-  it("doesn't show an icon if icon=undefined", async () => {
+  it("doesn't show an icon if icon=undefined", () => {
     render(
       <ToolbarAction
         {...getToolbarActionsProps({ show_label: true, icon: undefined })}
@@ -180,7 +205,8 @@ describe("ToolbarAction Button element", () => {
   })
 
   it("calls callback on click", async () => {
-    const onClickMock = jest.fn()
+    const user = userEvent.setup()
+    const onClickMock = vi.fn()
 
     render(
       <ToolbarAction {...getToolbarActionsProps({ onClick: onClickMock })} />
@@ -189,9 +215,51 @@ describe("ToolbarAction Button element", () => {
     const toolbarButton = screen.getByRole("button")
     expect(toolbarButton).toBeInTheDocument()
 
-    fireEvent.click(toolbarButton)
+    await user.click(toolbarButton)
 
     // Check that onClick callback was clicked
     expect(onClickMock).toHaveBeenCalled()
+  })
+
+  it("hides its tooltip when the action is no longer hovered", async () => {
+    vi.useFakeTimers()
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+
+    render(<ToolbarAction {...getToolbarActionsProps()} />)
+
+    const tooltipTarget = screen.getByTestId("stTooltipHoverTarget")
+    await user.hover(tooltipTarget)
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(screen.getByTestId("stTooltipContent")).toHaveTextContent("info")
+
+    await user.unhover(tooltipTarget)
+
+    expect(screen.queryByTestId("stTooltipContent")).not.toBeInTheDocument()
+  })
+
+  it("hides its tooltip when the action is clicked", async () => {
+    vi.useFakeTimers()
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    const onClickMock = vi.fn()
+
+    render(
+      <ToolbarAction {...getToolbarActionsProps({ onClick: onClickMock })} />
+    )
+
+    const tooltipTarget = screen.getByTestId("stTooltipHoverTarget")
+    await user.hover(tooltipTarget)
+    act(() => {
+      vi.advanceTimersByTime(1000)
+    })
+
+    expect(screen.getByTestId("stTooltipContent")).toHaveTextContent("info")
+
+    await user.click(screen.getByRole("button", { name: "info" }))
+
+    expect(onClickMock).toHaveBeenCalled()
+    expect(screen.queryByTestId("stTooltipContent")).not.toBeInTheDocument()
   })
 })

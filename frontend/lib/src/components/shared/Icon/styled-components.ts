@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,50 +14,64 @@
  * limitations under the License.
  */
 
-import { EmotionIcon } from "@emotion-icons/emotion-icon"
 import isPropValid from "@emotion/is-prop-valid"
+import { keyframes } from "@emotion/react"
 import styled from "@emotion/styled"
-import { Spinner } from "baseui/spinner"
+import { EmotionIcon } from "@emotion-icons/emotion-icon"
 
-import {
-  IconSize,
-  ThemeColor,
-  computeSpacingStyle,
-} from "@streamlit/lib/src/theme"
+import type { IconSize } from "~lib/theme/types"
+import { computeSpacingStyle } from "~lib/theme/utils"
+
+const spinKeyframe = keyframes({
+  from: { transform: "rotate(0deg)" },
+  to: { transform: "rotate(360deg)" },
+})
 
 interface StyledSpinnerIconProps {
-  usingCustomTheme: boolean
-  size: IconSize
-  margin: string
-  padding: string
+  size?: IconSize
+  margin?: string
+  padding?: string
 }
 
-export const StyledSpinnerIcon = styled(Spinner, {
+export const StyledSpinnerIcon = styled("span", {
   shouldForwardProp: (prop: string) =>
     isPropValid(prop) && !["size"].includes(prop),
-})<StyledSpinnerIconProps>(
-  ({ usingCustomTheme, size, margin, padding, theme }) => {
-    return {
-      width: theme.iconSizes[size],
-      height: theme.iconSizes[size],
-      fontSize: theme.iconSizes[size],
-      justifyContents: "center",
-      margin: computeSpacingStyle(margin, theme),
-      padding: computeSpacingStyle(padding, theme),
-      borderColor: theme.colors.fadedText10,
-      borderTopColor: usingCustomTheme
-        ? theme.colors.primary
-        : theme.colors.blue70,
-      borderWidth: "0.15em",
-      flexGrow: 0,
-      flexShrink: 0,
-    }
+})<StyledSpinnerIconProps>(({
+  size = "lg",
+  margin = "",
+  padding = "",
+  theme,
+}) => {
+  // Spinners are rendered 20% smaller to visually match the size of Material icons:
+  const adjustedSpinnerSize = `calc(${theme.iconSizes[size]} * 0.80)`
+
+  return {
+    display: "block",
+    animationName: spinKeyframe,
+    animationDuration: "1000ms",
+    animationIterationCount: "infinite",
+    animationTimingFunction: "linear",
+    borderStyle: "solid",
+    borderRadius: "50%",
+    cursor: "wait",
+    width: adjustedSpinnerSize,
+    height: adjustedSpinnerSize,
+    margin: computeSpacingStyle(margin, theme),
+    padding: computeSpacingStyle(padding, theme),
+    borderColor: theme.colors.fadedText10,
+    borderTopColor: theme.colors.bodyText,
+    borderWidth: theme.sizes.spinnerThickness,
+    flexGrow: 0,
+    flexShrink: 0,
+    "@media (prefers-reduced-motion: reduce)": {
+      animation: "none",
+    },
   }
-)
+})
 
 interface StyledIconProps {
   as?: EmotionIcon
-  color: ThemeColor
+  color?: string
   size: IconSize
   margin: string
   padding: string
@@ -68,11 +82,11 @@ export const StyledIcon = styled("span", {
     isPropValid(prop) && !["size", "as"].includes(prop),
 })<StyledIconProps>(({ color, size, margin, padding, theme }) => {
   return {
-    color: theme.colors[color],
+    color: color || "inherit",
     fill: "currentColor",
     display: "inline-flex",
     alignItems: "center",
-    justifyContents: "center",
+    justifyContent: "center",
     fontSize: theme.iconSizes[size],
     width: theme.iconSizes[size],
     height: theme.iconSizes[size],
@@ -82,23 +96,55 @@ export const StyledIcon = styled("span", {
   }
 })
 
-interface StyledEmojiIconProps {
-  size: IconSize
-  margin: string
-  padding: string
+interface StyledDynamicIconProps {
+  size?: IconSize
+  margin?: string
+  padding?: string
 }
 
-export const StyledEmojiIcon = styled.span<StyledEmojiIconProps>(
-  ({ size, margin, padding, theme }) => {
+export const StyledDynamicIcon = styled.span<StyledDynamicIconProps>(
+  ({ size = "lg", margin = "", padding = "", theme }) => {
     return {
+      fill: "currentColor",
       display: "inline-flex",
       alignItems: "center",
-      justifyContents: "center",
+      justifyContent: "center",
       fontSize: theme.iconSizes[size],
       width: theme.iconSizes[size],
       height: theme.iconSizes[size],
       margin: computeSpacingStyle(margin, theme),
       padding: computeSpacingStyle(padding, theme),
+      flexShrink: 0,
+    }
+  }
+)
+
+export const StyledImageIcon = styled.img({
+  width: "100%",
+  height: "100%",
+})
+
+interface StyledEmojiIconProps {
+  size: IconSize
+  margin: string
+  padding: string
+  color?: string
+}
+
+export const StyledEmojiIcon = styled.span<StyledEmojiIconProps>(
+  ({ size, margin, padding, theme, color }) => {
+    // Emojis are rendered 10% smaller to visually match the size of Material icons:
+    const adjustedIconSize = `calc(${theme.iconSizes[size]} * 0.90)`
+    return {
+      display: "inline-flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: adjustedIconSize,
+      width: adjustedIconSize,
+      height: adjustedIconSize,
+      margin: computeSpacingStyle(margin, theme),
+      padding: computeSpacingStyle(padding, theme),
+      color: color,
     }
   }
 )

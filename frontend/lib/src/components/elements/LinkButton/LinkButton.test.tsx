@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,29 +14,52 @@
  * limitations under the License.
  */
 
-import React from "react"
 import { screen } from "@testing-library/react"
-import "@testing-library/jest-dom"
-import { render } from "@streamlit/lib/src/test_util"
+import { userEvent } from "@testing-library/user-event"
+import { vi } from "vitest"
 
-import { LinkButton as LinkButtonProto } from "@streamlit/lib/src/proto"
+import { LinkButton as LinkButtonProto } from "@streamlit/protobuf"
+
+import { useRegisterShortcut } from "~lib/hooks/useRegisterShortcut"
+import { render } from "~lib/test_util"
+import { WidgetStateManager } from "~lib/WidgetStateManager"
+
 import LinkButton, { Props } from "./LinkButton"
+
+vi.mock("~lib/hooks/useRegisterShortcut", () => ({
+  useRegisterShortcut: vi.fn(),
+  formatShortcutForDisplay: vi.fn(
+    (shortcut: string | null | undefined) =>
+      shortcut?.replace(/\+/g, " + ") || undefined
+  ),
+}))
 
 const getProps = (
   elementProps: Partial<LinkButtonProto> = {},
   widgetProps: Partial<Props> = {}
-): Props => ({
-  element: LinkButtonProto.create({
-    label: "Label",
-    url: "https://streamlit.io",
-    ...elementProps,
-  }),
-  width: 250,
-  disabled: false,
-  ...widgetProps,
-})
+): Props => {
+  const widgetMgr = new WidgetStateManager({
+    sendRerunBackMsg: vi.fn(),
+    formsDataChanged: vi.fn(),
+  })
+  vi.spyOn(widgetMgr, "setTriggerValue")
+
+  return {
+    element: LinkButtonProto.create({
+      label: "Label",
+      url: "https://streamlit.io",
+      ...elementProps,
+    }),
+    widgetMgr,
+    ...widgetProps,
+  }
+}
 
 describe("LinkButton widget", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it("renders without crashing", () => {
     const props = getProps()
     render(<LinkButton {...props} />)
@@ -45,15 +68,13 @@ describe("LinkButton widget", () => {
     expect(linkButton).toBeInTheDocument()
   })
 
-  it("has correct className and style", () => {
+  it("has correct className", () => {
     const props = getProps()
     render(<LinkButton {...props} />)
 
     const linkButton = screen.getByTestId("stLinkButton")
 
-    expect(linkButton).toHaveClass("row-widget")
     expect(linkButton).toHaveClass("stLinkButton")
-    expect(linkButton).toHaveStyle(`width: ${props.width}px`)
   })
 
   it("renders a label within the button", () => {
@@ -67,45 +88,176 @@ describe("LinkButton widget", () => {
     expect(linkButton).toBeInTheDocument()
   })
 
+  it("uses the provided URL for safe links", () => {
+    const props = getProps({ url: "https://streamlit.io/gallery" })
+    render(<LinkButton {...props} />)
+
+    const linkButton = screen.getByRole("link")
+    expect(linkButton).toHaveAttribute("href", "https://streamlit.io/gallery")
+    expect(linkButton).toHaveAttribute("target", "_blank")
+    expect(linkButton).toHaveAttribute("rel", "noreferrer")
+  })
+
+  it.each([
+    "javascript:alert(1)",
+    "JAVASCRIPT:alert(1)",
+    "java\nscript:alert(1)",
+    "vbscript:msgbox(1)",
+  ])("blocks dangerous URL: %s", url => {
+    const props = getProps({ url })
+    render(<LinkButton {...props} />)
+
+    const linkButton = screen.getByRole("link")
+    expect(linkButton).toHaveAttribute("href", "#")
+    expect(linkButton).toHaveAttribute("target", "_self")
+    expect(linkButton).toHaveAttribute("rel", "noreferrer")
+  })
+
+  it("does not trigger blocked links from shortcuts", () => {
+    const props = getProps({
+      shortcut: "Ctrl+Enter",
+      url: "javascript:alert(1)",
+    })
+    const useRegisterShortcutMock = vi.mocked(useRegisterShortcut)
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click")
+
+    render(<LinkButton {...props} />)
+
+    const { onActivate } = useRegisterShortcutMock.mock.calls[0][0]
+    onActivate()
+
+    expect(clickSpy).not.toHaveBeenCalled()
+
+    clickSpy.mockRestore()
+  })
+
+  it("renders with help properly", async () => {
+    const user = userEvent.setup()
+    render(<LinkButton {...getProps({ help: "mockHelpText" })} />)
+
+    // Ensure both the button and the tooltip target have the correct width
+    // These will be 100% and the ElementContainer will have styles to determine
+    // the button width.
+    const linkButton = screen.getByRole("link")
+    expect(linkButton).toHaveStyle("width: 100%")
+    const tooltipTarget = screen.getByTestId("stTooltipHoverTarget")
+    expect(tooltipTarget).toHaveStyle("width: 100%")
+
+    // Ensure the tooltip content is visible and has the correct text
+    await user.hover(tooltipTarget)
+
+    const tooltipContent = await screen.findByTestId("stTooltipContent")
+    expect(tooltipContent).toHaveTextContent("mockHelpText")
+  })
+
+  it("renders with shortcut label", () => {
+    const props = getProps({ shortcut: "Ctrl+Enter" })
+    render(<LinkButton {...props} />)
+
+    // Check that the shortcut is displayed in the button
+    // Note: The actual text might vary based on platform (e.g. Ctrl vs Cmd),
+    // but DynamicButtonLabel handles that. For test environment, we assume defaults.
+    const shortcutText = screen.getByText("Ctrl + Enter")
+    expect(shortcutText).toBeVisible()
+  })
+
+  it("triggers the link click when shortcut is pressed", () => {
+    const props = getProps({ shortcut: "Ctrl+Enter" })
+    const useRegisterShortcutMock = vi.mocked(useRegisterShortcut)
+
+    // Spy on the anchor click method to ensure it is called
+    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click")
+
+    render(<LinkButton {...props} />)
+
+    expect(useRegisterShortcutMock).toHaveBeenCalled()
+
+    // Get the onActivate callback passed to the hook
+    const { onActivate } = useRegisterShortcutMock.mock.calls[0][0]
+
+    // Simulate the shortcut activation
+    onActivate()
+
+    expect(clickSpy).toHaveBeenCalled()
+
+    clickSpy.mockRestore()
+  })
+
+  it("does not trigger rerun by default", async () => {
+    const user = userEvent.setup()
+    const props = getProps({ id: "link-id", ignoreRerun: true })
+    render(<LinkButton {...props} />)
+
+    await user.click(screen.getByRole("link"))
+
+    expect(props.widgetMgr.setTriggerValue).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ["without fragmentId", undefined],
+    ["with fragmentId", "myFragmentId"],
+  ])("triggers rerun %s", async (_, fragmentId) => {
+    const user = userEvent.setup()
+    const props = getProps(
+      { id: "link-id", ignoreRerun: false },
+      { fragmentId }
+    )
+    render(<LinkButton {...props} />)
+
+    await user.click(screen.getByRole("link"))
+
+    expect(props.widgetMgr.setTriggerValue).toHaveBeenCalledWith(
+      props.element,
+      { fromUi: true },
+      fragmentId
+    )
+  })
+
+  it("does not trigger rerun when disabled", async () => {
+    const user = userEvent.setup()
+    const props = getProps({
+      id: "link-id",
+      ignoreRerun: false,
+      disabled: true,
+    })
+    render(<LinkButton {...props} />)
+
+    await user.click(screen.getByRole("link"))
+
+    expect(props.widgetMgr.setTriggerValue).not.toHaveBeenCalled()
+  })
+
+  it("does not trigger rerun when clicking a blocked URL", async () => {
+    const user = userEvent.setup()
+    const props = getProps({
+      id: "link-id",
+      ignoreRerun: false,
+      url: "javascript:alert(1)",
+    })
+    render(<LinkButton {...props} />)
+
+    await user.click(screen.getByRole("link"))
+
+    expect(props.widgetMgr.setTriggerValue).not.toHaveBeenCalled()
+  })
+
   describe("wrapped BaseLinkButton", () => {
-    it("handles the disabled prop", () => {
-      const props = getProps({}, { disabled: true })
-      render(<LinkButton {...props} />)
+    const LINK_BUTTON_TYPES = ["primary", "secondary", "tertiary"]
 
-      const linkButton = screen.getByRole("link")
-      expect(linkButton).toHaveAttribute("disabled")
-    })
+    LINK_BUTTON_TYPES.forEach(type => {
+      it(`renders ${type} link button correctly`, () => {
+        render(<LinkButton {...getProps({ type })} />)
 
-    it("does not use container width by default", () => {
-      const props = getProps()
-      render(<LinkButton {...props}>Hello</LinkButton>)
+        const linkButton = screen.getByTestId(`stBaseLinkButton-${type}`)
+        expect(linkButton).toBeInTheDocument()
+      })
 
-      const linkButton = screen.getByRole("link")
-      expect(linkButton).toHaveStyle("width: auto")
-    })
+      it(`renders disabled ${type} correctly`, () => {
+        render(<LinkButton {...getProps({ type, disabled: true })} />)
 
-    it("passes useContainerWidth property with help correctly", () => {
-      render(
-        <LinkButton
-          {...getProps({ useContainerWidth: true, help: "mockHelpText" })}
-        >
-          Hello
-        </LinkButton>
-      )
-
-      const linkButton = screen.getByRole("link")
-      expect(linkButton).toHaveStyle(`width: ${250}px`)
-    })
-
-    it("passes useContainerWidth property without help correctly", () => {
-      render(
-        <LinkButton {...getProps({ useContainerWidth: true })}>
-          Hello
-        </LinkButton>
-      )
-
-      const linkButton = screen.getByRole("link")
-      expect(linkButton).toHaveStyle("width: 100%")
+        const linkButton = screen.getByRole("link")
+        expect(linkButton).toHaveAttribute("disabled")
+      })
     })
   })
 })

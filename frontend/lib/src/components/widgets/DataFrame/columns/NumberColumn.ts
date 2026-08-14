@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,37 +16,49 @@
 
 import { GridCell, GridCellKind, NumberCell } from "@glideapps/glide-data-grid"
 
-import { Quiver } from "@streamlit/lib/src/dataframes/Quiver"
+import { format as formatArrowCell } from "~lib/dataframes/arrowFormatUtils"
 import {
-  notNullOrUndefined,
-  isNullOrUndefined,
-} from "@streamlit/lib/src/util/utils"
-import { isIntegerType } from "@streamlit/lib/src/components/widgets/DataFrame/isIntegerType"
+  isDurationType,
+  isIntegerType,
+  isPeriodType,
+  isUnsignedIntegerType,
+} from "~lib/dataframes/arrowTypeUtils"
+import { formatNumber } from "~lib/util/formatNumber"
+import { isNullOrUndefined, notNullOrUndefined } from "~lib/util/utils"
 
 import {
   BaseColumn,
   BaseColumnProps,
+  countDecimals,
   getErrorCell,
-  toSafeString,
   mergeColumnParameters,
   toSafeNumber,
-  formatNumber,
-  countDecimals,
+  toSafeString,
   truncateDecimals,
 } from "./utils"
 
 export interface NumberColumnParams {
-  // The minimum allowed value for editing. Is set to 0 for unsigned values.
+  /**
+   * The minimum allowed value for editing. Is set to 0 for unsigned values.
+   */
   readonly min_value?: number
-  // The maximum allowed value for editing.
+  /**
+   * The maximum allowed value for editing.
+   */
   readonly max_value?: number
-  // A formatting syntax (e.g. sprintf) to format the display value.
-  // This can be used for adding prefix or suffix, or changing the number of decimals of the display value.
+  /**
+   * A formatting syntax (e.g. sprintf) to format the display value.
+   * This can be used for adding prefix or suffix, or changing the number of
+   * decimals of the display value.
+   */
   readonly format?: string
-  // Specifies the granularity that the value must adhere.
-  // This will also influence the maximum precision. This will impact the number of decimals
-  // allowed to be entered as well as the number of decimals displayed (if format is not specified).
-  // This is set to 1 for integer types.
+  /**
+   * Specifies the granularity that the value must adhere.
+   * This will also influence the maximum precision. This will impact the
+   * number of decimals allowed to be entered as well as the number of
+   * decimals displayed (if format is not specified).
+   * This is set to 1 for integer types.
+   */
   readonly step?: number
 }
 
@@ -55,27 +67,23 @@ export interface NumberColumnParams {
  * This supports float, integer, and unsigned integer types.
  */
 function NumberColumn(props: BaseColumnProps): BaseColumn {
-  const arrowTypeName = Quiver.getTypeName(props.arrowType)
-  let format = undefined
-  if (arrowTypeName === "timedelta64[ns]") {
-    // Use duration formatting for timedelta64[ns] type:
-    format = "duration[ns]"
-  } else if (arrowTypeName.startsWith("period[")) {
-    // Use period formatting for period types:
-    format = arrowTypeName
-  }
-  const parameters = mergeColumnParameters(
+  const parameters = mergeColumnParameters<NumberColumnParams>(
     // Default parameters:
     {
       // Set step to 1 for integer types
-      step: isIntegerType(arrowTypeName) ? 1 : undefined,
+      step: isIntegerType(props.arrowType) ? 1 : undefined,
       // if uint (unsigned int), only positive numbers are allowed
-      min_value: arrowTypeName.startsWith("uint") ? 0 : undefined,
-      format,
-    } as NumberColumnParams,
+      min_value: isUnsignedIntegerType(props.arrowType) ? 0 : undefined,
+    },
     // User parameters:
     props.columnTypeOptions
-  ) as NumberColumnParams
+  )
+
+  // If no custom format is provided & the column type is duration or period,
+  // instruct the column to use the arrow formatting for the display value.
+  const useArrowFormatting =
+    !parameters.format &&
+    (isDurationType(props.arrowType) || isPeriodType(props.arrowType))
 
   const allowNegative =
     isNullOrUndefined(parameters.min_value) || parameters.min_value < 0
@@ -85,19 +93,24 @@ function NumberColumn(props: BaseColumnProps): BaseColumn {
       ? countDecimals(parameters.step)
       : undefined
 
-  const cellTemplate = {
+  const cellTemplate: NumberCell = {
     kind: GridCellKind.Number,
     data: undefined,
     displayData: "",
     readonly: !props.isEditable,
     allowOverlay: true,
-    contentAlign: props.contentAlignment || "right",
-    style: props.isIndex ? "faded" : "normal",
+    contentAlign:
+      props.contentAlignment ?? (useArrowFormatting ? "left" : "right"),
+    // The text in pinned columns should be faded.
+    style: props.isPinned ? "faded" : "normal",
     allowNegative,
     fixedDecimals,
-  } as NumberCell
+    // We don't want to show any thousand separators
+    // in the cell overlay/editor:
+    thousandSeparator: "",
+  }
 
-  const validateInput = (data?: any): boolean | number => {
+  const validateInput = (data?: unknown): boolean | number => {
     let cellData: number | null = toSafeNumber(data)
 
     if (isNullOrUndefined(cellData)) {
@@ -145,8 +158,9 @@ function NumberColumn(props: BaseColumnProps): BaseColumn {
     ...props,
     kind: "number",
     sortMode: "smart",
+    typeIcon: ":material/tag:",
     validateInput,
-    getCell(data?: any, validate?: boolean): GridCell {
+    getCell(data?: unknown, validate?: boolean): GridCell {
       if (validate === true) {
         const validationResult = validateInput(data)
         if (validationResult === false) {
@@ -187,17 +201,24 @@ function NumberColumn(props: BaseColumnProps): BaseColumn {
         }
 
         try {
-          displayData = formatNumber(
-            cellData,
-            parameters.format,
-            fixedDecimals
-          )
+          if (useArrowFormatting) {
+            // Use arrow formatting for some selected types (see above)
+            displayData = formatArrowCell(cellData, props.arrowType)
+          } else {
+            displayData = formatNumber(
+              cellData,
+              parameters.format,
+              fixedDecimals
+            )
+          }
         } catch (error) {
           return getErrorCell(
             toSafeString(cellData),
             notNullOrUndefined(parameters.format)
-              ? `Failed to format the number based on the provided format configuration: (${parameters.format}). Error: ${error}`
-              : `Failed to format the number. Error: ${error}`
+              ? // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+                `Failed to format the number based on the provided format configuration: (${parameters.format}). Error: ${error}`
+              : // eslint-disable-next-line @typescript-eslint/restrict-template-expressions
+                `Failed to format the number. Error: ${error}`
           )
         }
       }
@@ -207,10 +228,19 @@ function NumberColumn(props: BaseColumnProps): BaseColumn {
         data: cellData,
         displayData,
         isMissingValue: isNullOrUndefined(cellData),
+        // We want to enforce the raw number without formatting when its copied:
+        copyData: isNullOrUndefined(cellData) ? "" : toSafeString(cellData),
       } as NumberCell
     },
     getCellValue(cell: NumberCell): number | null {
       return cell.data === undefined ? null : cell.data
+    },
+    valuesEqual(a: unknown, b: unknown): boolean {
+      // Compare numerically so a string like "5" and the number 5 match.
+      const numberA = typeof a === "number" ? a : Number(a)
+      const numberB = typeof b === "number" ? b : Number(b)
+
+      return Object.is(numberA, numberB)
     },
   }
 }

@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -14,9 +14,12 @@
  * limitations under the License.
  */
 
-import { logWarning } from "@streamlit/lib"
+import { getLogger } from "loglevel"
+
+import { notNullOrUndefined } from "@streamlit/utils"
 
 const BLOB_TYPE = "video/webm"
+const LOG = getLogger("ScreenCastRecorder")
 
 interface ScreenCastRecorderOptions {
   recordAudio: boolean
@@ -32,18 +35,18 @@ class ScreenCastRecorder {
 
   private mediaRecorder: MediaRecorder | null
 
-  private onErrorOrStopCallback: () => void
+  private readonly onErrorOrStopCallback: () => void
 
   /** True if the current browser likely supports screencasts. */
   public static isSupportedBrowser(): boolean {
     try {
       return (
-        navigator.mediaDevices != null &&
-        navigator.mediaDevices.getUserMedia != null &&
-        navigator.mediaDevices.getDisplayMedia != null &&
+        notNullOrUndefined(navigator.mediaDevices) &&
+        notNullOrUndefined(navigator.mediaDevices.getUserMedia) &&
+        notNullOrUndefined(navigator.mediaDevices.getDisplayMedia) &&
         MediaRecorder.isTypeSupported(BLOB_TYPE)
       )
-    } catch (e) {
+    } catch {
       // In the event of an error, assume it won't support screencasts
       return false
     }
@@ -105,15 +108,15 @@ class ScreenCastRecorder {
    */
   public start(): boolean {
     if (!this.mediaRecorder) {
-      logWarning(`ScreenCastRecorder.start: mediaRecorder is null`)
+      LOG.warn(`ScreenCastRecorder.start: mediaRecorder is null`)
       return false
     }
 
-    const logRecorderError = (e: any): void => {
-      logWarning(`mediaRecorder.start threw an error: ${e}`)
+    const logRecorderError = (e: unknown): void => {
+      LOG.warn(`mediaRecorder.start threw an error: ${String(e)}`)
     }
 
-    this.mediaRecorder.onerror = (e: any): void => {
+    this.mediaRecorder.onerror = (e: Event): void => {
       logRecorderError(e)
       this.onErrorOrStopCallback()
     }

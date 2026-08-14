@@ -1,5 +1,5 @@
 /**
- * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2024)
+ * Copyright (c) Streamlit Inc. (2018-2022) Snowflake Inc. (2022-2026)
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,17 @@
 
 import styled from "@emotion/styled"
 
-import { getWrappedHeadersStyle } from "@streamlit/lib/src/theme/utils"
+export const StyledDialogTitle = styled.span(({ theme }) => ({
+  display: "flex",
+  alignItems: "center",
+  gap: theme.spacing.sm,
+  // Add right margin to prevent overlap with close button
+  marginRight: theme.spacing.threeXL,
+}))
 
-// change appearance of st.title, st.subheader etc.
-export const StyledDialogContent = styled.div(({ theme }) =>
-  getWrappedHeadersStyle(theme)
-)
+export const StyledDialogIcon = styled.span(() => ({
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  flexShrink: 0,
+}))
